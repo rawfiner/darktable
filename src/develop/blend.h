@@ -308,12 +308,16 @@ typedef struct dt_iop_gui_blend_data_t
   GtkBox *bottom_box;
   GtkBox *blendif_box;
   GtkBox *masks_box;
+  GtkDarktableGradientSlider *distance_slider;
   GtkDarktableGradientSlider *upper_slider;
   GtkDarktableGradientSlider *lower_slider;
+  GtkLabel *distance_label[8];
   GtkLabel *upper_label[8];
   GtkLabel *lower_label[8];
+  GtkLabel *distance_picker_label;
   GtkLabel *upper_picker_label;
   GtkLabel *lower_picker_label;
+  GtkWidget *distance_polarity;
   GtkWidget *upper_polarity;
   GtkWidget *lower_polarity;
   GtkWidget *colorpicker;

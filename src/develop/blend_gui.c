@@ -1085,6 +1085,10 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
             _("sliders for blue channel"), _("sliders for hue channel (of HSL)"),
             _("sliders for chroma channel (of HSL)"), _("sliders for value channel (of HSL)") };
 
+    char *ttdistance = _("adjustment based on distance between input received by this module and output processed:\n"
+                         "blend fully\n* range defined by lower markers: do not blend at all\n* range between "
+                         "adjacent upper/lower markers: blend gradually");
+
     char *ttinput = _("adjustment based on input received by this module:\n* range defined by upper markers: "
                       "blend fully\n* range defined by lower markers: do not blend at all\n* range between "
                       "adjacent upper/lower markers: blend gradually");
@@ -1213,8 +1217,10 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
                        // here
     }
 
+    GtkWidget *distancelabel = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     GtkWidget *uplabel = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     GtkWidget *lowlabel = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *distanceslider = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(5));
     GtkWidget *upslider = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(5));
     GtkWidget *lowslider = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(5));
     GtkWidget *notebook = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -1256,8 +1262,13 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
     gtk_box_pack_end(GTK_BOX(header), GTK_WIDGET(inv), FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(header), GTK_WIDGET(bd->colorpicker), FALSE, FALSE, 0);
 
+    bd->distance_slider = DTGTK_GRADIENT_SLIDER_MULTIVALUE(dtgtk_gradient_slider_multivalue_new(4));
     bd->lower_slider = DTGTK_GRADIENT_SLIDER_MULTIVALUE(dtgtk_gradient_slider_multivalue_new(4));
     bd->upper_slider = DTGTK_GRADIENT_SLIDER_MULTIVALUE(dtgtk_gradient_slider_multivalue_new(4));
+
+    bd->distance_polarity
+        = dtgtk_togglebutton_new(dtgtk_cairo_paint_plusminus, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER);
+    gtk_widget_set_tooltip_text(bd->distance_polarity, _("toggle polarity. best seen by enabling 'display mask'"));
 
     bd->lower_polarity
         = dtgtk_togglebutton_new(dtgtk_cairo_paint_plusminus, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER);
@@ -1267,12 +1278,25 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
         = dtgtk_togglebutton_new(dtgtk_cairo_paint_plusminus, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER);
     gtk_widget_set_tooltip_text(bd->upper_polarity, _("toggle polarity. best seen by enabling 'display mask'"));
 
+    gtk_box_pack_start(GTK_BOX(distanceslider), GTK_WIDGET(bd->distance_slider), TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(distanceslider), GTK_WIDGET(bd->distance_polarity), FALSE, FALSE, 0);
+
     gtk_box_pack_start(GTK_BOX(upslider), GTK_WIDGET(bd->upper_slider), TRUE, TRUE, 0);
     gtk_box_pack_end(GTK_BOX(upslider), GTK_WIDGET(bd->upper_polarity), FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(lowslider), GTK_WIDGET(bd->lower_slider), TRUE, TRUE, 0);
     gtk_box_pack_end(GTK_BOX(lowslider), GTK_WIDGET(bd->lower_polarity), FALSE, FALSE, 0);
 
+    GtkWidget *distance = gtk_label_new(_("distance"));
+    bd->distance_picker_label = GTK_LABEL(gtk_label_new(""));
+    gtk_box_pack_start(GTK_BOX(distancelabel), GTK_WIDGET(distance), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(distancelabel), GTK_WIDGET(bd->distance_picker_label), TRUE, TRUE, 0);
+    for(int k = 0; k < 4; k++)
+    {
+      bd->distance_label[k] = GTK_LABEL(gtk_label_new(NULL));
+      gtk_label_set_width_chars(bd->distance_label[k], 5);
+      gtk_box_pack_start(GTK_BOX(uplabel), GTK_WIDGET(bd->distance_label[k]), FALSE, FALSE, 0);
+    }
 
     GtkWidget *output = gtk_label_new(_("output"));
     bd->upper_picker_label = GTK_LABEL(gtk_label_new(""));
@@ -1296,10 +1320,14 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
       gtk_box_pack_start(GTK_BOX(lowlabel), GTK_WIDGET(bd->lower_label[k]), FALSE, FALSE, 0);
     }
 
+    gtk_widget_set_tooltip_text(GTK_WIDGET(bd->distance_slider), _("double click to reset"));
     gtk_widget_set_tooltip_text(GTK_WIDGET(bd->lower_slider), _("double click to reset"));
     gtk_widget_set_tooltip_text(GTK_WIDGET(bd->upper_slider), _("double click to reset"));
+    gtk_widget_set_tooltip_text(distance, ttdistance);
     gtk_widget_set_tooltip_text(output, ttoutput);
     gtk_widget_set_tooltip_text(input, ttinput);
+
+    g_signal_connect(G_OBJECT(bd->distance_slider), "draw", G_CALLBACK(_blendop_blendif_draw), module);
 
     g_signal_connect(G_OBJECT(bd->lower_slider), "draw", G_CALLBACK(_blendop_blendif_draw), module);
 
@@ -1307,15 +1335,22 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
 
     g_signal_connect(G_OBJECT(bd->channel_tabs), "switch_page", G_CALLBACK(_blendop_blendif_tab_switch), bd);
 
+    g_signal_connect(G_OBJECT(bd->distance_slider), "value-changed", G_CALLBACK(_blendop_blendif_upper_callback),
+                     bd);
+
     g_signal_connect(G_OBJECT(bd->upper_slider), "value-changed", G_CALLBACK(_blendop_blendif_upper_callback),
                      bd);
 
     g_signal_connect(G_OBJECT(bd->lower_slider), "value-changed", G_CALLBACK(_blendop_blendif_lower_callback),
                      bd);
 
+    g_signal_connect(G_OBJECT(bd->distance_slider), "leave-notify-event", G_CALLBACK(_blendop_blendif_leave), module);
+
     g_signal_connect(G_OBJECT(bd->lower_slider), "leave-notify-event", G_CALLBACK(_blendop_blendif_leave), module);
 
     g_signal_connect(G_OBJECT(bd->upper_slider), "leave-notify-event", G_CALLBACK(_blendop_blendif_leave), module);
+
+    g_signal_connect(G_OBJECT(bd->distance_slider), "enter-notify-event", G_CALLBACK(_blendop_blendif_enter), module);
 
     g_signal_connect(G_OBJECT(bd->lower_slider), "enter-notify-event", G_CALLBACK(_blendop_blendif_enter), module);
 
@@ -1326,6 +1361,9 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
     g_signal_connect(G_OBJECT(res), "clicked", G_CALLBACK(_blendop_blendif_reset), module);
 
     g_signal_connect(G_OBJECT(inv), "clicked", G_CALLBACK(_blendop_blendif_invert), module);
+
+    g_signal_connect(G_OBJECT(bd->distance_polarity), "toggled", G_CALLBACK(_blendop_blendif_polarity_callback),
+                     bd);
 
     g_signal_connect(G_OBJECT(bd->lower_polarity), "toggled", G_CALLBACK(_blendop_blendif_polarity_callback),
                      bd);
