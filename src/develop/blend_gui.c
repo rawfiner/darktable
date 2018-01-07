@@ -1032,6 +1032,21 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
       data->upper_slider,
       opolarity ? GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG : GRADIENT_SLIDER_MARKER_UPPER_OPEN_BIG, 3);
 
+  //TODO rawfiner this is temporary. Set the marker the correct way by getting the polarity
+  dtgtk_gradient_slider_multivalue_set_marker(
+      data->distance_slider,
+      GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG, 0);
+  dtgtk_gradient_slider_multivalue_set_marker(
+      data->distance_slider,
+      GRADIENT_SLIDER_MARKER_UPPER_FILLED_BIG, 1);
+  dtgtk_gradient_slider_multivalue_set_marker(
+      data->distance_slider,
+      GRADIENT_SLIDER_MARKER_UPPER_FILLED_BIG, 2);
+  dtgtk_gradient_slider_multivalue_set_marker(
+      data->distance_slider,
+      GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG, 3);
+
+  //TODO rawfiner add the values for distance
   for(int k = 0; k < 4; k++)
   {
     dtgtk_gradient_slider_multivalue_set_value(data->lower_slider, iparameters[k], k);
@@ -1040,6 +1055,7 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
     dtgtk_gradient_slider_multivalue_set_resetvalue(data->upper_slider, odefaults[k], k);
   }
 
+  //TODO rawfiner
   for(int k = 0; k < 4; k++)
   {
     (data->scale_print[tab])(iparameters[k], text, sizeof(text));
@@ -1050,6 +1066,7 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
 
   dtgtk_gradient_slider_multivalue_clear_stops(data->lower_slider);
   dtgtk_gradient_slider_multivalue_clear_stops(data->upper_slider);
+  //TODO dtgtk_gradient_slider_multivalue_clear_stops(data->distance_slider);
 
   for(int k = 0; k < data->numberstops[tab]; k++)
   {
@@ -1372,6 +1389,8 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
                      bd);
 
     gtk_box_pack_start(GTK_BOX(bd->blendif_box), GTK_WIDGET(header), TRUE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bd->blendif_box), GTK_WIDGET(distancelabel), TRUE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bd->blendif_box), GTK_WIDGET(distanceslider), TRUE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bd->blendif_box), GTK_WIDGET(uplabel), TRUE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bd->blendif_box), GTK_WIDGET(upslider), TRUE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bd->blendif_box), GTK_WIDGET(lowlabel), TRUE, FALSE, 0);
