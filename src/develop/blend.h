@@ -91,6 +91,10 @@ typedef enum dt_develop_mask_combine_mode_t
 
 typedef enum dt_develop_blendif_channels_t
 {
+  DEVELOP_BLENDIF_L_distance = 16,
+  DEVELOP_BLENDIF_A_distance = 17,
+  DEVELOP_BLENDIF_B_distance = 18,
+
   DEVELOP_BLENDIF_L_in = 0,
   DEVELOP_BLENDIF_A_in = 1,
   DEVELOP_BLENDIF_B_in = 2,
@@ -98,6 +102,11 @@ typedef enum dt_develop_blendif_channels_t
   DEVELOP_BLENDIF_L_out = 4,
   DEVELOP_BLENDIF_A_out = 5,
   DEVELOP_BLENDIF_B_out = 6,
+
+  DEVELOP_BLENDIF_GRAY_distance = 16,
+  DEVELOP_BLENDIF_RED_distance = 17
+  DEVELOP_BLENDIF_GREEN_distance = 18
+  DEVELOP_BLENDIF_BLUE_distance = 19,
 
   DEVELOP_BLENDIF_GRAY_in = 0,
   DEVELOP_BLENDIF_RED_in = 1,
@@ -109,11 +118,18 @@ typedef enum dt_develop_blendif_channels_t
   DEVELOP_BLENDIF_GREEN_out = 6,
   DEVELOP_BLENDIF_BLUE_out = 7,
 
+  DEVELOP_BLENDIF_C_distance = 24,
+  DEVELOP_BLENDIF_h_distance = 25,
+
   DEVELOP_BLENDIF_C_in = 8,
   DEVELOP_BLENDIF_h_in = 9,
 
   DEVELOP_BLENDIF_C_out = 12,
   DEVELOP_BLENDIF_h_out = 13,
+
+  DEVELOP_BLENDIF_H_distance = 24,
+  DEVELOP_BLENDIF_S_distance = 25,
+  DEVELOP_BLENDIF_l_distance = 26,
 
   DEVELOP_BLENDIF_H_in = 8,
   DEVELOP_BLENDIF_S_in = 9,
@@ -123,15 +139,15 @@ typedef enum dt_develop_blendif_channels_t
   DEVELOP_BLENDIF_S_out = 13,
   DEVELOP_BLENDIF_l_out = 14,
 
-  DEVELOP_BLENDIF_MAX = 14,
+  DEVELOP_BLENDIF_MAX = 26,
   DEVELOP_BLENDIF_unused = 15,
 
   DEVELOP_BLENDIF_active = 31,
 
-  DEVELOP_BLENDIF_SIZE = 16,
+  DEVELOP_BLENDIF_SIZE = 32,
 
-  DEVELOP_BLENDIF_Lab_MASK = 0x3377,
-  DEVELOP_BLENDIF_RGB_MASK = 0x77FF
+  DEVELOP_BLENDIF_Lab_MASK = 0x3073377,
+  DEVELOP_BLENDIF_RGB_MASK = 0x70F77FF
 } dt_develop_blendif_channels_t;
 
 
