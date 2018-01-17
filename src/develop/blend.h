@@ -347,8 +347,8 @@ typedef struct dt_iop_gui_blend_data_t
   GtkWidget *opacity_slider;
   GtkWidget *radius_slider;
   int tab;
-  int channels[8][2];
-  dt_dev_pixelpipe_display_mask_t display_channel[8][2];
+  int channels[8][3];
+  dt_dev_pixelpipe_display_mask_t display_channel[8][3];
   dt_dev_pixelpipe_display_mask_t save_for_leave;
   int timeout_handle;
   GtkNotebook *channel_tabs;

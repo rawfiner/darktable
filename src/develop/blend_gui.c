@@ -414,7 +414,35 @@ static void _blendop_blendif_radius_callback(GtkWidget *slider, dt_iop_gui_blend
   dt_dev_add_history_item(darktable.develop, data->module, TRUE);
 }
 
-//TODO rawfiner add callback for distance
+static void _blendop_blendif_distance_callback(GtkDarktableGradientSlider *slider, dt_iop_gui_blend_data_t *data)
+{
+  if(darktable.gui->reset) return;
+  dt_develop_blend_params_t *bp = data->module->blend_params;
+
+  int tab = data->tab;
+  int ch = data->channels[tab][3];
+  //TODO check ch value is ok
+
+  float *parameters = &(bp->blendif_parameters[4 * ch]);//TODO rawfiner check that 4*ch is in range
+
+  for(int k = 0; k < 4; k++) parameters[k] = dtgtk_gradient_slider_multivalue_get_value(slider, k);
+
+  for(int k = 0; k < 4; k++)
+  {
+    char text[256];
+    (data->scale_print[tab])(parameters[k], text, sizeof(text));
+    gtk_label_set_text(data->distance_label[k], text);
+  }
+
+  /** de-activate processing of this channel if maximum span is selected */
+  if(parameters[1] == 0.0f && parameters[2] == 1.0f)
+    bp->blendif &= ~(1 << ch);
+  else
+    bp->blendif |= (1 << ch);
+
+  dt_dev_add_history_item(darktable.develop, data->module, TRUE);
+}
+
 static void _blendop_blendif_upper_callback(GtkDarktableGradientSlider *slider, dt_iop_gui_blend_data_t *data)
 {
   if(darktable.gui->reset) return;
@@ -1071,6 +1099,7 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
 
   dtgtk_gradient_slider_multivalue_clear_stops(data->lower_slider);
   dtgtk_gradient_slider_multivalue_clear_stops(data->upper_slider);
+  dtgtk_gradient_slider_multivalue_clear_stops(data->distance_slider);
   //TODO dtgtk_gradient_slider_multivalue_clear_stops(data->distance_slider);
 
   for(int k = 0; k < data->numberstops[tab]; k++)
@@ -1147,24 +1176,34 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
         bd->increments[4] = 1.0f / 360.0f;
         bd->channels[0][0] = DEVELOP_BLENDIF_L_in;
         bd->channels[0][1] = DEVELOP_BLENDIF_L_out;
+        bd->channels[0][2] = DEVELOP_BLENDIF_L_distance;
         bd->channels[1][0] = DEVELOP_BLENDIF_A_in;
         bd->channels[1][1] = DEVELOP_BLENDIF_A_out;
+        bd->channels[1][2] = DEVELOP_BLENDIF_A_distance;
         bd->channels[2][0] = DEVELOP_BLENDIF_B_in;
         bd->channels[2][1] = DEVELOP_BLENDIF_B_out;
+        bd->channels[2][2] = DEVELOP_BLENDIF_B_distance;
         bd->channels[3][0] = DEVELOP_BLENDIF_C_in;
         bd->channels[3][1] = DEVELOP_BLENDIF_C_out;
+        bd->channels[3][2] = DEVELOP_BLENDIF_C_distance;
         bd->channels[4][0] = DEVELOP_BLENDIF_h_in;
         bd->channels[4][1] = DEVELOP_BLENDIF_h_out;
+        bd->channels[4][2] = DEVELOP_BLENDIF_h_distance;
         bd->display_channel[0][0] = DT_DEV_PIXELPIPE_DISPLAY_L;
         bd->display_channel[0][1] = DT_DEV_PIXELPIPE_DISPLAY_L | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[0][2] = DT_DEV_PIXELPIPE_DISPLAY_L | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[1][0] = DT_DEV_PIXELPIPE_DISPLAY_a;
         bd->display_channel[1][1] = DT_DEV_PIXELPIPE_DISPLAY_a | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[1][2] = DT_DEV_PIXELPIPE_DISPLAY_a | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[2][0] = DT_DEV_PIXELPIPE_DISPLAY_b;
         bd->display_channel[2][1] = DT_DEV_PIXELPIPE_DISPLAY_b | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[2][2] = DT_DEV_PIXELPIPE_DISPLAY_b | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[3][0] = DT_DEV_PIXELPIPE_DISPLAY_LCH_C;
         bd->display_channel[3][1] = DT_DEV_PIXELPIPE_DISPLAY_LCH_C | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[3][2] = DT_DEV_PIXELPIPE_DISPLAY_LCH_C | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[4][0] = DT_DEV_PIXELPIPE_DISPLAY_LCH_h;
         bd->display_channel[4][1] = DT_DEV_PIXELPIPE_DISPLAY_LCH_h | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[4][2] = DT_DEV_PIXELPIPE_DISPLAY_LCH_h | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->colorstops[0] = _gradient_L;
         bd->numberstops[0] = sizeof(_gradient_L) / sizeof(dt_iop_gui_blendif_colorstop_t);
         bd->colorstops[1] = _gradient_a;
@@ -1196,32 +1235,46 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
         bd->increments[6] = 1.0f / 100.0f;
         bd->channels[0][0] = DEVELOP_BLENDIF_GRAY_in;
         bd->channels[0][1] = DEVELOP_BLENDIF_GRAY_out;
+        bd->channels[0][2] = DEVELOP_BLENDIF_GRAY_distance;
         bd->channels[1][0] = DEVELOP_BLENDIF_RED_in;
         bd->channels[1][1] = DEVELOP_BLENDIF_RED_out;
+        bd->channels[1][2] = DEVELOP_BLENDIF_RED_distance;
         bd->channels[2][0] = DEVELOP_BLENDIF_GREEN_in;
         bd->channels[2][1] = DEVELOP_BLENDIF_GREEN_out;
+        bd->channels[2][2] = DEVELOP_BLENDIF_GREEN_distance;
         bd->channels[3][0] = DEVELOP_BLENDIF_BLUE_in;
         bd->channels[3][1] = DEVELOP_BLENDIF_BLUE_out;
+        bd->channels[3][2] = DEVELOP_BLENDIF_BLUE_distance;
         bd->channels[4][0] = DEVELOP_BLENDIF_H_in;
         bd->channels[4][1] = DEVELOP_BLENDIF_H_out;
+        bd->channels[4][2] = DEVELOP_BLENDIF_H_distance;
         bd->channels[5][0] = DEVELOP_BLENDIF_S_in;
         bd->channels[5][1] = DEVELOP_BLENDIF_S_out;
+        bd->channels[5][2] = DEVELOP_BLENDIF_S_distance;
         bd->channels[6][0] = DEVELOP_BLENDIF_l_in;
         bd->channels[6][1] = DEVELOP_BLENDIF_l_out;
+        bd->channels[6][2] = DEVELOP_BLENDIF_l_distance;
         bd->display_channel[0][0] = DT_DEV_PIXELPIPE_DISPLAY_GRAY;
         bd->display_channel[0][1] = DT_DEV_PIXELPIPE_DISPLAY_GRAY | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[0][2] = DT_DEV_PIXELPIPE_DISPLAY_GRAY | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[1][0] = DT_DEV_PIXELPIPE_DISPLAY_R;
         bd->display_channel[1][1] = DT_DEV_PIXELPIPE_DISPLAY_R | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[1][2] = DT_DEV_PIXELPIPE_DISPLAY_R | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[2][0] = DT_DEV_PIXELPIPE_DISPLAY_G;
         bd->display_channel[2][1] = DT_DEV_PIXELPIPE_DISPLAY_G | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[2][2] = DT_DEV_PIXELPIPE_DISPLAY_G | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[3][0] = DT_DEV_PIXELPIPE_DISPLAY_B;
         bd->display_channel[3][1] = DT_DEV_PIXELPIPE_DISPLAY_B | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[3][2] = DT_DEV_PIXELPIPE_DISPLAY_B | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[4][0] = DT_DEV_PIXELPIPE_DISPLAY_HSL_H;
         bd->display_channel[4][1] = DT_DEV_PIXELPIPE_DISPLAY_HSL_H | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[4][2] = DT_DEV_PIXELPIPE_DISPLAY_HSL_H | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[5][0] = DT_DEV_PIXELPIPE_DISPLAY_HSL_S;
         bd->display_channel[5][1] = DT_DEV_PIXELPIPE_DISPLAY_HSL_S | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[5][2] = DT_DEV_PIXELPIPE_DISPLAY_HSL_S | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->display_channel[6][0] = DT_DEV_PIXELPIPE_DISPLAY_HSL_l;
         bd->display_channel[6][1] = DT_DEV_PIXELPIPE_DISPLAY_HSL_l | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT;
+        bd->display_channel[6][2] = DT_DEV_PIXELPIPE_DISPLAY_HSL_l | DT_DEV_PIXELPIPE_DISPLAY_DISTANCE;
         bd->colorstops[0] = _gradient_gray;
         bd->numberstops[0] = sizeof(_gradient_gray) / sizeof(dt_iop_gui_blendif_colorstop_t);
         bd->colorstops[1] = _gradient_red;
@@ -1360,7 +1413,7 @@ void dt_iop_gui_init_blendif(GtkBox *blendw, dt_iop_module_t *module)
 
     g_signal_connect(G_OBJECT(bd->channel_tabs), "switch_page", G_CALLBACK(_blendop_blendif_tab_switch), bd);
 
-    g_signal_connect(G_OBJECT(bd->distance_slider), "value-changed", G_CALLBACK(_blendop_blendif_upper_callback),
+    g_signal_connect(G_OBJECT(bd->distance_slider), "value-changed", G_CALLBACK(_blendop_blendif_distance_callback),
                      bd);
 
     g_signal_connect(G_OBJECT(bd->upper_slider), "value-changed", G_CALLBACK(_blendop_blendif_upper_callback),
