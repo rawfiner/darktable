@@ -104,8 +104,8 @@ typedef enum dt_develop_blendif_channels_t
   DEVELOP_BLENDIF_B_out = 6,
 
   DEVELOP_BLENDIF_GRAY_distance = 16,
-  DEVELOP_BLENDIF_RED_distance = 17
-  DEVELOP_BLENDIF_GREEN_distance = 18
+  DEVELOP_BLENDIF_RED_distance = 17,
+  DEVELOP_BLENDIF_GREEN_distance = 18,
   DEVELOP_BLENDIF_BLUE_distance = 19,
 
   DEVELOP_BLENDIF_GRAY_in = 0,
