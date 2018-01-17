@@ -414,6 +414,7 @@ static void _blendop_blendif_radius_callback(GtkWidget *slider, dt_iop_gui_blend
   dt_dev_add_history_item(darktable.develop, data->module, TRUE);
 }
 
+//TODO rawfiner add callback for distance
 static void _blendop_blendif_upper_callback(GtkDarktableGradientSlider *slider, dt_iop_gui_blend_data_t *data)
 {
   if(darktable.gui->reset) return;
@@ -1050,14 +1051,18 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
   for(int k = 0; k < 4; k++)
   {
     dtgtk_gradient_slider_multivalue_set_value(data->lower_slider, iparameters[k], k);
+    dtgtk_gradient_slider_multivalue_set_value(data->distance_slider, iparameters[k], k); //TODO use distance parameters
     dtgtk_gradient_slider_multivalue_set_value(data->upper_slider, oparameters[k], k);
     dtgtk_gradient_slider_multivalue_set_resetvalue(data->lower_slider, idefaults[k], k);
+    dtgtk_gradient_slider_multivalue_set_resetvalue(data->distance_slider, idefaults[k], k); //TODO use distance defaults
     dtgtk_gradient_slider_multivalue_set_resetvalue(data->upper_slider, odefaults[k], k);
   }
 
   //TODO rawfiner
   for(int k = 0; k < 4; k++)
   {
+    (data->scale_print[tab])(iparameters[k], text, sizeof(text));//TODO
+    gtk_label_set_text(data->distance_label[k], text);
     (data->scale_print[tab])(iparameters[k], text, sizeof(text));
     gtk_label_set_text(data->lower_label[k], text);
     (data->scale_print[tab])(oparameters[k], text, sizeof(text));
@@ -1070,12 +1075,15 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
 
   for(int k = 0; k < data->numberstops[tab]; k++)
   {
+    dtgtk_gradient_slider_multivalue_set_stop(data->distance_slider, (data->colorstops[tab])[k].stoppoint,
+                                              (data->colorstops[tab])[k].color); //TODO color of slider comes from here. Add special color for distance ?
     dtgtk_gradient_slider_multivalue_set_stop(data->lower_slider, (data->colorstops[tab])[k].stoppoint,
                                               (data->colorstops[tab])[k].color);
     dtgtk_gradient_slider_multivalue_set_stop(data->upper_slider, (data->colorstops[tab])[k].stoppoint,
                                               (data->colorstops[tab])[k].color);
   }
 
+  dtgtk_gradient_slider_multivalue_set_increment(data->distance_slider, data->increments[tab]);
   dtgtk_gradient_slider_multivalue_set_increment(data->lower_slider, data->increments[tab]);
   dtgtk_gradient_slider_multivalue_set_increment(data->upper_slider, data->increments[tab]);
 
