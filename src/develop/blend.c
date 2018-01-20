@@ -266,7 +266,10 @@ static inline float _blendif_factor(dt_iop_colorspace_type_t cst, const float *i
           = CLAMP_RANGE((output[1] + 128.0f) / 256.0f, 0.0f, 1.0f); // a scaled to 0..1
       scaled[DEVELOP_BLENDIF_B_out]
           = CLAMP_RANGE((output[2] + 128.0f) / 256.0f, 0.0f, 1.0f); // b scaled to 0..1
+
       scaled[DEVELOP_BLENDIF_L_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_L_out]-scaled[DEVELOP_BLENDIF_L_in]);
+      scaled[DEVELOP_BLENDIF_A_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_A_out]-scaled[DEVELOP_BLENDIF_A_in]);
+      scaled[DEVELOP_BLENDIF_B_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_B_out]-scaled[DEVELOP_BLENDIF_B_in]);
 
       if(blendif & 0x7f00) // do we need to consider LCh ?
       {
@@ -282,6 +285,9 @@ static inline float _blendif_factor(dt_iop_colorspace_type_t cst, const float *i
         scaled[DEVELOP_BLENDIF_C_out] = CLAMP_RANGE(LCH_output[1] / (128.0f * sqrtf(2.0f)), 0.0f,
                                                     1.0f);                      // C scaled to 0..1
         scaled[DEVELOP_BLENDIF_h_out] = CLAMP_RANGE(LCH_output[2], 0.0f, 1.0f); // h scaled to 0..1
+
+        scaled[DEVELOP_BLENDIF_C_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_C_out]-scaled[DEVELOP_BLENDIF_C_in]);
+        scaled[DEVELOP_BLENDIF_h_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_h_out]-scaled[DEVELOP_BLENDIF_h_in]);
       }
 
       channel_mask = DEVELOP_BLENDIF_Lab_MASK;
@@ -300,6 +306,11 @@ static inline float _blendif_factor(dt_iop_colorspace_type_t cst, const float *i
       scaled[DEVELOP_BLENDIF_GREEN_out] = CLAMP_RANGE(output[1], 0.0f, 1.0f); // Green
       scaled[DEVELOP_BLENDIF_BLUE_out] = CLAMP_RANGE(output[2], 0.0f, 1.0f);  // Blue
 
+      scaled[DEVELOP_BLENDIF_RED_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_RED_out]-scaled[DEVELOP_BLENDIF_RED_in]);
+      scaled[DEVELOP_BLENDIF_GREEN_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_GREEN_out]-scaled[DEVELOP_BLENDIF_GREEN_in]);
+      scaled[DEVELOP_BLENDIF_BLUE_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_BLUE_out]-scaled[DEVELOP_BLENDIF_BLUE_in]);
+      scaled[DEVELOP_BLENDIF_GRAY_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_GRAY_out]-scaled[DEVELOP_BLENDIF_GRAY_in]);
+
       if(blendif & 0x7f00) // do we need to consider HSL ?
       {
         float HSL_input[3];
@@ -314,6 +325,10 @@ static inline float _blendif_factor(dt_iop_colorspace_type_t cst, const float *i
         scaled[DEVELOP_BLENDIF_H_out] = CLAMP_RANGE(HSL_output[0], 0.0f, 1.0f); // H scaled to 0..1
         scaled[DEVELOP_BLENDIF_S_out] = CLAMP_RANGE(HSL_output[1], 0.0f, 1.0f); // S scaled to 0..1
         scaled[DEVELOP_BLENDIF_l_out] = CLAMP_RANGE(HSL_output[2], 0.0f, 1.0f); // L scaled to 0..1
+
+        scaled[DEVELOP_BLENDIF_H_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_H_out]-scaled[DEVELOP_BLENDIF_H_in]);
+        scaled[DEVELOP_BLENDIF_S_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_S_out]-scaled[DEVELOP_BLENDIF_S_in]);
+        scaled[DEVELOP_BLENDIF_l_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_l_out]-scaled[DEVELOP_BLENDIF_l_in]);
       }
 
       channel_mask = DEVELOP_BLENDIF_RGB_MASK;
@@ -431,7 +446,6 @@ static void _blend_make_mask(const _blend_buffer_desc_t *bd, const unsigned int 
     opacity = (mask_combine & DEVELOP_COMBINE_INV) ? 1.0f - opacity : opacity;
     mask[i] = opacity * gopacity;
   }
-  printf("\n\n");
 }
 
 /* normal blend with clamping */
