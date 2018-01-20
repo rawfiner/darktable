@@ -266,6 +266,7 @@ static inline float _blendif_factor(dt_iop_colorspace_type_t cst, const float *i
           = CLAMP_RANGE((output[1] + 128.0f) / 256.0f, 0.0f, 1.0f); // a scaled to 0..1
       scaled[DEVELOP_BLENDIF_B_out]
           = CLAMP_RANGE((output[2] + 128.0f) / 256.0f, 0.0f, 1.0f); // b scaled to 0..1
+      scaled[DEVELOP_BLENDIF_L_distance] = 1.0f - fabs(scaled[DEVELOP_BLENDIF_L_out]-scaled[DEVELOP_BLENDIF_L_in]);
 
       if(blendif & 0x7f00) // do we need to consider LCh ?
       {
@@ -328,7 +329,7 @@ static inline float _blendif_factor(dt_iop_colorspace_type_t cst, const float *i
 
     if((blendif & (1 << ch)) == 0) // deal with channels where sliders span the whole range
     {
-      result *= !(blendif & (1 << (ch + 16))) == !(mask_combine & DEVELOP_COMBINE_INCL) ? 1.0f : 0.0f;
+      result *= !(blendif & (1 << (ch + 32))) == !(mask_combine & DEVELOP_COMBINE_INCL) ? 1.0f : 0.0f;
       continue;
     }
 
@@ -353,7 +354,7 @@ static inline float _blendif_factor(dt_iop_colorspace_type_t cst, const float *i
     else
       factor = 0.0f;
 
-    if((blendif & (1 << (ch + 16))) != 0) factor = 1.0f - factor; // inverted channel?
+    if((blendif & (1 << (ch + 32))) != 0) factor = 1.0f - factor; // inverted channel?
 
     result *= ((mask_combine & DEVELOP_COMBINE_INCL) ? 1.0f - factor : factor);
   }
@@ -430,6 +431,7 @@ static void _blend_make_mask(const _blend_buffer_desc_t *bd, const unsigned int 
     opacity = (mask_combine & DEVELOP_COMBINE_INV) ? 1.0f - opacity : opacity;
     mask[i] = opacity * gopacity;
   }
+  printf("\n\n");
 }
 
 /* normal blend with clamping */

@@ -420,10 +420,9 @@ static void _blendop_blendif_distance_callback(GtkDarktableGradientSlider *slide
   dt_develop_blend_params_t *bp = data->module->blend_params;
 
   int tab = data->tab;
-  int ch = data->channels[tab][3];
-  //TODO check ch value is ok
+  int ch = data->channels[tab][2];
 
-  float *parameters = &(bp->blendif_parameters[4 * ch]);//TODO rawfiner check that 4*ch is in range
+  float *parameters = &(bp->blendif_parameters[4 * ch]);
 
   for(int k = 0; k < 4; k++) parameters[k] = dtgtk_gradient_slider_multivalue_get_value(slider, k);
 
@@ -508,14 +507,18 @@ static void _blendop_blendif_polarity_callback(GtkToggleButton *togglebutton, dt
   dt_develop_blend_params_t *bp = data->module->blend_params;
 
   int tab = data->tab;
-  int ch = GTK_WIDGET(togglebutton) == data->lower_polarity ? data->channels[tab][0] : data->channels[tab][1];
+  //TODO rawfiner clean this
+  int ch = GTK_WIDGET(togglebutton) == data->lower_polarity ? data->channels[tab][0]
+                                                            : (data->upper_polarity ? data->channels[tab][1]
+                                                                                    : data->channels[tab][2]);
   GtkDarktableGradientSlider *slider = GTK_WIDGET(togglebutton) == data->lower_polarity ? data->lower_slider
-                                                                                        : data->upper_slider;
+                                                                                        : (data->upper_polarity ? data->upper_slider
+                                                                                                                : data->distance_slider);
 
   if(!active)
-    bp->blendif |= (1 << (ch + 16));
+    bp->blendif |= (1 << (ch + 32));//TODO rawfiner replace 16 by 32
   else
-    bp->blendif &= ~(1 << (ch + 16));
+    bp->blendif &= ~(1 << (ch + 32));
 
   dtgtk_gradient_slider_multivalue_set_marker(
       slider, active ? GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG : GRADIENT_SLIDER_MARKER_UPPER_OPEN_BIG, 0);
@@ -626,16 +629,16 @@ static void _blendop_blendif_invert(GtkButton *button, dt_iop_module_t *module)
 
   dt_iop_gui_blend_data_t *data = module->blend_data;
 
-  unsigned int toggle_mask = 0;
+  uint64_t toggle_mask = 0;
 
   switch(data->csp)
   {
     case iop_cs_Lab:
-      toggle_mask = DEVELOP_BLENDIF_Lab_MASK << 16;
+      toggle_mask = (uint64_t)DEVELOP_BLENDIF_Lab_MASK << 32; //TODO rawfiner make every mask uint64_t to prevent overflow (higher bits are for inverted masks)
       break;
 
     case iop_cs_rgb:
-      toggle_mask = DEVELOP_BLENDIF_RGB_MASK << 16;
+      toggle_mask = (uint64_t)DEVELOP_BLENDIF_RGB_MASK << 32;
       break;
 
     case iop_cs_RAW:
@@ -1019,14 +1022,17 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
   int tab = data->tab;
   int in_ch = data->channels[tab][0];
   int out_ch = data->channels[tab][1];
+  int distance_ch = data->channels[tab][2];
 
   float *iparameters = &(bp->blendif_parameters[4 * in_ch]);
   float *oparameters = &(bp->blendif_parameters[4 * out_ch]);
+  float *dparameters = &(bp->blendif_parameters[4 * distance_ch]);
   float *idefaults = &(dp->blendif_parameters[4 * in_ch]);
   float *odefaults = &(dp->blendif_parameters[4 * out_ch]);
+  float *ddefaults = &(dp->blendif_parameters[4 * distance_ch]);
 
-  int ipolarity = !(bp->blendif & (1 << (in_ch + 16)));
-  int opolarity = !(bp->blendif & (1 << (out_ch + 16)));
+  int ipolarity = !(bp->blendif & (1 << (in_ch + 32)));
+  int opolarity = !(bp->blendif & (1 << (out_ch + 32)));
   char text[256];
 
   int reset = darktable.gui->reset;
@@ -1075,21 +1081,19 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
       data->distance_slider,
       GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG, 3);
 
-  //TODO rawfiner add the values for distance
   for(int k = 0; k < 4; k++)
   {
     dtgtk_gradient_slider_multivalue_set_value(data->lower_slider, iparameters[k], k);
-    dtgtk_gradient_slider_multivalue_set_value(data->distance_slider, iparameters[k], k); //TODO use distance parameters
+    dtgtk_gradient_slider_multivalue_set_value(data->distance_slider, dparameters[k], k);
     dtgtk_gradient_slider_multivalue_set_value(data->upper_slider, oparameters[k], k);
     dtgtk_gradient_slider_multivalue_set_resetvalue(data->lower_slider, idefaults[k], k);
-    dtgtk_gradient_slider_multivalue_set_resetvalue(data->distance_slider, idefaults[k], k); //TODO use distance defaults
+    dtgtk_gradient_slider_multivalue_set_resetvalue(data->distance_slider, ddefaults[k], k);
     dtgtk_gradient_slider_multivalue_set_resetvalue(data->upper_slider, odefaults[k], k);
   }
 
-  //TODO rawfiner
   for(int k = 0; k < 4; k++)
   {
-    (data->scale_print[tab])(iparameters[k], text, sizeof(text));//TODO
+    (data->scale_print[tab])(dparameters[k], text, sizeof(text));
     gtk_label_set_text(data->distance_label[k], text);
     (data->scale_print[tab])(iparameters[k], text, sizeof(text));
     gtk_label_set_text(data->lower_label[k], text);
@@ -1100,7 +1104,6 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
   dtgtk_gradient_slider_multivalue_clear_stops(data->lower_slider);
   dtgtk_gradient_slider_multivalue_clear_stops(data->upper_slider);
   dtgtk_gradient_slider_multivalue_clear_stops(data->distance_slider);
-  //TODO dtgtk_gradient_slider_multivalue_clear_stops(data->distance_slider);
 
   for(int k = 0; k < data->numberstops[tab]; k++)
   {
