@@ -53,8 +53,9 @@ DT_MODULE_INTROSPECTION(3, dt_iop_denoiseprofile_params_t)
 
 typedef struct dt_iop_denoiseprofile_params_t
 {
-  float radius;     // search radius
+  float radius;     // size of block to match
   float strength;   // noise level after equalization
+  float nbhood;     // neighborhood for searching
   float a[3], b[3]; // fit for poissonian-gaussian noise per color channel.
   dt_iop_denoiseprofile_mode_t mode; // switch between nlmeans and wavelets
 } dt_iop_denoiseprofile_params_t;
@@ -65,6 +66,7 @@ typedef struct dt_iop_denoiseprofile_gui_data_t
   GtkWidget *mode;
   GtkWidget *radius;
   GtkWidget *strength;
+  GtkWidget *nbhood;
   dt_noiseprofile_t interpolated; // don't use name, maker or model, they may point to garbage
   GList *profiles;
 } dt_iop_denoiseprofile_gui_data_t;
@@ -172,7 +174,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   {
     const int P
         = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // pixel filter size
-    const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // nbhood
+    const int K = ceilf(d->nbhood * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // nbhood
 
     tiling->factor = 4.0f + 0.25f * NUM_BUCKETS; // in + out + (2 + NUM_BUCKETS * 0.25) tmp
     tiling->maxbuf = 1.0f;
@@ -892,7 +894,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   // adjust to zoom size:
   const float scale = fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
-  const int K = ceilf(7 * scale);         // nbhood
+  const int K = ceilf(d->nbhood * scale); // nbhood
 
   // P == 0 : this will degenerate to a (fast) bilateral filter.
 
@@ -1040,7 +1042,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   // adjust to zoom size:
   const float scale = fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
-  const int K = ceilf(7 * scale);         // nbhood
+  const int K = ceilf(d->nbhood * scale); // nbhood
 
   // P == 0 : this will degenerate to a (fast) bilateral filter.
 
@@ -1261,7 +1263,7 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
 
   const float scale = fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
-  const int K = ceilf(7 * scale);         // nbhood
+  const int K = ceilf(d->nbhood * scale);         // nbhood
   const float norm = 0.015f / (2 * P + 1);
 
 
@@ -1834,6 +1836,7 @@ void reload_defaults(dt_iop_module_t *module)
 
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->radius = 1.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->strength = 1.0f;
+    ((dt_iop_denoiseprofile_params_t *)module->default_params)->nbhood = 7.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->mode = MODE_NLMEANS;
     for(int k = 0; k < 3; k++)
     {
@@ -1983,10 +1986,13 @@ static void mode_callback(GtkWidget *w, dt_iop_module_t *self)
   dt_iop_denoiseprofile_params_t *p = (dt_iop_denoiseprofile_params_t *)self->params;
   dt_iop_denoiseprofile_gui_data_t *g = (dt_iop_denoiseprofile_gui_data_t *)self->gui_data;
   p->mode = dt_bauhaus_combobox_get(w);
-  if(p->mode == MODE_WAVELETS)
+  if(p->mode == MODE_WAVELETS) {
     gtk_widget_set_visible(g->radius, FALSE);
-  else
+    gtk_widget_set_visible(g->nbhood, FALSE);
+  } else {
     gtk_widget_set_visible(g->radius, TRUE);
+    gtk_widget_set_visible(g->nbhood, TRUE);
+  }
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -2004,6 +2010,13 @@ static void strength_callback(GtkWidget *w, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
+static void nbhood_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  dt_iop_denoiseprofile_params_t *p = (dt_iop_denoiseprofile_params_t *)self->params;
+  p->nbhood = dt_bauhaus_slider_get(w);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
 void gui_update(dt_iop_module_t *self)
 {
   // let gui slider match current parameters:
@@ -2011,12 +2024,16 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_denoiseprofile_params_t *p = (dt_iop_denoiseprofile_params_t *)self->params;
   dt_bauhaus_slider_set(g->radius, p->radius);
   dt_bauhaus_slider_set(g->strength, p->strength);
+  dt_bauhaus_slider_set(g->nbhood, p->nbhood);
   dt_bauhaus_combobox_set(g->mode, p->mode);
   dt_bauhaus_combobox_set(g->profile, -1);
-  if(p->mode == MODE_WAVELETS)
+  if(p->mode == MODE_WAVELETS) {
     gtk_widget_set_visible(g->radius, FALSE);
-  else
+    gtk_widget_set_visible(g->nbhood, FALSE);
+  } else {
     gtk_widget_set_visible(g->radius, TRUE);
+    gtk_widget_set_visible(g->nbhood, TRUE);
+  }
   if(p->a[0] == -1.0)
   {
     dt_bauhaus_combobox_set(g->profile, 0);
@@ -2048,15 +2065,19 @@ void gui_init(dt_iop_module_t *self)
   g->mode = dt_bauhaus_combobox_new(self);
   g->radius = dt_bauhaus_slider_new_with_range(self, 0.0f, 4.0f, 1., 1.f, 0);
   g->strength = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .05, 1.f, 3);
+  g->nbhood = dt_bauhaus_slider_new_with_range(self, 1.0f, 40.0f, 1., 7.f, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), g->profile, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), g->mode, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), g->radius, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), g->strength, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(self->widget), g->nbhood, TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->profile, NULL, _("profile"));
   dt_bauhaus_widget_set_label(g->mode, NULL, _("mode"));
   dt_bauhaus_widget_set_label(g->radius, NULL, _("patch size"));
   dt_bauhaus_slider_set_format(g->radius, "%.0f");
   dt_bauhaus_widget_set_label(g->strength, NULL, _("strength"));
+  dt_bauhaus_widget_set_label(g->nbhood, NULL, _("size of neighborhood for patch search"));
+  dt_bauhaus_slider_set_format(g->nbhood, "%.0f");
   dt_bauhaus_combobox_add(g->mode, _("non-local means"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
   gtk_widget_set_tooltip_text(g->profile, _("profile used for variance stabilization"));
@@ -2069,6 +2090,7 @@ void gui_init(dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
   g_signal_connect(G_OBJECT(g->radius), "value-changed", G_CALLBACK(radius_callback), self);
   g_signal_connect(G_OBJECT(g->strength), "value-changed", G_CALLBACK(strength_callback), self);
+  g_signal_connect(G_OBJECT(g->nbhood), "value-changed", G_CALLBACK(nbhood_callback), self);
 }
 
 void gui_cleanup(dt_iop_module_t *self)
