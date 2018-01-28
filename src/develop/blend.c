@@ -3094,7 +3094,7 @@ int dt_develop_blend_process_cl(struct dt_iop_module_t *self, struct dt_dev_pixe
   const int blendflag = self->flags() & IOP_FLAGS_BLEND_ONLY_LIGHTNESS;
   const int width = roi_out->width;
   const int height = roi_out->height;
-  const unsigned blendif = d->blendif;
+  const uint64_t blendif = d->blendif;
   const int maskblur = fabs(d->radius) <= 0.1f ? 0 : 1;
   const int gaussian = d->radius > 0.0f ? 1 : 0;
   const float radius = fabs(d->radius);

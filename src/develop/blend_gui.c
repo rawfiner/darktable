@@ -507,13 +507,19 @@ static void _blendop_blendif_polarity_callback(GtkToggleButton *togglebutton, dt
   dt_develop_blend_params_t *bp = data->module->blend_params;
 
   int tab = data->tab;
-  //TODO rawfiner clean this
-  int ch = GTK_WIDGET(togglebutton) == data->lower_polarity ? data->channels[tab][0]
-                                                            : (data->upper_polarity ? data->channels[tab][1]
-                                                                                    : data->channels[tab][2]);
-  GtkDarktableGradientSlider *slider = GTK_WIDGET(togglebutton) == data->lower_polarity ? data->lower_slider
-                                                                                        : (data->upper_polarity ? data->upper_slider
-                                                                                                                : data->distance_slider);
+
+  int ch;
+  GtkDarktableGradientSlider *slider;
+  if (GTK_WIDGET(togglebutton) == data->lower_polarity) {
+    ch = data->channels[tab][0];
+    slider = data->lower_slider;
+  } else if (GTK_WIDGET(togglebutton) == data->upper_polarity) {
+    ch = data->channels[tab][1];
+    slider = data->upper_slider;
+  } else {
+    ch = data->channels[tab][2];
+    slider = data->distance_slider;
+  }
 
   if(!active)
     bp->blendif |= (1 << (ch + 32));//TODO rawfiner replace 16 by 32
@@ -1033,6 +1039,7 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
 
   int ipolarity = !(bp->blendif & (1 << (in_ch + 32)));
   int opolarity = !(bp->blendif & (1 << (out_ch + 32)));
+  int dpolarity = !(bp->blendif & (1 << (distance_ch + 32)));
   char text[256];
 
   int reset = darktable.gui->reset;
@@ -1067,19 +1074,18 @@ void dt_iop_gui_update_blendif(dt_iop_module_t *module)
       data->upper_slider,
       opolarity ? GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG : GRADIENT_SLIDER_MARKER_UPPER_OPEN_BIG, 3);
 
-  //TODO rawfiner this is temporary. Set the marker the correct way by getting the polarity
   dtgtk_gradient_slider_multivalue_set_marker(
       data->distance_slider,
-      GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG, 0);
+      dpolarity ? GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG : GRADIENT_SLIDER_MARKER_UPPER_OPEN_BIG, 0);
   dtgtk_gradient_slider_multivalue_set_marker(
       data->distance_slider,
-      GRADIENT_SLIDER_MARKER_UPPER_FILLED_BIG, 1);
+      dpolarity ? GRADIENT_SLIDER_MARKER_UPPER_FILLED_BIG : GRADIENT_SLIDER_MARKER_LOWER_FILLED_BIG, 1);
   dtgtk_gradient_slider_multivalue_set_marker(
       data->distance_slider,
-      GRADIENT_SLIDER_MARKER_UPPER_FILLED_BIG, 2);
+      dpolarity ? GRADIENT_SLIDER_MARKER_UPPER_FILLED_BIG : GRADIENT_SLIDER_MARKER_LOWER_FILLED_BIG, 2);
   dtgtk_gradient_slider_multivalue_set_marker(
       data->distance_slider,
-      GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG, 3);
+      dpolarity ? GRADIENT_SLIDER_MARKER_LOWER_OPEN_BIG : GRADIENT_SLIDER_MARKER_UPPER_OPEN_BIG, 3);
 
   for(int k = 0; k < 4; k++)
   {

@@ -266,7 +266,7 @@ typedef struct dt_develop_blend_params_t
   /** id of mask in current pipeline */
   uint32_t mask_id;
   /** blendif mask */
-  uint32_t blendif;
+  uint64_t blendif;
   /** blur radius */
   float radius;
   /** some reserved fields for future use */
