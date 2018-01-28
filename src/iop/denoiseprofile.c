@@ -1986,10 +1986,13 @@ static void mode_callback(GtkWidget *w, dt_iop_module_t *self)
   dt_iop_denoiseprofile_params_t *p = (dt_iop_denoiseprofile_params_t *)self->params;
   dt_iop_denoiseprofile_gui_data_t *g = (dt_iop_denoiseprofile_gui_data_t *)self->gui_data;
   p->mode = dt_bauhaus_combobox_get(w);
-  if(p->mode == MODE_WAVELETS) {
+  if(p->mode == MODE_WAVELETS)
+  {
     gtk_widget_set_visible(g->radius, FALSE);
     gtk_widget_set_visible(g->nbhood, FALSE);
-  } else {
+  }
+  else
+  {
     gtk_widget_set_visible(g->radius, TRUE);
     gtk_widget_set_visible(g->nbhood, TRUE);
   }
@@ -2027,10 +2030,13 @@ void gui_update(dt_iop_module_t *self)
   dt_bauhaus_slider_set(g->nbhood, p->nbhood);
   dt_bauhaus_combobox_set(g->mode, p->mode);
   dt_bauhaus_combobox_set(g->profile, -1);
-  if(p->mode == MODE_WAVELETS) {
+  if(p->mode == MODE_WAVELETS)
+  {
     gtk_widget_set_visible(g->radius, FALSE);
     gtk_widget_set_visible(g->nbhood, FALSE);
-  } else {
+  }
+  else
+  {
     gtk_widget_set_visible(g->radius, TRUE);
     gtk_widget_set_visible(g->nbhood, TRUE);
   }
