@@ -355,7 +355,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 {
   dt_iop_nlmeans_params_t *d = (dt_iop_nlmeans_params_t *)piece->data;
   const int P = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // pixel filter size
-  const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));         // nbhood
+  const int K = ceilf(9 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));         // nbhood
 
   tiling->factor = 2.0f + 1.0f + 0.25 * NUM_BUCKETS; // in + out + tmp
   tiling->maxbuf = 1.0f;
@@ -373,7 +373,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const int ch = piece->colors;
   // adjust to zoom size:
   const int P = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // pixel filter size
-  int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));         // nbhood
+  int K = ceilf(9 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));         // nbhood
 //  float sharpness = 3000.0f / (1.0f + 10.0f * d->strength);
   if(P < 1)
   {
@@ -447,7 +447,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   // general case: center of the image
   #ifdef _OPENMP
-  #pragma omp parallel for schedule(static) default(none) shared(K, outp, inp)
+  #pragma omp parallel for schedule(static) default(none) shared(K, outp, inp, global_std_dev)
   #endif
   for (int row = K+P; row < roi_out->height-K-P; row++)
   {
@@ -456,7 +456,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     {
       int index = 4 * (row * roi_out->width + col);
       float sum_weights = 0.0f;
-      float new_value = 0.0f;
+      double new_value = 0.0f;
 
       float ref_mean = 0.0f;
       for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
@@ -467,6 +467,38 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
         }
       }
       ref_mean = ref_mean / (float)(P * P);
+      float ref_var = 0.0f;
+      float ref_l2_var = 0.0f;
+      for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
+      {
+        for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
+        {
+          float tmp = inp[4 * ((row + row_offset_P) * roi_out->width + (col + col_offset_P))];
+          tmp = tmp - ref_mean;
+          ref_var += tmp * tmp;
+        }
+      }
+      ref_l2_var = ref_var;
+      ref_var = ref_var / (float)(P * P);
+
+      double local_std_dev = 0.0f;
+      {
+        float* in = (float*)ivoid;
+        for (int i = -P-K; i <= P+K; i++)
+        {
+          for (int j = -P-K; j <= P+K; j++)
+          {
+            float tmp = 0.0f;
+            tmp = 4 * in[4 * ((row + i) * roi_out->width + col + j)]
+              -2 * (in[4 * ((row + i-1) * roi_out->width + col +j)] + in[4 * ((row + i+1) * roi_out->width + col+j)] + in[4 * ((row+i) * roi_out->width + col+(j-1))] + in[4 * ((row+i) * roi_out->width + col+(j+1))])
+                + in[4 * ((row+i-1) * roi_out->width + col +(j-1))] + in[4 * ((row+i+1) * roi_out->width + col+(j+1))] + in[4 * ((row+i+1) * roi_out->width + col+(j-1))] + in[4 * ((row+i-1) * roi_out->width + col+(j+1))];
+            tmp = fabs(tmp);
+            local_std_dev += tmp;
+          }
+        }
+      }
+      local_std_dev = 1.253f * local_std_dev / (6 * (P+K+1) * (P+K+1));
+      global_std_dev = local_std_dev;
 
       float max_weight = 0.0f;
       // search for patches at a distance <= K
@@ -484,51 +516,76 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
             }
           }
           patch_mean = patch_mean / (float)(P * P);
+          float patch_var = 0.0f;
+          float patch_l2_var = 0.0f;
+          float l2_cross_patch_ref = 0.0f;
+          for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
+          {
+            for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
+            {
+              float tmp = inp[4 * ((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))];
+              tmp = tmp - patch_mean;
+              patch_var += tmp * tmp;
+              float tmp_ref = inp[4 * ((row + row_offset_P) * roi_out->width + (col + col_offset_P))];
+              tmp_ref = tmp_ref - ref_mean;
+              tmp = tmp - tmp_ref;
+              l2_cross_patch_ref += tmp * tmp;
+            }
+          }
+          patch_l2_var = patch_var;
+          patch_var = patch_var / (float)(P * P);
           // float diff_means = fabs(patch_mean - ref_mean);
           // if ((diff_means > 10 * global_std_dev) || (diff_means < global_std_dev)) {
-             patch_mean = 0.0f;
-             ref_mean = 0.0f;
+             //patch_mean = 0.0f;
+             //ref_mean = 0.0f;
           // }
           //patch_mean = patch_mean * diff_means;
           //ref_mean = ref_mean * diff_means;
           //patch_mean = 0.0f;
           //ref_mean = 0.0f;
 
+          float C1 = 0.01 * 100.0f /* max for channel L */;
+          C1 = C1 * C1;
+          float C2 = 0.03 * 100.0f;
+          C2 = C2 * C2;
           // compute weight
           float weight = 0.0f;
           //float max_diff = 0.0f;
+          float S1 = (2 * ref_mean * patch_mean + C1) / (ref_mean * ref_mean + patch_mean * patch_mean + C1);
+          float S2 = 0.0f;
+          float corr_x_y = 0.0f;
           for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
           {
             for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
             {
-              float diff = (inp[4 * ((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))] - patch_mean)
-                         - (inp[4 * ((row + row_offset_P) * roi_out->width + (col + col_offset_P))] - ref_mean);
-              float diff2 = diff * diff;
-              diffs2[(P+row_offset_P)*(2*P+1)+P+col_offset_P] = diff2;
-              //if (diff2 > max_diff)
-              //  max_diff = diff2;
-              //weight += diff2;
+              float tmp_ref = inp[4 * ((row + row_offset_P) * roi_out->width + (col + col_offset_P))] - ref_mean;
+              float tmp_patch = inp[4 * ((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))] - patch_mean;
+              corr_x_y += tmp_ref * tmp_patch;
             }
           }
-          for (int i = 0; i < (2*P+1)*(2*P+1)/2; i++) {
-            float max = 0.0f;
-            int index_max = 0;
-            for (int j = 0; j < (2*P+1)*(2*P+1); j++) {
-              if (diffs2[j] > max) {
-                max = diffs2[j];
-                index_max = j;
-              }
-            }
-            diffs2[index_max] = 0.0f;
-          }
-          for (int j = 0; j < (2*P+1)*(2*P+1); j++)
-            weight += diffs2[j];
+          corr_x_y = corr_x_y / (float)(P * P);
+          //corr_x_y = corr_x_y / (sqrt(ref_var) * sqrt(patch_var));
+
+          S2 = (2 * corr_x_y + C2) / (ref_var + patch_var + C2);
+
+          float epsilon = 2 * global_std_dev * global_std_dev / l2_cross_patch_ref - 2 * global_std_dev * global_std_dev / (ref_l2_var + patch_l2_var + C2);
+
           if ((row_offset != 0) || (col_offset != 0))
           {
+            weight = 1 - S1 + (1 - epsilon) * (1 - S2) * S1;
+          } else {
+            weight = 1;
+          }
+
+          //printf("S1 %f S2 %f E %f w %f\n", S1, S2, epsilon, weight);
+
+          if ((row_offset != 0) || (col_offset != 0))
+          {
+            assert(weight!=0.0f);
             //if (weight < 2*global_std_dev)
             //  weight = 1.0f;
             //else
-              weight = exp(-(weight /*- 2 * global_std_dev*/)/(1.0f + 50.0f * d->strength));
+              weight = exp(-(weight /*- 2 * global_std_dev*/)/(0.001f + 0.001f * d->strength));
 
             if (weight > max_weight)
               max_weight = weight;
@@ -541,6 +598,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
           }
         }
       }
+      //max_weight = 1.0f;
       new_value += max_weight * inp[4 * (row * roi_out->width + col)];
       sum_weights += max_weight;
       new_value = new_value / sum_weights;
@@ -1069,7 +1127,7 @@ void gui_init(dt_iop_module_t *self)
   self->gui_data = malloc(sizeof(dt_iop_nlmeans_gui_data_t));
   dt_iop_nlmeans_gui_data_t *g = (dt_iop_nlmeans_gui_data_t *)self->gui_data;
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
-  g->radius = dt_bauhaus_slider_new_with_range(self, 1.0f, 4.0f, 1., 2.f, 0);
+  g->radius = dt_bauhaus_slider_new_with_range(self, 1.0f, 8.0f, 1., 2.f, 0);
   g->strength = dt_bauhaus_slider_new_with_range(self, 0.0f, 100.0f, 1., 50.f, 0);
   g->luma = dt_bauhaus_slider_new_with_range(self, 0.0f, 100.0f, 1., 50.f, 0);
   g->chroma = dt_bauhaus_slider_new_with_range(self, 0.0f, 100.0f, 1., 100.f, 0);
