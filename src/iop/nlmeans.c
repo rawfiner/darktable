@@ -451,6 +451,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   #endif
   for (int row = K+P; row < roi_out->height-K-P; row++)
   {
+    float nb_pixels = (2*P+1)*(2*P+1);
     float* diffs2 = malloc((2*P+1)*(2*P+1)*sizeof(float));
     for (int col = K+P; col < roi_out->width-K-P; col++)
     {
@@ -466,7 +467,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
           ref_mean += inp[4 * ((row + row_offset_P) * roi_out->width + (col + col_offset_P))];
         }
       }
-      ref_mean = ref_mean / (float)(P * P);
+      ref_mean = ref_mean / nb_pixels;
 
       float max_weight = 0.0f;
       // search for patches at a distance <= K
@@ -483,7 +484,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
               patch_mean += inp[4 * ((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))];
             }
           }
-          patch_mean = patch_mean / (float)(P * P);
+          patch_mean = patch_mean / nb_pixels;
           // float diff_means = fabs(patch_mean - ref_mean);
           // if ((diff_means > 10 * global_std_dev) || (diff_means < global_std_dev)) {
              patch_mean = 0.0f;
