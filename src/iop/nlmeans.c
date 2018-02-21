@@ -369,6 +369,196 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
+  const dt_iop_nlmeans_params_t *const d = (dt_iop_nlmeans_params_t *)piece->data;
+  const int ch = piece->colors;
+  // adjust to zoom size:
+  const int P = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // pixel filter size
+  int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));         // nbhood
+//  float sharpness = 3000.0f / (1.0f + 10.0f * d->strength);
+  if(P < 1)
+  {
+    // nothing to do from this distance:
+    memcpy(ovoid, ivoid, (size_t)sizeof(float) * 4 * roi_out->width * roi_out->height);
+    return;
+  }
+  // adjust to Lab, make L more important
+  // float max_L = 100.0f, max_C = 256.0f;
+  // float nL = 1.0f/(d->luma*max_L), nC = 1.0f/(d->chroma*max_C);
+//  float max_L = 120.0f, max_C = 512.0f;
+//  float nL = 1.0f / max_L, nC = 1.0f / max_C;
+//  const float norm2[4] = { nL * nL, nC * nC, nC * nC, 1.0f };
+
+  float* outp = (float*)ovoid;
+  float* inp = (float*)ivoid;
+
+  // estimate the noise standard deviation with the formula from "fast noise variance estimation"
+  // we are interested in the ratio of local variance over the global variance, to adjust the force
+  // to the local noise.
+  // Thus, the sqrt(pi/2) is not considered in the formula as it will be removed by the registration
+  // Start by computing for every pixel in[i][j] this number:
+  // N(i,j)= 4*in[i][j]
+  //        -2*(in[i-1][j]+in[i+1][j]+in[i][j-1]+in[i][j+1])
+  //        +(in[i-1][j-1]+in[i-1][j+1]+in[i+1][j-1]+in[i+1][j+1])
+  // for borders, we will take the "normal" force
+  float* N = malloc(roi_out->width * roi_out->height * sizeof(float));
+  int w = roi_out->width;
+  double global_std_dev = 0.0f;
+  {
+    float* in = (float*)ivoid;
+    for(int i = 1; i < roi_out->height-1; i++) {
+      for(int j = 1; j < w-1; j++) {
+        N[i * w + j] = 4 * in[4 * (i * w + j)]
+          -2 * (in[4 * ((i-1) * w + j)] + in[4 * ((i+1) * w + j)] + in[4 * (i * w + (j-1))] + in[4 * (i * w + (j+1))])
+            + in[4 * ((i-1) * w + (j-1))] + in[4 * ((i+1) * w + (j+1))] + in[4 * ((i+1) * w + (j-1))] + in[4 * ((i-1) * w + (j+1))];
+        N[i * w + j] = fabs(N[i * w + j]);
+        global_std_dev += N[i * w + j];
+      }
+    }
+  }
+  global_std_dev = 1.253f * global_std_dev / (6 * (roi_out->width - 2) * (roi_out->height - 2));
+  free(N);
+
+  // particular cases: top and bottom rows
+  for (int row = 0; row < K+P; row++)
+  {
+    int row_last = roi_out->height - row - 1;
+    for (int col = 0; col < roi_out->width; col++)
+    {
+      for (int channel = 0; channel < ch; channel++)
+      {
+        outp[4 * (row * roi_out->width + col) + channel] = inp[4 * (row * roi_out->width + col) + channel];
+        outp[4 * (row_last * roi_out->width + col) + channel] = inp[4 * (row_last * roi_out->width + col) + channel];
+      }
+    }
+  }
+  // particular cases: top left and top right columns
+  for (int col = 0; col < K+P; col++)
+  {
+    int col_last = roi_out->width - col - 1;
+    for (int row = 0; row < roi_out->height; row++)
+    {
+      for (int channel = 0; channel < ch; channel++)
+      {
+        outp[4 * (row * roi_out->width + col) + channel] = inp[4 * (row * roi_out->width + col) + channel];
+        outp[4 * (row * roi_out->width + col_last) + channel] = inp[4 * (row * roi_out->width + col_last) + channel];
+      }
+    }
+  }
+
+  // general case: center of the image
+  #ifdef _OPENMP
+  #pragma omp parallel for schedule(static) default(none) shared(K, outp, inp)
+  #endif
+  for (int row = K+P; row < roi_out->height-K-P; row++)
+  {
+    float* diffs2 = malloc((2*P+1)*(2*P+1)*sizeof(float));
+    for (int col = K+P; col < roi_out->width-K-P; col++)
+    {
+      int index = 4 * (row * roi_out->width + col);
+      float sum_weights = 0.0f;
+      float new_value = 0.0f;
+
+      float ref_mean = 0.0f;
+      for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
+      {
+        for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
+        {
+          ref_mean += inp[4 * ((row + row_offset_P) * roi_out->width + (col + col_offset_P))];
+        }
+      }
+      ref_mean = ref_mean / (float)(P * P);
+
+      float max_weight = 0.0f;
+      // search for patches at a distance <= K
+      for (int row_offset = -K; row_offset <= K; row_offset++)
+      {
+        for (int col_offset = -K; col_offset <= K; col_offset++)
+        {
+          // compute means
+          float patch_mean = 0.0f;
+          for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
+          {
+            for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
+            {
+              patch_mean += inp[4 * ((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))];
+            }
+          }
+          patch_mean = patch_mean / (float)(P * P);
+          // float diff_means = fabs(patch_mean - ref_mean);
+          // if ((diff_means > 10 * global_std_dev) || (diff_means < global_std_dev)) {
+             patch_mean = 0.0f;
+             ref_mean = 0.0f;
+          // }
+          //patch_mean = patch_mean * diff_means;
+          //ref_mean = ref_mean * diff_means;
+          //patch_mean = 0.0f;
+          //ref_mean = 0.0f;
+
+          // compute weight
+          float weight = 0.0f;
+          //float max_diff = 0.0f;
+          for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
+          {
+            for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
+            {
+              float diff = (inp[4 * ((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))] - patch_mean)
+                         - (inp[4 * ((row + row_offset_P) * roi_out->width + (col + col_offset_P))] - ref_mean);
+              float diff2 = diff * diff;
+              diffs2[(P+row_offset_P)*(2*P+1)+P+col_offset_P] = diff2;
+              //if (diff2 > max_diff)
+              //  max_diff = diff2;
+              //weight += diff2;
+            }
+          }
+          for (int i = 0; i < (2*P+1)*(2*P+1)/2; i++) {
+            float max = 0.0f;
+            int index_max = 0;
+            for (int j = 0; j < (2*P+1)*(2*P+1); j++) {
+              if (diffs2[j] > max) {
+                max = diffs2[j];
+                index_max = j;
+              }
+            }
+            diffs2[index_max] = 0.0f;
+          }
+          for (int j = 0; j < (2*P+1)*(2*P+1); j++)
+            weight += diffs2[j];
+          if ((row_offset != 0) || (col_offset != 0))
+          {
+            //if (weight < 2*global_std_dev)
+            //  weight = 1.0f;
+            //else
+              weight = exp(-(weight /*- 2 * global_std_dev*/)/(1.0f + 50.0f * d->strength));
+
+            if (weight > max_weight)
+              max_weight = weight;
+          //weight = weight * weight;
+          //weight = gh(-weight, sharpness);
+
+          // update new_value and sum_weights
+            new_value += weight * inp[4 * ((row + row_offset) * roi_out->width + (col + col_offset))];
+            sum_weights += weight;
+          }
+        }
+      }
+      new_value += max_weight * inp[4 * (row * roi_out->width + col)];
+      sum_weights += max_weight;
+      new_value = new_value / sum_weights;
+
+      outp[index] = new_value;
+      for (int channel = 1; channel < ch; channel++)
+      {
+        outp[index + channel] = inp[index + channel];
+      }
+    }
+    free(diffs2);
+  }
+}
+
+#if 0
+void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+             void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
+{
   // this is called for preview and full pipe separately, each with its own pixelpipe piece.
   // get our data struct:
   const dt_iop_nlmeans_params_t *const d = (dt_iop_nlmeans_params_t *)piece->data;
@@ -377,8 +567,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   // adjust to zoom size:
   const int P = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // pixel filter size
-  const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));         // nbhood
-  const float sharpness = 3000.0f / (1.0f + d->strength);
+  int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));         // nbhood
+  //float sharpness = 3000.0f / (1.0f + d->strength);
   if(P < 1)
   {
     // nothing to do from this distance:
@@ -396,6 +586,47 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height * 4);
+
+  // estimate the noise standard deviation with the formula from "fast noise variance estimation"
+  // we are interested in the ratio of local variance over the global variance, to adjust the force
+  // to the local noise.
+  // Thus, the sqrt(pi/2) is not considered in the formula as it will be removed by the registration
+  // Start by computing for every pixel in[i][j] this number:
+  // N(i,j)= 4*in[i][j]
+  //        -2*(in[i-1][j]+in[i+1][j]+in[i][j-1]+in[i][j+1])
+  //        +(in[i-1][j-1]+in[i-1][j+1]+in[i+1][j-1]+in[i+1][j+1])
+  // for borders, we will take the "normal" force
+  float* N = malloc(roi_out->width * roi_out->height * sizeof(float));
+  int w = roi_out->width;
+  double global_std_dev = 0.0f;
+  {
+    float* in = (float*)ivoid;
+    for(int i = 1; i < roi_out->height-1; i++) {
+      for(int j = 1; j < w-1; j++) {
+        N[i * w + j] = 4 * in[4 * (i * w + j)]
+          -2 * (in[4 * ((i-1) * w + j)] + in[4 * ((i+1) * w + j)] + in[4 * (i * w + (j-1))] + in[4 * (i * w + (j+1))])
+            + in[4 * ((i-1) * w + (j-1))] + in[4 * ((i+1) * w + (j+1))] + in[4 * ((i+1) * w + (j-1))] + in[4 * ((i-1) * w + (j+1))];
+        N[i * w + j] = fabs(N[i * w + j]);
+        global_std_dev += N[i * w + j];
+      }
+    }
+  }
+  global_std_dev = 1.253f * global_std_dev / (6 * (roi_out->width - 2) * (roi_out->height - 2));
+  printf("stddev: %f \n", global_std_dev);
+  //K = ceilf(ceilf(2.0f * global_std_dev) * P * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); /* 2.0 instead of sqrt(3) to take some margin */
+  printf("K: %i \n", K);
+  const float sharpness = 3000.0f / (1.0f + d->strength * global_std_dev);
+
+  float max = 0.0f;
+  for(int i = 1; i < roi_out->height-1; i++) {
+    float* in = (float*)ivoid;
+    for(int j = 1; j < w-1; j++) {
+      float tmp = in[4*(i*w+j)];
+      if (tmp>max)
+        max = tmp;
+    }
+  }
+  printf("max: %f \n", max);
 
   // for each shift vector
   for(int kj = -K; kj <= K; kj++)
@@ -506,9 +737,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   // free shared tmp memory:
   dt_free_align(Sa);
+  free(N);
 
   if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 }
+#endif
 
 #if defined(__SSE__)
 /** process, all real work is done here. */

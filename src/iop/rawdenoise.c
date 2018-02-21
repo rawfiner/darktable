@@ -112,6 +112,70 @@ static void hat_transform(float *temp, const float *const base, int stride, int 
 
 #define BIT16 65536.0
 
+static void median_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
+                            float threshold, uint32_t filters)
+{
+  int radius = 1;
+  for (int row = 0; row < roi->height; row++) {
+    for (int col = 0; col < roi->width; col++) {
+      float* outp = out + (size_t)row * roi->width + col;
+      if (row < 2 * radius || col < 2 * radius || row >= roi->height - 2 * radius || col >= roi->width - 2 * radius)
+      {
+        const float* inp = in + (size_t)row * roi->width + col;
+        *outp = *inp;
+      }
+      else
+      {
+        if (((filters == 0x16161616 || filters == 0x94949494) && ((row & 1) == 0) && ((col & 1) == 0)) // row and col even, with pattern starting by B or R
+        ||  ((filters == 0x61616161 || filters == 0x49494949) && (((row + col) & 1) == 1))) // pattern starts with G
+        {
+          float* in_data = malloc((radius * 2 + 1) * (radius * 2 + 1) * sizeof(float));
+          for (int i = -radius; i <= radius; i++) {
+            for (int j = -radius; j <= radius; j++) {
+              in_data[(i + radius) * (radius * 2 + 1) + j + radius] = *(in + (size_t)((row + 2 * i) * roi->width + col + 2 * j));
+            }
+          }
+
+          bool median_not_found = true;
+          int median_candidate = 0;
+          while (median_not_found)
+          {
+            int number_of_lower = 0;
+            int number_of_strictly_lower = 0;
+            for (int i = 0; i < (radius * 2 + 1) * (radius * 2 + 1); i++)
+            {
+              if (i != median_candidate && in_data[i] <= in_data[median_candidate])
+                number_of_lower++;
+              if (i != median_candidate && in_data[i] < in_data[median_candidate])
+                number_of_strictly_lower++;
+            }
+            if (number_of_lower == radius * radius * 4)
+              median_not_found = false;
+            else
+              if (number_of_lower > radius * radius * 4 && number_of_strictly_lower <= radius * radius * 4)
+                median_not_found = false;
+              else
+                median_candidate++;
+          }
+          float mean = 0.0f;
+          for (int i = 0; i < (radius * 2 + 1) * (radius * 2 + 1); i++) {
+            mean += in_data[i];
+          }
+          mean = mean / (float)((radius * 2 + 1) * (radius * 2 + 1));
+
+          *outp = in_data[median_candidate];
+          free(in_data);
+        }
+        else
+        {
+          const float* inp = in + (size_t)row * roi->width + col;
+          *outp = *inp;
+        }
+      }
+    }
+  }
+}
+
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
                             float threshold, uint32_t filters)
 {
@@ -331,7 +395,8 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
     {
       const float *fimgp = fimg + (size_t)row * width;
       float *outp = out + (size_t)row * width;
-      for(int col = 0; col < width; col++, outp++, fimgp++)
+      float *inp = (float*)in + (size_t)row * width;
+      for(int col = 0; col < width; col++, outp++, fimgp++, inp++)
         if(FCxtrans(row, col, roi, xtrans) == c)
         {
           float d = fimgp[0] + fimgp[lastpass];
@@ -348,16 +413,17 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 {
   dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
 
-  const int width = roi_in->width;
-  const int height = roi_in->height;
+//  const int width = roi_in->width;
+//  const int height = roi_in->height;
+  const uint32_t filters = piece->pipe->dsc.filters;
 
   if(!(d->threshold > 0.0f))
   {
-    memcpy(ovoid, ivoid, (size_t)sizeof(float)*width*height);
+    median_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
+    //memcpy(ovoid, ivoid, (size_t)sizeof(float)*width*height);
   }
   else
   {
-    const uint32_t filters = piece->pipe->dsc.filters;
     const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
     if (filters != 9u)
       wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
