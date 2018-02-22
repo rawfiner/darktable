@@ -112,6 +112,7 @@ static void hat_transform(float *temp, const float *const base, int stride, int 
 
 #define BIT16 65536.0
 
+#if 0
 static void median_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
                             float threshold, uint32_t filters)
 {
@@ -173,6 +174,123 @@ static void median_denoise(const float *const in, float *const out, const dt_iop
         }
       }
     }
+  }
+}
+#endif
+
+static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
+                            const dt_iop_roi_t *const roi_out, float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece)
+{
+  const int P = ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
+
+  int raw_patern_size = 2;
+  if (filters == 9u)
+    raw_patern_size = 3;
+
+
+  const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
+
+  if(P < 1)
+  {
+    // nothing to do from this distance:
+    memcpy(ovoid, ivoid, (size_t)sizeof(float) * roi_out->width * roi_out->height);
+    return;
+  }
+
+  float* outp = (float*)ovoid;
+  float* inp = (float*)ivoid;
+
+  for (int row = 0; row < K+P; row++)
+  {
+    int row_last = roi_out->height - row - 1;
+    for (int col = 0; col < roi_out->width; col++)
+    {
+      outp[row * roi_out->width + col] = inp[row * roi_out->width + col];
+      outp[row_last * roi_out->width + col] = inp[row_last * roi_out->width + col];
+    }
+  }
+  // particular cases: top left and top right columns
+  for (int col = 0; col < K+P; col++)
+  {
+    int col_last = roi_out->width - col - 1;
+    for (int row = 0; row < roi_out->height; row++)
+    {
+      outp[row * roi_out->width + col] = inp[row * roi_out->width + col];
+      outp[row * roi_out->width + col_last] = inp[row * roi_out->width + col_last];
+    }
+  }
+
+  // general case: center of the image
+  #ifdef _OPENMP
+  #pragma omp parallel for schedule(static) default(none) shared(raw_patern_size, threshold, outp, inp)
+  #endif
+  for (int row = K+P; row < roi_out->height-K-P; row++)
+  {
+    float* diffs2 = malloc((2*P+1)*(2*P+1)*sizeof(float));
+    for (int col = K+P; col < roi_out->width-K-P; col++)
+    {
+      int index = (row * roi_out->width + col);
+      float sum_weights = 0.0f;
+      float new_value = 0.0f;
+
+      float max_weight = 0.0f;
+      // search for patches at a distance <= K
+      for (int row_offset = -K; row_offset <= K; row_offset+=raw_patern_size)
+      {
+        for (int col_offset = -K; col_offset <= K; col_offset+=raw_patern_size)
+        {
+          // compute weight
+          float weight = 0.0f;
+          for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
+          {
+            for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
+            {
+              float diff = (inp[((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))])
+                         - (inp[((row + row_offset_P) * roi_out->width + (col + col_offset_P))]);
+              float diff2 = diff * diff;
+              diffs2[(P+row_offset_P)*(2*P+1)+P+col_offset_P] = diff2;
+            }
+          }
+          // maximum filtering, to avoid noise to noise matching
+#if 0
+          for (int i = 0; i < (2*P+1)*(2*P+1)/2; i++) {
+            float max = 0.0f;
+            int index_max = 0;
+            for (int j = 0; j < (2*P+1)*(2*P+1); j++) {
+              if (diffs2[j] > max) {
+                max = diffs2[j];
+                index_max = j;
+              }
+            }
+            diffs2[index_max] = 0.0f;
+          }
+#endif
+          for (int j = 0; j < (2*P+1)*(2*P+1); j++)
+            weight += diffs2[j];
+          if ((row_offset != 0) || (col_offset != 0))
+          {
+              weight = exp(-weight/(0.002f + 1.0f * threshold));
+
+            if (weight > max_weight)
+              max_weight = weight;
+
+          // update new_value and sum_weights
+            new_value += weight * inp[((row + row_offset) * roi_out->width + (col + col_offset))];
+            sum_weights += weight;
+          }
+        }
+      }
+//      max_weight = 1.0f;
+      if (max_weight < 0.001f) {
+        max_weight = 0.001f;
+      }
+      new_value += max_weight * inp[(row * roi_out->width + col)];
+      sum_weights += max_weight;
+      new_value = new_value / sum_weights;
+
+      outp[index] = new_value;
+    }
+    free(diffs2);
   }
 }
 
@@ -419,16 +537,17 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   if(!(d->threshold > 0.0f))
   {
-    median_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
+    wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
     //memcpy(ovoid, ivoid, (size_t)sizeof(float)*width*height);
   }
   else
   {
-    const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
-    if (filters != 9u)
-      wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
-    else
+    if (d->threshold == 1.0f && filters == 9u) {
+      const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
       wavelet_denoise_xtrans(ivoid, ovoid, roi_in, d->threshold, xtrans);
+    } else {
+      nlm_denoise(ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece);
+    }
   }
 }
 
