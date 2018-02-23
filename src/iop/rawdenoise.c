@@ -284,9 +284,15 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
       if (max_weight < 0.001f) {
         max_weight = 0.001f;
       }
-      new_value += max_weight * inp[(row * roi_out->width + col)];
-      sum_weights += max_weight;
-      new_value = new_value / sum_weights;
+      if (sum_weights == 0.0f) {
+        new_value = inp[(row * roi_out->width + col)];
+      } else {
+        new_value = new_value / sum_weights;
+        //new_value = 0.7f*new_value + 0.3f*inp[(row * roi_out->width + col)];
+      }
+//      new_value += max_weight * inp[(row * roi_out->width + col)];
+  //    sum_weights += max_weight;
+    //  new_value = new_value / sum_weights;
 
       outp[index] = new_value;
     }
