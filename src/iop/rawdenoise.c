@@ -181,7 +181,7 @@ static void median_denoise(const float *const in, float *const out, const dt_iop
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out, float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece)
 {
-  const int P = ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
+  const int P = 5;//ceilf(3.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
 
   int raw_patern_size = 2;
   if (filters == 9u)
@@ -197,8 +197,22 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
     return;
   }
 
+  float* means = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
+
   float* outp = (float*)ovoid;
   float* inp = (float*)ivoid;
+
+  const int means_offset = 1;
+  for (int row = means_offset; row < roi_out->height-means_offset; row++) {
+    for (int col = means_offset; col < roi_out->width-means_offset; col++) {
+      for (int row_offset = -means_offset; row_offset <=means_offset; row_offset++) {
+        for (int col_offset = -means_offset; col_offset <=means_offset; col_offset++) {
+          means[row * roi_out->width + col] += inp[(row + row_offset) * roi_out->width + col + col_offset];
+        }
+      }
+      means[row * roi_out->width + col] = means[row * roi_out->width + col] / ((means_offset * 2.0f + 1.0f) * (means_offset * 2.0f + 1.0f));
+    }
+  }
 
   for (int row = 0; row < K+P; row++)
   {
@@ -221,12 +235,11 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   }
 
   // general case: center of the image
-  #ifdef _OPENMP
-  #pragma omp parallel for schedule(static) default(none) shared(raw_patern_size, threshold, outp, inp)
-  #endif
+//  #ifdef _OPENMP
+//  #pragma omp parallel for schedule(static) default(none) shared(raw_patern_size, threshold, outp, inp)
+//  #endif
   for (int row = K+P; row < roi_out->height-K-P; row++)
   {
-    float* diffs2 = malloc((2*P+1)*(2*P+1)*sizeof(float));
     for (int col = K+P; col < roi_out->width-K-P; col++)
     {
       int index = (row * roi_out->width + col);
@@ -241,16 +254,50 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
         {
           // compute weight
           float weight = 0.0f;
-          for (int row_offset_P = -P; row_offset_P <= P; row_offset_P++)
-          {
-            for (int col_offset_P = -P; col_offset_P <= P; col_offset_P++)
-            {
-              float diff = (inp[((row + row_offset + row_offset_P) * roi_out->width + (col + col_offset + col_offset_P))])
-                         - (inp[((row + row_offset_P) * roi_out->width + (col + col_offset_P))]);
-              float diff2 = diff * diff;
-              diffs2[(P+row_offset_P)*(2*P+1)+P+col_offset_P] = diff2;
-            }
-          }
+
+          float diff;
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset]
+                -means[(row) * roi_out->width + col];
+          weight += diff * diff;
+          diff = means[(row + row_offset + 1) * roi_out->width + col + col_offset + 1]
+                -means[(row + 1) * roi_out->width + col + 1];
+          weight += diff * diff / 1.4f;
+          diff = means[(row + row_offset - 1) * roi_out->width + col + col_offset + 1]
+                -means[(row - 1) * roi_out->width + col + 1];
+          weight += diff * diff / 1.4f;
+          diff = means[(row + row_offset + 1) * roi_out->width + col + col_offset - 1]
+                -means[(row + 1) * roi_out->width + col - 1];
+          weight += diff * diff / 1.4f;
+          diff = means[(row + row_offset - 1) * roi_out->width + col + col_offset - 1]
+                -means[(row - 1) * roi_out->width + col - 1];
+          weight += diff * diff / 1.4f;
+          diff = means[(row + row_offset + 2) * roi_out->width + col + col_offset]
+                -means[(row + 2) * roi_out->width + col];
+          weight += diff * diff / 2.0f;
+          diff = means[(row + row_offset - 2) * roi_out->width + col + col_offset]
+                -means[(row - 2) * roi_out->width + col];
+          weight += diff * diff / 2.0f;
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset + 2]
+                -means[(row) * roi_out->width + col + 2];
+          weight += diff * diff / 2.0f;
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset - 2]
+                -means[(row) * roi_out->width + col - 2];
+          weight += diff * diff / 2.0f;
+          diff = means[(row + row_offset + 1) * roi_out->width + col + col_offset]
+                -means[(row + 1) * roi_out->width + col];
+          weight += diff * diff;
+          diff = means[(row + row_offset - 1) * roi_out->width + col + col_offset]
+                -means[(row - 1) * roi_out->width + col];
+          weight += diff * diff;
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset + 1]
+                -means[(row) * roi_out->width + col + 1];
+          weight += diff * diff;
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset - 1]
+                -means[(row) * roi_out->width + col - 1];
+          weight += diff * diff;
+
+          weight = weight * sqrt(row_offset * row_offset + col_offset * col_offset) / 10.0f;
+
           // maximum filtering, to avoid noise to noise matching
 #if 0
           for (int i = 0; i < (2*P+1)*(2*P+1)/2; i++) {
@@ -265,11 +312,11 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
             diffs2[index_max] = 0.0f;
           }
 #endif
-          for (int j = 0; j < (2*P+1)*(2*P+1); j++)
-            weight += diffs2[j];
+          //for (int j = 0; j < (2*P+1)*(2*P+1); j++)
+          //  weight += diffs2[j];
           if ((row_offset != 0) || (col_offset != 0))
           {
-              weight = exp(-weight/(0.002f + 1.0f * threshold));
+              weight = exp(-weight/(0.0001f + 0.1f * threshold));
 
             if (weight > max_weight)
               max_weight = weight;
@@ -288,16 +335,22 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
         new_value = inp[(row * roi_out->width + col)];
       } else {
         new_value = new_value / sum_weights;
-        //new_value = 0.7f*new_value + 0.3f*inp[(row * roi_out->width + col)];
       }
 //      new_value += max_weight * inp[(row * roi_out->width + col)];
   //    sum_weights += max_weight;
     //  new_value = new_value / sum_weights;
 
+//      float diff_io = inp[index] - new_value;
+//      float abs_diff_io = sqrt(fabs(diff_io))/10.0f;
+//      if (diff_io < 0.0f) {
+//        outp[index] = new_value - abs_diff_io;
+//      } else {
+//        outp[index] = new_value + abs_diff_io;
+//      }
       outp[index] = new_value;
     }
-    free(diffs2);
   }
+  free(means);
 }
 
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
@@ -656,7 +709,7 @@ void gui_init(dt_iop_module_t *self)
   g->box_raw = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
 
   /* threshold */
-  g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 0.1, 0.001, p->threshold, 3);
+  g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.001, p->threshold, 3);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->threshold), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->threshold, NULL, _("noise threshold"));
   g_signal_connect(G_OBJECT(g->threshold), "value-changed", G_CALLBACK(threshold_callback), self);
