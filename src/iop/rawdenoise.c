@@ -112,6 +112,57 @@ static void hat_transform(float *temp, const float *const base, int stride, int 
 
 #define BIT16 65536.0
 
+typedef float elem_type ;
+
+#define ELEM_SWAP(a,b) { register elem_type t=(a);(a)=(b);(b)=t; }
+
+
+/*---------------------------------------------------------------------------
+   Function :   kth_smallest()
+   In       :   array of elements, # of elements in the array, rank k
+   Out      :   one element
+   Job      :   find the kth smallest element in the array
+   Notice   :   use the median() macro defined below to get the median.
+
+                Reference:
+
+                  Author: Wirth, Niklaus
+                   Title: Algorithms + data structures = programs
+               Publisher: Englewood Cliffs: Prentice-Hall, 1976
+    Physical description: 366 p.
+                  Series: Prentice-Hall Series in Automatic Computation
+
+ ---------------------------------------------------------------------------*/
+
+
+elem_type kth_smallest(elem_type a[], int n, int k)
+{
+    int i,j,l,m ;
+    register elem_type x ;
+
+    l=0 ; m=n-1 ;
+    while (l<m) {
+        x=a[k] ;
+        i=l ;
+        j=m ;
+        do {
+            while (a[i]<x) i++ ;
+            while (x<a[j]) j-- ;
+            if (i<=j) {
+                ELEM_SWAP(a[i],a[j]) ;
+                i++ ; j-- ;
+            }
+        } while (i<=j) ;
+        if (j<k) l=i ;
+        if (k<i) m=j ;
+    }
+    return a[k] ;
+}
+
+
+#define median(a,n) kth_smallest(a,n,(((n)&1)?((n)/2):(((n)/2)-1)))
+
+
 #if 0
 static void median_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
                             float threshold, uint32_t filters)
@@ -198,22 +249,36 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   }
 
   float* means = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
-//  float* means2 = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
+  float* medians = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
 
   float* outp = (float*)ovoid;
   float* inp = (float*)ivoid;
+
+  float arrayf[5];
+  for (int row = raw_patern_size; row < roi_out->height-raw_patern_size; row++) {
+    for (int col = raw_patern_size; col < roi_out->width-raw_patern_size; col++) {
+      arrayf[0] = inp[(row) * roi_out->width + col];
+      arrayf[1] = inp[(row + raw_patern_size) * roi_out->width + col];
+      arrayf[2] = inp[(row - raw_patern_size) * roi_out->width + col];
+      arrayf[3] = inp[(row) * roi_out->width + col + raw_patern_size];
+      arrayf[4] = inp[(row) * roi_out->width + col - raw_patern_size];
+      medians[(row) * roi_out->width + col] = median(arrayf,5);
+    }
+  }
 
   const int means_offset = 1;
   for (int row = means_offset; row < roi_out->height-means_offset; row++) {
     for (int col = means_offset; col < roi_out->width-means_offset; col++) {
       for (int row_offset = -means_offset; row_offset <=means_offset; row_offset++) {
         for (int col_offset = -means_offset; col_offset <=means_offset; col_offset++) {
-          means[row * roi_out->width + col] += inp[(row + row_offset) * roi_out->width + col + col_offset];
+          means[row * roi_out->width + col] += medians[(row + row_offset) * roi_out->width + col + col_offset];
         }
       }
       means[row * roi_out->width + col] = means[row * roi_out->width + col] / ((means_offset * 2.0f + 1.0f) * (means_offset * 2.0f + 1.0f));
     }
   }
+
+  free(medians);
 
   // for (int row = 2 * raw_patern_size; row < roi_out->height- 2 * raw_patern_size; row++) {
   //   for (int col = 2 * raw_patern_size; col < roi_out->width- 2 * raw_patern_size; col++) {
