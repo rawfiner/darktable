@@ -208,14 +208,14 @@ float kth_smallest(float a[], int n, int k)
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out, float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece)
 {
-  const int P = 7;//ceilf(3.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
+  const int P = 10;//ceilf(3.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
 
   int raw_patern_size = 2;
   if (filters == 9u)
-    raw_patern_size = 3;
+    raw_patern_size = 6;
 
 
-  const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
+  const int K = 6 * raw_patern_size;//ceilf(6 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
 
   if(P < 1)
   {
@@ -227,6 +227,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   float* means = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
   float* medians = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
   float* medians2 = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
+  float* stddev = (float*)calloc(roi_out->width * roi_out->height, sizeof(float));
 
   float* outp = (float*)ovoid;
   float* inp = (float*)ivoid;
@@ -243,47 +244,85 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
       arrayf[6] = inp[(row + 1) * roi_out->width + col - 1];
       arrayf[7] = inp[(row - 1) * roi_out->width + col + 1];
       arrayf[8] = inp[(row - 1) * roi_out->width + col - 1];
-      // arrayf[9] = inp[(row + 2) * roi_out->width + col];
-      // arrayf[10] = inp[(row - 2) * roi_out->width + col];
-      // arrayf[11] = inp[(row) * roi_out->width + col + 2];
-      // arrayf[12] = inp[(row) * roi_out->width + col - 2];
+      arrayf[9] = inp[(row + 2) * roi_out->width + col];
+      arrayf[10] = inp[(row - 2) * roi_out->width + col];
+      arrayf[11] = inp[(row) * roi_out->width + col + 2];
+      arrayf[12] = inp[(row) * roi_out->width + col - 2];
       medians[(row) * roi_out->width + col] = median(arrayf, 9);
     }
   }
   for (int row = raw_patern_size; row < roi_out->height-raw_patern_size; row++) {
     for (int col = raw_patern_size; col < roi_out->width-raw_patern_size; col++) {
       arrayf[0] = inp[(row) * roi_out->width + col];
-      arrayf[1] = inp[(row + raw_patern_size) * roi_out->width + col + raw_patern_size];
-      arrayf[2] = inp[(row + raw_patern_size) * roi_out->width + col - raw_patern_size];
-      arrayf[3] = inp[(row - raw_patern_size) * roi_out->width + col + raw_patern_size];
-      arrayf[4] = inp[(row - raw_patern_size) * roi_out->width + col - raw_patern_size];
+      arrayf[1] = inp[(row + raw_patern_size) * roi_out->width + col];
+      arrayf[2] = inp[(row - raw_patern_size) * roi_out->width + col];
+      arrayf[3] = inp[(row) * roi_out->width + col + raw_patern_size];
+      arrayf[4] = inp[(row) * roi_out->width + col - raw_patern_size];
       medians2[(row) * roi_out->width + col] = median(arrayf, 5);
     }
   }
 
-  const int means_offset = 0;
-  const int horiz_means_offset = 0;
-  for (int row = means_offset; row < roi_out->height-means_offset; row++) {
-    for (int col = means_offset; col < roi_out->width-means_offset; col++) {
-      for (int row_offset = -means_offset; row_offset <=means_offset; row_offset++) {
-        for (int col_offset = -horiz_means_offset; col_offset <=horiz_means_offset; col_offset++) {
-          means[row * roi_out->width + col] += medians[(row + row_offset) * roi_out->width + col + col_offset];
-        }
-      }
-      means[row * roi_out->width + col] = means[row * roi_out->width + col] / ((means_offset * 2.0f + 1.0f) * (horiz_means_offset * 2.0f + 1.0f));
-    }
-  }
-
-  // for (int row = 2 * raw_patern_size; row < roi_out->height- 2 * raw_patern_size; row++) {
-  //   for (int col = 2 * raw_patern_size; col < roi_out->width- 2 * raw_patern_size; col++) {
-  //     means2[row * roi_out->width + col] = means[(row) * roi_out->width + col] * 8.0f
-  //                                         + means[(row + 2 * raw_patern_size) * roi_out->width + col]
-  //                                         + means[(row) * roi_out->width + col + 2 * raw_patern_size]
-  //                                         + means[(row - 2 * raw_patern_size) * roi_out->width + col]
-  //                                         + means[(row) * roi_out->width + col - 2 * raw_patern_size];
-  //     means2[row * roi_out->width + col] = means2[row * roi_out->width + col] / 12.0f;
+  // const int means_offset = 0;
+  // const int horiz_means_offset = 0;
+  // for (int row = means_offset; row < roi_out->height-means_offset; row++) {
+  //   for (int col = means_offset; col < roi_out->width-means_offset; col++) {
+  //     for (int row_offset = -means_offset; row_offset <=means_offset; row_offset++) {
+  //       for (int col_offset = -horiz_means_offset; col_offset <=horiz_means_offset; col_offset++) {
+  //         means[row * roi_out->width + col] += medians[(row + row_offset) * roi_out->width + col + col_offset];
+  //       }
+  //     }
+  //     means[row * roi_out->width + col] = means[row * roi_out->width + col] / ((means_offset * 2.0f + 1.0f) * (horiz_means_offset * 2.0f + 1.0f));
   //   }
   // }
+
+  for (int row = 2 * raw_patern_size; row < roi_out->height- 2 * raw_patern_size; row++) {
+    for (int col = 2 * raw_patern_size; col < roi_out->width- 2 * raw_patern_size; col++) {
+      float mean_tmp = medians2[(row) * roi_out->width + col]
+                      + medians2[(row + raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col + raw_patern_size]
+                      + medians2[(row - raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col - raw_patern_size]
+                      + medians2[(row + raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      + medians2[(row - raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      + medians2[(row - raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      + medians2[(row + raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      + medians2[(row + 2 * raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col + 2 * raw_patern_size]
+                      + medians2[(row - 2 * raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col - 2 * raw_patern_size];
+      mean_tmp = mean_tmp / 13.0f;
+      means[row * roi_out->width + col] = mean_tmp;
+      double stddev_tmp = medians2[(row) * roi_out->width + col]
+                      * medians2[(row) * roi_out->width + col]
+                      + medians2[(row + raw_patern_size) * roi_out->width + col]
+                      * medians2[(row + raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col + raw_patern_size]
+                      * medians2[(row) * roi_out->width + col + raw_patern_size]
+                      + medians2[(row - raw_patern_size) * roi_out->width + col]
+                      * medians2[(row - raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col - raw_patern_size]
+                      * medians2[(row) * roi_out->width + col - raw_patern_size]
+                      + medians2[(row + raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      * medians2[(row + raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      + medians2[(row - raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      * medians2[(row - raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      + medians2[(row - raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      * medians2[(row - raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      + medians2[(row + raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      * medians2[(row + raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      + medians2[(row + 2 * raw_patern_size) * roi_out->width + col]
+                      * medians2[(row + 2 * raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col + 2 * raw_patern_size]
+                      * medians2[(row) * roi_out->width + col + 2 * raw_patern_size]
+                      + medians2[(row - 2 * raw_patern_size) * roi_out->width + col]
+                      * medians2[(row - 2 * raw_patern_size) * roi_out->width + col]
+                      + medians2[(row) * roi_out->width + col - 2 * raw_patern_size]
+                      * medians2[(row) * roi_out->width + col - 2 * raw_patern_size];
+      stddev_tmp = stddev_tmp / 13.0f;
+      stddev_tmp = sqrt(stddev_tmp);
+      stddev[row * roi_out->width + col] = (float)stddev_tmp;
+    }
+  }
   //
   // for (int row = raw_patern_size; row < roi_out->height-raw_patern_size; row++) {
   //   for (int col = raw_patern_size; col < roi_out->width-raw_patern_size; col++) {
@@ -320,48 +359,49 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   {
     for (int col = K+P; col < roi_out->width-K-P; col++)
     {
+      float relative_force = 1.0f;
       int index = (row * roi_out->width + col);
       float sum_weights = 0.0f;
       float new_value = 0.0f;
 
-      float mean = means[(row) * roi_out->width + col]
-                  + means[(row + 1) * roi_out->width + col]
-                  + means[(row - 1) * roi_out->width + col]
-                  + means[(row) * roi_out->width + col - 1]
-                  + means[(row) * roi_out->width + col + 1]
-                  + means[(row + 1) * roi_out->width + col + 1]
-                  + means[(row + 1) * roi_out->width + col - 1]
-                  + means[(row - 1) * roi_out->width + col + 1]
-                  + means[(row - 1) * roi_out->width + col - 1]
-                  + means[(row + 2) * roi_out->width + col]
-                  + means[(row - 2) * roi_out->width + col]
-                  + means[(row) * roi_out->width + col - 2]
-                  + means[(row) * roi_out->width + col + 2];
+      float mean = medians[(row) * roi_out->width + col]
+                  + medians[(row + 1) * roi_out->width + col]
+                  + medians[(row - 1) * roi_out->width + col]
+                  + medians[(row) * roi_out->width + col - 1]
+                  + medians[(row) * roi_out->width + col + 1]
+                  + medians[(row + 1) * roi_out->width + col + 1]
+                  + medians[(row + 1) * roi_out->width + col - 1]
+                  + medians[(row - 1) * roi_out->width + col + 1]
+                  + medians[(row - 1) * roi_out->width + col - 1]
+                  + medians[(row + 2) * roi_out->width + col]
+                  + medians[(row - 2) * roi_out->width + col]
+                  + medians[(row) * roi_out->width + col - 2]
+                  + medians[(row) * roi_out->width + col + 2];
       mean = mean / 13.0f;
 
-      if (mean < 0.12f)
-        mean = 1.3f;
-      else
-  //      if (mean < 0.3f)
-          mean = 1.0f;
+       if (mean < 0.15f)
+         relative_force *= 2.0f;
+  //     else
+  // //      if (mean < 0.3f)
+  //         relative_force mean = 1.0f;
   //      else
   //        mean = 0.8f;
 
-      // float diff_horiz = fabs(means[(row + 4 * raw_patern_size) * roi_out->width + col] - means[(row - 4 * raw_patern_size) * roi_out->width + col])
-      //                   + fabs(means[(row + 3 * raw_patern_size) * roi_out->width + col] - means[(row - 3 * raw_patern_size) * roi_out->width + col]);
-      // float diff_vert = fabs(means[(row) * roi_out->width + col + 4 * raw_patern_size] - means[(row) * roi_out->width + col - 4 * raw_patern_size])
-      //                   + fabs(means[(row) * roi_out->width + col + 3 * raw_patern_size] - means[(row) * roi_out->width + col - 3 * raw_patern_size]);
-      // diff_horiz = diff_horiz / 2.0f;
-      // diff_vert = diff_vert / 2.0f;
-      // if (diff_horiz > 0.02f) {
-      //   mean = 50.0f * diff_horiz;
-      //   if (mean > 2.0f)
-      //     mean = 2.0f;
-      // } else if (diff_vert > 0.02f) {
-      //   mean = 50.0f * diff_vert;
-      //   if (mean > 2.0f)
-      //     mean = 2.0f;
-      // }
+      float diff_horiz = fabs(means[(row + 2 * raw_patern_size) * roi_out->width + col] - means[(row - 2 * raw_patern_size) * roi_out->width + col])
+                       + fabs(means[(row + raw_patern_size) * roi_out->width + col] - means[(row - raw_patern_size) * roi_out->width + col]);
+      float diff_vert = fabs(means[(row) * roi_out->width + col + 2 * raw_patern_size] - means[(row) * roi_out->width + col - 2 * raw_patern_size])
+                       + fabs(means[(row) * roi_out->width + col + raw_patern_size] - means[(row) * roi_out->width + col - raw_patern_size]);
+      diff_horiz = diff_horiz / 2.0f;
+      diff_vert = diff_vert / 2.0f;
+      if (diff_horiz > 0.02f) {
+        relative_force = relative_force * 50.0f * diff_horiz;
+        if (relative_force > 4.0f)
+          relative_force = 4.0f;
+      } else if (diff_vert > 0.02f) {
+        relative_force *= 50.0f * diff_vert;
+        if (relative_force > 4.0f)
+           relative_force = 4.0f;
+      }
       // mean = 1.0f;
 
       float max_weight = 0.0f;
@@ -375,120 +415,58 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 
           float diff;
 
-          // diff = inp[(row + row_offset) * roi_out->width + col + col_offset]
-          //       -inp[(row) * roi_out->width + col];
-          // weight = diff * diff;
-          // diff = medians[(row + row_offset) * roi_out->width + col + col_offset]
-          //       -medians[(row) * roi_out->width + col];
-          // weight += diff * diff * 1.5f;
-          // diff = medians2[(row + row_offset) * roi_out->width + col + col_offset]
-          //       -medians2[(row) * roi_out->width + col];
-          // weight += diff * diff * 1.5f;
-          // diff = means[(row + row_offset) * roi_out->width + col + col_offset]
-          //       -means[(row) * roi_out->width + col];
-          // weight += diff * diff * 2.0f;
-          // weight = weight / 6.0f;
-
-          diff = inp[(row + row_offset) * roi_out->width + col + col_offset]
-                -inp[(row) * roi_out->width + col];
-          weight = fabs(diff);
           diff = medians[(row + row_offset) * roi_out->width + col + col_offset]
                 -medians[(row) * roi_out->width + col];
-          weight += fabs(diff) * 3.0f;
-          //diff = medians2[(row + row_offset) * roi_out->width + col + col_offset]
-          //      -medians2[(row) * roi_out->width + col];
-          //weight += fabs(diff);
-          //diff = means[(row + row_offset) * roi_out->width + col + col_offset]
-          //      -means[(row) * roi_out->width + col];
-          //weight += fabs(diff);
-          weight = weight / 4.0f;
-          weight = weight * weight;
-
-          //diff = means[(row + row_offset) * roi_out->width + col + col_offset]
-          //      -means[(row) * roi_out->width + col];
-          //weight += fabs(diff);
+          weight += diff * diff;
+          float weighth1 = 0.0f;
+          float weightv1 = 0.0f;
 
           diff = medians[(row + row_offset) * roi_out->width + col + col_offset + 1]
-                -medians[(row) * roi_out->width + col];
-          weight += diff * diff;
+                -medians[(row) * roi_out->width + col + 1];
+          weighth1 += diff * diff;
           diff = medians[(row + row_offset) * roi_out->width + col + col_offset - 1]
-                -medians[(row) * roi_out->width + col];
-          weight += diff * diff;
+                -medians[(row) * roi_out->width + col - 1];
+          weighth1 += diff * diff;
+          diff = medians[(row + row_offset) * roi_out->width + col + col_offset + 2]
+                -medians[(row) * roi_out->width + col + 2];
+          weighth1 += diff * diff;
+          diff = medians[(row + row_offset) * roi_out->width + col + col_offset - 2]
+                -medians[(row) * roi_out->width + col - 2];
+          weighth1 += diff * diff;
+
           diff = medians[(row + row_offset + 1) * roi_out->width + col + col_offset]
-                -medians[(row) * roi_out->width + col];
-          weight += diff * diff;
+                -medians[(row + 1) * roi_out->width + col];
+          weightv1 += diff * diff;
           diff = medians[(row + row_offset - 1) * roi_out->width + col + col_offset]
-                -medians[(row) * roi_out->width + col];
-          weight += diff * diff;
+                -medians[(row - 1) * roi_out->width + col];
+          weightv1 += diff * diff;
+          diff = medians[(row + row_offset + 2) * roi_out->width + col + col_offset]
+                -medians[(row + 2) * roi_out->width + col];
+          weightv1 += diff * diff;
+          diff = medians[(row + row_offset - 2) * roi_out->width + col + col_offset]
+                -medians[(row - 2) * roi_out->width + col];
+          weightv1 += diff * diff;
 
-          float weight1 = weight;
-          float weight2 = weight;
+          diff = medians[(row + row_offset + 1) * roi_out->width + col + col_offset + 1]
+                -medians[(row + 1) * roi_out->width + col + 1];
+          weightv1 += diff * diff;
+          diff = medians[(row + row_offset - 1) * roi_out->width + col + col_offset + 1]
+                -medians[(row - 1) * roi_out->width + col + 1];
+          weightv1 += diff * diff;
+          diff = medians[(row + row_offset + 1) * roi_out->width + col + col_offset - 1]
+                -medians[(row + 1) * roi_out->width + col - 1];
+          weightv1 += diff * diff;
+          diff = medians[(row + row_offset - 1) * roi_out->width + col + col_offset - 1]
+                -medians[(row - 1) * roi_out->width + col - 1];
+          weightv1 += diff * diff;
 
-          // original:    ooooo
+          float weight1 = weight + weighth1 + weightv1;
 
-          //              versus
+          weight = weight1 * sqrt(row_offset * row_offset + col_offset * col_offset) / sqrt(K * K + K * K);
 
-          // weight:      ooooo
-
-          //              o
-          // weight1:      ooo
-          //                  o
-
-          //                  o
-          // weight2:      ooo
-          //              o
-
-          diff = means[(row + row_offset) * roi_out->width + col + col_offset + 2]
-                -means[(row) * roi_out->width + col + 2];
-          weight += diff * diff;
-          diff = means[(row + row_offset) * roi_out->width + col + col_offset - 2]
-                -means[(row) * roi_out->width + col - 2];
-          weight += diff * diff;
-
-          diff = means[(row + row_offset + raw_patern_size) * roi_out->width + col + col_offset + 2]
-                -means[(row) * roi_out->width + col + 2];
-          weight1 += diff * diff;
-          diff = means[(row + row_offset - raw_patern_size) * roi_out->width + col + col_offset - 2]
-                -means[(row) * roi_out->width + col - 2];
-          weight1 += diff * diff;
-
-          diff = means[(row + row_offset - raw_patern_size) * roi_out->width + col + col_offset + 2]
-                -means[(row) * roi_out->width + col + 2];
-          weight2 += diff * diff;
-          diff = means[(row + row_offset + raw_patern_size) * roi_out->width + col + col_offset - 2]
-                -means[(row) * roi_out->width + col - 2];
-          weight2 += diff * diff;
-
-          float min = weight;
-          if (weight1 < min)
-            min = weight1;
-          if (weight2 < min)
-            min = weight2;
-
-          weight = (weight + weight1 + weight2) / 3.0f;
-          //weight = min;
-
-          //weight = weight * sqrt(row_offset * row_offset + col_offset * col_offset) / 10.0f;
-
-          // maximum filtering, to avoid noise to noise matching
-#if 0
-          for (int i = 0; i < (2*P+1)*(2*P+1)/2; i++) {
-            float max = 0.0f;
-            int index_max = 0;
-            for (int j = 0; j < (2*P+1)*(2*P+1); j++) {
-              if (diffs2[j] > max) {
-                max = diffs2[j];
-                index_max = j;
-              }
-            }
-            diffs2[index_max] = 0.0f;
-          }
-#endif
-          //for (int j = 0; j < (2*P+1)*(2*P+1); j++)
-          //  weight += diffs2[j];
           if ((row_offset != 0) || (col_offset != 0))
           {
-              weight = exp(-weight * mean /(0.00005f + 0.1f * threshold));
+              weight = exp(-weight * relative_force /(0.00005f + 0.1f * threshold));
 
             if (weight > max_weight)
               max_weight = weight;
@@ -499,18 +477,14 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           }
         }
       }
-//      max_weight = 1.0f;
       if (max_weight < 0.001f) {
         max_weight = 0.001f;
       }
       if (sum_weights == 0.0f) {
-        new_value = medians[(row * roi_out->width + col)];
+        new_value = medians2[(row * roi_out->width + col)];
       } else {
         new_value = new_value / sum_weights;
       }
-//      new_value += max_weight * inp[(row * roi_out->width + col)];
-  //    sum_weights += max_weight;
-    //  new_value = new_value / sum_weights;
 
 //      float diff_io = inp[index] - new_value;
 //      float abs_diff_io = sqrt(fabs(diff_io))/10.0f;
@@ -522,9 +496,34 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
       outp[index] = new_value;
     }
   }
+  // for (int row = K*raw_patern_size+P; row < roi_out->height-K*raw_patern_size-P; row++)
+  // {
+  //   for (int col = K*raw_patern_size+P; col < roi_out->width-K*raw_patern_size-P; col++)
+  //   {
+  //     arrayf[0] = outp[(row) * roi_out->width + col];
+  //     arrayf[1] = outp[(row + raw_patern_size) * roi_out->width + col];
+  //     arrayf[2] = outp[(row - raw_patern_size) * roi_out->width + col];
+  //     arrayf[3] = outp[(row) * roi_out->width + col + raw_patern_size];
+  //     arrayf[4] = outp[(row) * roi_out->width + col - raw_patern_size];
+  //     means[(row) * roi_out->width + col] = median(arrayf, 5) * 0.5f
+  //                                         + 0.1f * arrayf[0]
+  //                                         + 0.1f * arrayf[1]
+  //                                         + 0.1f * arrayf[2]
+  //                                         + 0.1f * arrayf[3]
+  //                                         + 0.1f * arrayf[4];
+  //     }
+  // }
+  // for (int row = K*raw_patern_size+P; row < roi_out->height-K*raw_patern_size-P; row++)
+  // {
+  //   for (int col = K*raw_patern_size+P; col < roi_out->width-K*raw_patern_size-P; col++)
+  //   {
+  //     outp[row * roi_out->width + col] = means[row * roi_out->width + col];
+  //   }
+  // }
   free(means);
   free(medians);
   free(medians2);
+  free(stddev);
 }
 
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
