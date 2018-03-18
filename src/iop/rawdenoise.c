@@ -32,6 +32,7 @@
 #include <gtk/gtk.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <stdbool.h>
 
 DT_MODULE_INTROSPECTION(1, dt_iop_rawdenoise_params_t)
 
@@ -205,8 +206,85 @@ float kth_smallest(float a[], int n, int k)
 
 #define median(a,n) kth_smallest(a,n,(((n)&1)?((n)/2):(((n)/2)-1)))
 
+static void median_bayer(const float *const ivoid, uint32_t filters, float* medians, const dt_iop_roi_t *const roi_in)
+{
+  float* inp = (float*)ivoid;
+  int row_offset = 2;
+  int col_offset = 2;
+  float arrayf[9];
+  for (int row = row_offset; row < roi_in->height-row_offset; row++) {
+    for (int col = col_offset; col < roi_in->width-col_offset; col++) {
+      arrayf[0] = inp[row * roi_in->width + col];
+      if (FC(row, col, filters) == 2) {
+        // Green
+        arrayf[1] = inp[(row + 1) * roi_in->width + col + 1];
+        arrayf[2] = inp[(row + 1) * roi_in->width + col - 1];
+        arrayf[3] = inp[(row - 1) * roi_in->width + col + 1];
+        arrayf[4] = inp[(row - 1) * roi_in->width + col - 1];
+        arrayf[5] = inp[(row + 2) * roi_in->width + col];
+        arrayf[6] = inp[(row - 2) * roi_in->width + col];
+        arrayf[7] = inp[(row) * roi_in->width + col + 2];
+        arrayf[8] = inp[(row) * roi_in->width + col - 2];
+        medians[row * roi_in->width + col] = median(arrayf, 9);
+      } else {
+        // Red or Blue
+        arrayf[1] = inp[(row + 2) * roi_in->width + col];
+        arrayf[2] = inp[(row - 2) * roi_in->width + col];
+        arrayf[3] = inp[(row) * roi_in->width + col + 2];
+        arrayf[4] = inp[(row) * roi_in->width + col - 2];
+        arrayf[5] = inp[(row + 2) * roi_in->width + col + 2];
+        arrayf[6] = inp[(row - 2) * roi_in->width + col - 2];
+        arrayf[7] = inp[(row - 2) * roi_in->width + col + 2];
+        arrayf[8] = inp[(row + 2) * roi_in->width + col - 2];
+        medians[row * roi_in->width + col] = median(arrayf, 9);
+      }
+    }
+  }
+}
+
+#if 0
+static void median_xtrans(const float *const ivoid, const uint8_t(*const xtrans)[6], const float* medians, const dt_iop_roi_t *const roi_in)
+{
+  float* inp = (float*)ivoid;
+  //look for pattern start: find first GRB or GBR pattern
+  int row_start = 0;
+  int col_start = 0;
+  bool start_not_found = true;
+  while(start_not_found) {
+    if (col_start > roi_in->width-3) {
+      col_start = 0;
+      row_start++;
+    }
+    if (row_start >= roi_in->height) {
+      printf("Problem: start of xtrans pattern not found!!!");
+      row_start = 0;
+      col_start = 0;
+      start_not_found = false;
+    }
+
+    int color1 = FCxtrans(row_start, col_start, roi_in, xtrans);
+    int color2 = FCxtrans(row_start, col_start + 1, roi_in, xtrans);
+    int color3 = FCxtrans(row_start, col_start + 2, roi_in, xtrans);
+
+    if ((color1 == 2) && ((color2 ^ color3) == 2)) {
+      start_not_found = false;
+    } else {
+      col_start++;
+    }
+  }
+
+  int row_offset = 3;
+  int col_offset = 3;
+  for (int row = row_offset; row < roi_in->width-row_offset; row++) {
+    for (int col = col_offset; col < roi_in->width-col_offset; col++) {
+
+    }
+  }
+}
+#endif
+
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
-                            const dt_iop_roi_t *const roi_out, float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece)
+                            const dt_iop_roi_t *const roi_out, float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
 {
   const int P = 10;//ceilf(3.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
 
@@ -248,7 +326,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
       arrayf[10] = inp[(row - 2) * roi_out->width + col];
       arrayf[11] = inp[(row) * roi_out->width + col + 2];
       arrayf[12] = inp[(row) * roi_out->width + col - 2];
-      medians[(row) * roi_out->width + col] = median(arrayf, 9);
+      medians[(row) * roi_out->width + col] = median(arrayf, 5);
     }
   }
   for (int row = raw_patern_size; row < roi_out->height-raw_patern_size; row++) {
@@ -261,8 +339,12 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
       medians2[(row) * roi_out->width + col] = median(arrayf, 5);
     }
   }
+  if (filters != 9u) {
+    median_bayer(ivoid, filters, medians2, roi_in);
+    median_bayer(ivoid, filters, medians, roi_in);
+  }
 
-  // const int means_offset = 0;
+  // const int means_offset = 0; 445274 0 1113367 1 445275 2
   // const int horiz_means_offset = 0;
   // for (int row = means_offset; row < roi_out->height-means_offset; row++) {
   //   for (int col = means_offset; col < roi_out->width-means_offset; col++) {
@@ -278,19 +360,24 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   for (int row = 2 * raw_patern_size; row < roi_out->height- 2 * raw_patern_size; row++) {
     for (int col = 2 * raw_patern_size; col < roi_out->width- 2 * raw_patern_size; col++) {
       float mean_tmp = medians2[(row) * roi_out->width + col]
-                      + medians2[(row + raw_patern_size) * roi_out->width + col]
-                      + medians2[(row) * roi_out->width + col + raw_patern_size]
-                      + medians2[(row - raw_patern_size) * roi_out->width + col]
-                      + medians2[(row) * roi_out->width + col - raw_patern_size]
-                      + medians2[(row + raw_patern_size) * roi_out->width + col + raw_patern_size]
-                      + medians2[(row - raw_patern_size) * roi_out->width + col + raw_patern_size]
-                      + medians2[(row - raw_patern_size) * roi_out->width + col - raw_patern_size]
-                      + medians2[(row + raw_patern_size) * roi_out->width + col - raw_patern_size]
-                      + medians2[(row + 2 * raw_patern_size) * roi_out->width + col]
-                      + medians2[(row) * roi_out->width + col + 2 * raw_patern_size]
-                      + medians2[(row - 2 * raw_patern_size) * roi_out->width + col]
-                      + medians2[(row) * roi_out->width + col - 2 * raw_patern_size];
-      mean_tmp = mean_tmp / 13.0f;
+                      + medians2[(row + 1) * roi_out->width + col + 2]
+                      + medians2[(row + 2) * roi_out->width + col + 1]
+                      + medians2[(row - 1) * roi_out->width + col + 2]
+                      + medians2[(row - 2) * roi_out->width + col + 1]
+                      + medians2[(row + 1) * roi_out->width + col - 2]
+                      + medians2[(row + 2) * roi_out->width + col - 1]
+                      + medians2[(row - 1) * roi_out->width + col - 2]
+                      + medians2[(row - 2) * roi_out->width + col - 1];
+                      //+ medians2[(row) * roi_out->width + col - raw_patern_size];
+                      // + medians2[(row + raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      // + medians2[(row - raw_patern_size) * roi_out->width + col + raw_patern_size]
+                      // + medians2[(row - raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      // + medians2[(row + raw_patern_size) * roi_out->width + col - raw_patern_size]
+                      // + medians2[(row + 2 * raw_patern_size) * roi_out->width + col]
+                      // + medians2[(row) * roi_out->width + col + 2 * raw_patern_size]
+                      // + medians2[(row - 2 * raw_patern_size) * roi_out->width + col]
+                      // + medians2[(row) * roi_out->width + col - 2 * raw_patern_size];
+      mean_tmp = mean_tmp / 9.0f;
       means[row * roi_out->width + col] = mean_tmp;
       double stddev_tmp = medians2[(row) * roi_out->width + col]
                       * medians2[(row) * roi_out->width + col]
@@ -387,10 +474,10 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   //      else
   //        mean = 0.8f;
 
-      float diff_horiz = fabs(means[(row + 2 * raw_patern_size) * roi_out->width + col] - means[(row - 2 * raw_patern_size) * roi_out->width + col])
-                       + fabs(means[(row + raw_patern_size) * roi_out->width + col] - means[(row - raw_patern_size) * roi_out->width + col]);
-      float diff_vert = fabs(means[(row) * roi_out->width + col + 2 * raw_patern_size] - means[(row) * roi_out->width + col - 2 * raw_patern_size])
-                       + fabs(means[(row) * roi_out->width + col + raw_patern_size] - means[(row) * roi_out->width + col - raw_patern_size]);
+      float diff_horiz = fabs(means[(row + raw_patern_size) * roi_out->width + col] - means[(row) * roi_out->width + col])
+                       + fabs(means[(row) * roi_out->width + col] - means[(row - raw_patern_size) * roi_out->width + col]);
+      float diff_vert = fabs(means[(row) * roi_out->width + col + raw_patern_size] - means[(row) * roi_out->width + col])
+                       + fabs(means[(row) * roi_out->width + col] - means[(row) * roi_out->width + col - raw_patern_size]);
       diff_horiz = diff_horiz / 2.0f;
       diff_vert = diff_vert / 2.0f;
       if (diff_horiz > 0.02f) {
@@ -415,6 +502,9 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 
           float diff;
 
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset]
+                -means[(row) * roi_out->width + col];
+          weight += diff * diff * 3.0f;
           diff = medians[(row + row_offset) * roi_out->width + col + col_offset]
                 -medians[(row) * roi_out->width + col];
           weight += diff * diff;
@@ -427,12 +517,12 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           diff = medians[(row + row_offset) * roi_out->width + col + col_offset - 1]
                 -medians[(row) * roi_out->width + col - 1];
           weighth1 += diff * diff;
-          diff = medians[(row + row_offset) * roi_out->width + col + col_offset + 2]
-                -medians[(row) * roi_out->width + col + 2];
-          weighth1 += diff * diff;
-          diff = medians[(row + row_offset) * roi_out->width + col + col_offset - 2]
-                -medians[(row) * roi_out->width + col - 2];
-          weighth1 += diff * diff;
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset + 2]
+                -means[(row) * roi_out->width + col + 2];
+          weighth1 += diff * diff * 2.0f;
+          diff = means[(row + row_offset) * roi_out->width + col + col_offset - 2]
+                -means[(row) * roi_out->width + col - 2];
+          weighth1 += diff * diff * 2.0f;
 
           diff = medians[(row + row_offset + 1) * roi_out->width + col + col_offset]
                 -medians[(row + 1) * roi_out->width + col];
@@ -440,25 +530,25 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           diff = medians[(row + row_offset - 1) * roi_out->width + col + col_offset]
                 -medians[(row - 1) * roi_out->width + col];
           weightv1 += diff * diff;
-          diff = medians[(row + row_offset + 2) * roi_out->width + col + col_offset]
-                -medians[(row + 2) * roi_out->width + col];
-          weightv1 += diff * diff;
-          diff = medians[(row + row_offset - 2) * roi_out->width + col + col_offset]
-                -medians[(row - 2) * roi_out->width + col];
-          weightv1 += diff * diff;
+          diff = means[(row + row_offset + 2) * roi_out->width + col + col_offset]
+                -means[(row + 2) * roi_out->width + col];
+          weightv1 += diff * diff * 2.0f;
+          diff = means[(row + row_offset - 2) * roi_out->width + col + col_offset]
+                -means[(row - 2) * roi_out->width + col];
+          weightv1 += diff * diff * 2.0f;
 
-          diff = medians[(row + row_offset + 1) * roi_out->width + col + col_offset + 1]
-                -medians[(row + 1) * roi_out->width + col + 1];
-          weightv1 += diff * diff;
-          diff = medians[(row + row_offset - 1) * roi_out->width + col + col_offset + 1]
-                -medians[(row - 1) * roi_out->width + col + 1];
-          weightv1 += diff * diff;
-          diff = medians[(row + row_offset + 1) * roi_out->width + col + col_offset - 1]
-                -medians[(row + 1) * roi_out->width + col - 1];
-          weightv1 += diff * diff;
-          diff = medians[(row + row_offset - 1) * roi_out->width + col + col_offset - 1]
-                -medians[(row - 1) * roi_out->width + col - 1];
-          weightv1 += diff * diff;
+          // diff = means[(row + row_offset + 1) * roi_out->width + col + col_offset + 1]
+          //       -means[(row + 1) * roi_out->width + col + 1];
+          // weightv1 += diff * diff;
+          // diff = means[(row + row_offset - 1) * roi_out->width + col + col_offset + 1]
+          //       -means[(row - 1) * roi_out->width + col + 1];
+          // weightv1 += diff * diff;
+          // diff = means[(row + row_offset + 1) * roi_out->width + col + col_offset - 1]
+          //       -means[(row + 1) * roi_out->width + col - 1];
+          // weightv1 += diff * diff;
+          // diff = means[(row + row_offset - 1) * roi_out->width + col + col_offset - 1]
+          //       -means[(row - 1) * roi_out->width + col - 1];
+          // weightv1 += diff * diff;
 
           float weight1 = weight + weighth1 + weightv1;
 
@@ -778,7 +868,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
       wavelet_denoise_xtrans(ivoid, ovoid, roi_in, d->threshold, xtrans);
     } else {
-      nlm_denoise(ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece);
+      const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
+      nlm_denoise(ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece, xtrans);
     }
   }
 }
