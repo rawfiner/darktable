@@ -425,7 +425,7 @@ static inline float fast_mexp2f(const float x)
 }
 
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
-                            const dt_iop_roi_t *const roi_out, float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
+                            const dt_iop_roi_t *const roi_out, const float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
 {
   const int P = ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
 
@@ -440,7 +440,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height);
   //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
-  double *norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
+  double *const norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
 
   float *in = (float *)ivoid;
 
@@ -459,15 +459,16 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 // we will add up errors)
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
-// #ifdef _OPENMP
-// #pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa)
-// #endif
+ #ifdef _OPENMP
+ #pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa)
+ #endif
       for(int j = 0; j < roi_out->height; j++)
       {
         if(j + kj < 0 || j + kj >= roi_out->height) continue;
         float *S = Sa + dt_get_thread_num() * roi_out->width;
         const float *ins = in + ((size_t)roi_in->width * (j + kj) + ki);
         float *out = ((float *)ovoid) + (size_t)roi_out->width * j;
+        double *norm_j = ((double *)norms) + (size_t)roi_out->width * j;
 
         const int Pm = MIN(MIN(P, j + kj), j);
         const int PM = MIN(MIN(P, roi_out->height - 1 - j - kj), roi_out->height - 1 - j);
@@ -498,7 +499,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
         float slide = 0.0f;
         // sum up the first -P..P
         for(int i = 0; i < 2 * P + 1; i++) slide += s[i];
-        for(int i = 0; i < roi_out->width; i++, s++, ins ++, out ++)
+        for(int i = 0; i < roi_out->width; i++, s++, ins ++, out ++, norm_j++)
         {
           // FIXME: the comment above is actually relevant even for 1000 px width already.
           // XXX    numerical precision will not forgive us:
@@ -510,7 +511,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
             const float norm = (.015f / (2 * P + 1)) * 500000.0f / (1.0f + 100.0f * threshold);
             double weight = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
             out[0] += ins[0] * weight;
-            norms[j*roi_out->width+i] += weight;
+            norm_j[0] += weight;
           }
         }
         if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
