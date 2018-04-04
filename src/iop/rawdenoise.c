@@ -179,7 +179,6 @@ static void median_denoise(const float *const in, float *const out, const dt_iop
 }
 #endif
 
-#if 0
 #define ELEM_SWAP(a,b) { float t=(a);(a)=(b);(b)=t; }
 float kth_smallest(float a[], int n, int k)
 {
@@ -214,8 +213,11 @@ static void median_mean_bayer(const float *const ivoid, uint32_t filters, float*
   float* inp = (float*)ivoid;
   int row_offset = 2;
   int col_offset = 2;
-  float arrayf[9];
+  #ifdef _OPENMP
+  #pragma omp parallel for
+  #endif
   for (int row = row_offset; row < roi_in->height-row_offset; row++) {
+    float arrayf[9];
     for (int col = col_offset; col < roi_in->width-col_offset; col++) {
       arrayf[0] = inp[row * roi_in->width + col];
       if (FC(row, col, filters) == 1) {
@@ -290,6 +292,9 @@ static void median_mean_xtrans(const float *const ivoid, const uint8_t(*const xt
 
   int row_offset = 6;
   int col_offset = 6;
+  #ifdef _OPENMP
+  #pragma omp parallel for
+  #endif
   for (int row = row_offset; row < roi_in->height-row_offset; row++) {
     for (int col = col_offset; col < roi_in->width-col_offset; col++) {
       int position = ((row + row_shift) % pattern_period) * pattern_period + (col + col_shift) % pattern_period;
@@ -403,7 +408,6 @@ static void median_mean_xtrans(const float *const ivoid, const uint8_t(*const xt
     }
   }
 }
-#endif
 
 #define NORM 1
 
@@ -434,6 +438,13 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
     raw_patern_size = 6;
 
 
+  float *medians = calloc((size_t)sizeof(float), roi_out->width * roi_out->height);
+  if (filters != 9u) {
+    median_mean_bayer(ivoid, filters, medians, roi_in);
+  } else {
+    median_mean_xtrans(ivoid, xtrans, medians, roi_in);
+  }
+
   const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
 
   float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
@@ -442,13 +453,16 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
   double *const norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
 
-  float *in = (float *)ivoid;
+  float *in = (float *)medians;
 
   // for each shift vector
   for(int kj = -K; kj <= K; kj+=raw_patern_size)
   {
-    for(int ki = -K; ki <= K; ki+=raw_patern_size)
+    for(int ki = -K; ki <= 0; ki+=raw_patern_size)
     {
+      if ((2*K+1)*kj+ki >= 0)
+        continue;
+
       // TODO: adaptive K tests here!
       // TODO: expf eval for real bilateral experience :)
 
@@ -512,6 +526,8 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
             double weight = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
             out[0] += ins[0] * weight;
             norm_j[0] += weight;
+            (out + (size_t)roi_in->width * kj + ki)[0] += (ins - (size_t)roi_in->width * kj - ki)[0] * weight;
+            (norm_j + (size_t)roi_in->width * kj + ki)[0] += weight;
           }
         }
         if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
