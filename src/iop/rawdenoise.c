@@ -179,6 +179,7 @@ static void median_denoise(const float *const in, float *const out, const dt_iop
 }
 #endif
 
+#if 0
 #define ELEM_SWAP(a,b) { float t=(a);(a)=(b);(b)=t; }
 float kth_smallest(float a[], int n, int k)
 {
@@ -408,6 +409,7 @@ static void median_mean_xtrans(const float *const ivoid, const uint8_t(*const xt
     }
   }
 }
+#endif
 
 #define NORM 1
 
@@ -437,13 +439,14 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   if (filters == 9u)
     raw_patern_size = 6;
 
-
+#if 0
   float *medians = calloc((size_t)sizeof(float), roi_out->width * roi_out->height);
   if (filters != 9u) {
     median_mean_bayer(ivoid, filters, medians, roi_in);
   } else {
     median_mean_xtrans(ivoid, xtrans, medians, roi_in);
   }
+#endif
 
   const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
 
@@ -453,14 +456,14 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
   double *const norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
 
-  float *in = (float *)medians;
+  float *in = (float *)ivoid;
 
   // for each shift vector
   for(int kj = -K; kj <= K; kj+=raw_patern_size)
   {
     for(int ki = -K; ki <= 0; ki+=raw_patern_size)
     {
-      if ((2*K+1)*kj+ki >= 0)
+      if ((2*K+1)*ki+kj >= 0)
         continue;
 
       // TODO: adaptive K tests here!
@@ -501,7 +504,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
             const int last = roi_out->width + MIN(0, -ki);
             for(; i < last; i++, inp ++, inps ++, s++)
             {
-              s[0] += (inp[0] - inps[0]) * (inp[0] - inps[0]);
+              s[0] += fabs(inp[0] - inps[0]);
             }
           }
           // only reuse this if we had a full stripe
@@ -522,7 +525,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           {
             // TODO: could put that outside the loop.
             // DEBUG XXX bring back to computable range:
-            const float norm = (.015f / (2 * P + 1)) * 500000.0f / (1.0f + 100.0f * threshold);
+            const float norm = (.015f / (2 * P + 1)) * 500000.0f / (1.0f + 500.0f * threshold);
             double weight = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
             out[0] += ins[0] * weight;
             norm_j[0] += weight;
@@ -542,7 +545,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           const int last = roi_out->width + MIN(0, -ki);
           for(; i < last; i++, inp ++, inps ++, inm ++, inms ++, s++)
           {
-            s[0] += ((inp[0] - inps[0]) * (inp[0] - inps[0]) - (inm[0] - inms[0]) * (inm[0] - inms[0]));
+            s[0] += fabs(inp[0] - inps[0]) - fabs(inm[0] - inms[0]);
           }
         }
         else
@@ -561,9 +564,9 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
     for(int i = 0; i < roi_out->width; i++)
     {
       // printf("out: %f\n", norms[j*(roi_out->width)+i]);
-      if (norms[j*(roi_out->width)+i] <= 0.00001f)
-        out[j*(roi_out->width)+i] = in[j*(roi_out->width)+i];
-      else
+      if (norms[j*(roi_out->width)+i] <= 0.00001f) {
+        out[j*(roi_out->width)+i] = 1 / 5.0f * (in[j*(roi_out->width)+i] + in[(j+raw_patern_size)*(roi_out->width)+i] + in[(j-raw_patern_size)*(roi_out->width)+i] + in[j*(roi_out->width)+i-raw_patern_size] + in[j*(roi_out->width)+i+raw_patern_size]);
+      } else
         out[j*(roi_out->width)+i] = (float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]);
     }
   }
