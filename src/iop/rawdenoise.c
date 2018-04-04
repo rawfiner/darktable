@@ -179,6 +179,7 @@ static void median_denoise(const float *const in, float *const out, const dt_iop
 }
 #endif
 
+#if 0
 #define ELEM_SWAP(a,b) { float t=(a);(a)=(b);(b)=t; }
 float kth_smallest(float a[], int n, int k)
 {
@@ -402,8 +403,26 @@ static void median_mean_xtrans(const float *const ivoid, const uint8_t(*const xt
     }
   }
 }
+#endif
 
 #define NORM 1
+
+typedef union floatint_t
+{
+  float f;
+  uint32_t i;
+} floatint_t;
+
+// very fast approximation for 2^-x (returns 0 for x > 126)
+static inline float fast_mexp2f(const float x)
+{
+  const float i1 = (float)0x3f800000u; // 2^0
+  const float i2 = (float)0x3f000000u; // 2^-1
+  const float k0 = i1 + x * (i2 - i1);
+  floatint_t k;
+  k.i = k0 >= (float)0x800000u ? k0 : 0;
+  return k.f;
+}
 
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out, float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
@@ -416,6 +435,126 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 
 
   const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
+
+  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
+  // we want to sum up weights in col[3], so need to init to 0:
+  memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height);
+  //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
+  double *norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
+
+  float *in = (float *)ivoid;
+
+  // for each shift vector
+  for(int kj = -K; kj <= K; kj+=raw_patern_size)
+  {
+    for(int ki = -K; ki <= K; ki+=raw_patern_size)
+    {
+      // TODO: adaptive K tests here!
+      // TODO: expf eval for real bilateral experience :)
+
+      if ((kj == 0) && (ki == 0))
+        continue;
+      int inited_slide = 0;
+// don't construct summed area tables but use sliding window! (applies to cpu version res < 1k only, or else
+// we will add up errors)
+// do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
+// memory
+// #ifdef _OPENMP
+// #pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa)
+// #endif
+      for(int j = 0; j < roi_out->height; j++)
+      {
+        if(j + kj < 0 || j + kj >= roi_out->height) continue;
+        float *S = Sa + dt_get_thread_num() * roi_out->width;
+        const float *ins = in + ((size_t)roi_in->width * (j + kj) + ki);
+        float *out = ((float *)ovoid) + (size_t)roi_out->width * j;
+
+        const int Pm = MIN(MIN(P, j + kj), j);
+        const int PM = MIN(MIN(P, roi_out->height - 1 - j - kj), roi_out->height - 1 - j);
+        // first line of every thread
+        // TODO: also every once in a while to assert numerical precision!
+        if(!inited_slide)
+        {
+          // sum up a line
+          memset(S, 0x0, sizeof(float) * roi_out->width);
+          for(int jj = -Pm; jj <= PM; jj++)
+          {
+            int i = MAX(0, -ki);
+            float *s = S + i;
+            const float *inp = in + i + (size_t)roi_in->width * (j + jj);
+            const float *inps = in + i + ((size_t)roi_in->width * (j + jj + kj) + ki);
+            const int last = roi_out->width + MIN(0, -ki);
+            for(; i < last; i++, inp ++, inps ++, s++)
+            {
+              s[0] += (inp[0] - inps[0]) * (inp[0] - inps[0]);
+            }
+          }
+          // only reuse this if we had a full stripe
+          if(Pm == P && PM == P) inited_slide = 1;
+        }
+
+        // sliding window for this line:
+        float *s = S;
+        float slide = 0.0f;
+        // sum up the first -P..P
+        for(int i = 0; i < 2 * P + 1; i++) slide += s[i];
+        for(int i = 0; i < roi_out->width; i++, s++, ins ++, out ++)
+        {
+          // FIXME: the comment above is actually relevant even for 1000 px width already.
+          // XXX    numerical precision will not forgive us:
+          if(i - P > 0 && i + P < roi_out->width) slide += s[P] - s[-P - 1];
+          if(i + ki >= 0 && i + ki < roi_out->width)
+          {
+            // TODO: could put that outside the loop.
+            // DEBUG XXX bring back to computable range:
+            const float norm = (.015f / (2 * P + 1)) * 500000.0f / (1.0f + 100.0f * threshold);
+            double weight = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+            out[0] += ins[0] * weight;
+            norms[j*roi_out->width+i] += weight;
+          }
+        }
+        if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
+        {
+          // sliding window in j direction:
+          int i = MAX(0, -ki);
+          s = S + i;
+          const float *inp = in + i + (size_t)roi_in->width * (j + P + 1);
+          const float *inps = in + i + ((size_t)roi_in->width * (j + P + 1 + kj) + ki);
+          const float *inm = in + i + (size_t)roi_in->width * (j - P);
+          const float *inms = in + i + ((size_t)roi_in->width * (j - P + kj) + ki);
+          const int last = roi_out->width + MIN(0, -ki);
+          for(; i < last; i++, inp ++, inps ++, inm ++, inms ++, s++)
+          {
+            s[0] += ((inp[0] - inps[0]) * (inp[0] - inps[0]) - (inm[0] - inms[0]) * (inm[0] - inms[0]));
+          }
+        }
+        else
+           inited_slide = 0;
+      }
+    }
+  }
+
+  // free shared tmp memory:
+  dt_free_align(Sa);
+  //dt_free_align(in);
+
+  float *out = (float *)ovoid;
+  for(int j = 0; j < roi_out->height; j++)
+  {
+    for(int i = 0; i < roi_out->width; i++)
+    {
+      // printf("out: %f\n", norms[j*(roi_out->width)+i]);
+      if (norms[j*(roi_out->width)+i] <= 0.00001f)
+        out[j*(roi_out->width)+i] = in[j*(roi_out->width)+i];
+      else
+        out[j*(roi_out->width)+i] = (float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]);
+    }
+  }
+
+
+#if 0
+
+
 
   if(P < 1)
   {
@@ -680,6 +819,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   free(medians);
   free(sum_values);
   free(sum_weights);
+  #endif
 }
 
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
