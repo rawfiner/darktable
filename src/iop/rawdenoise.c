@@ -179,7 +179,6 @@ static void median_denoise(const float *const in, float *const out, const dt_iop
 }
 #endif
 
-#if 0
 #define ELEM_SWAP(a,b) { float t=(a);(a)=(b);(b)=t; }
 float kth_smallest(float a[], int n, int k)
 {
@@ -409,7 +408,6 @@ static void median_mean_xtrans(const float *const ivoid, const uint8_t(*const xt
     }
   }
 }
-#endif
 
 #define NORM 1
 
@@ -431,7 +429,7 @@ static inline float fast_mexp2f(const float x)
 }
 
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
-                            const dt_iop_roi_t *const roi_out, const float threshold, uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
+                            const dt_iop_roi_t *const roi_out, const float threshold, const uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
 {
   const int P = ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
 
@@ -439,24 +437,24 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   if (filters == 9u)
     raw_patern_size = 6;
 
-#if 0
   float *medians = calloc((size_t)sizeof(float), roi_out->width * roi_out->height);
   if (filters != 9u) {
     median_mean_bayer(ivoid, filters, medians, roi_in);
   } else {
     median_mean_xtrans(ivoid, xtrans, medians, roi_in);
   }
-#endif
 
   const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
 
   float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
+  int *Na = dt_alloc_align(64, (size_t)sizeof(int) * roi_out->width * dt_get_num_threads());
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height);
   //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
   double *const norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
 
-  float *in = (float *)ivoid;
+  float *in = (float *)medians;
+  in = (float*)ivoid;
 
   // for each shift vector
   for(int kj = -K; kj <= K; kj+=raw_patern_size)
@@ -476,13 +474,14 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 // we will add up errors)
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
- #ifdef _OPENMP
- #pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa)
- #endif
+// #ifdef _OPENMP
+// #pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa, Na)
+// #endif
       for(int j = 0; j < roi_out->height; j++)
       {
         if(j + kj < 0 || j + kj >= roi_out->height) continue;
         float *S = Sa + dt_get_thread_num() * roi_out->width;
+        int *N = Na + dt_get_thread_num() * roi_out->width;
         const float *ins = in + ((size_t)roi_in->width * (j + kj) + ki);
         float *out = ((float *)ovoid) + (size_t)roi_out->width * j;
         double *norm_j = ((double *)norms) + (size_t)roi_out->width * j;
@@ -495,16 +494,26 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
         {
           // sum up a line
           memset(S, 0x0, sizeof(float) * roi_out->width);
+          memset(N, 0x0, sizeof(int) * roi_out->width);
           for(int jj = -Pm; jj <= PM; jj++)
           {
             int i = MAX(0, -ki);
             float *s = S + i;
+            int *n = N + i;
             const float *inp = in + i + (size_t)roi_in->width * (j + jj);
             const float *inps = in + i + ((size_t)roi_in->width * (j + jj + kj) + ki);
             const int last = roi_out->width + MIN(0, -ki);
-            for(; i < last; i++, inp ++, inps ++, s++)
+            for(; i < last; i++, inp ++, inps ++, s++, n++)
             {
-              s[0] += fabs(inp[0] - inps[0]);
+              int color;
+              if (filters == 9u)
+                color = FCxtrans(j + jj, i, roi_in, xtrans);
+              else
+                color = FC(j + jj, i, filters);
+              if (color == 1) {
+                s[0] += fabs(inp[0] - inps[0]);
+                n[0]++;
+              }
             }
           }
           // only reuse this if we had a full stripe
@@ -513,20 +522,29 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 
         // sliding window for this line:
         float *s = S;
+        int *n = N;
         float slide = 0.0f;
+        float norm = 0.0f;
         // sum up the first -P..P
-        for(int i = 0; i < 2 * P + 1; i++) slide += s[i];
-        for(int i = 0; i < roi_out->width; i++, s++, ins ++, out ++, norm_j++)
+        for(int i = 0; i < 2 * P + 1; i++)
+        {
+          slide += s[i];
+          norm += n[i];
+        }
+        for(int i = 0; i < roi_out->width; i++, s++, ins ++, out ++, norm_j++, n++)
         {
           // FIXME: the comment above is actually relevant even for 1000 px width already.
           // XXX    numerical precision will not forgive us:
-          if(i - P > 0 && i + P < roi_out->width) slide += s[P] - s[-P - 1];
+          if(i - P > 0 && i + P < roi_out->width)
+          {
+            slide += s[P] - s[-P - 1];
+            norm += n[P] - n[-P - 1];
+          }
           if(i + ki >= 0 && i + ki < roi_out->width)
           {
             // TODO: could put that outside the loop.
             // DEBUG XXX bring back to computable range:
-            const float norm = (.015f / (2 * P + 1)) * 500000.0f / (1.0f + 500.0f * threshold);
-            double weight = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+            double weight = fast_mexp2f(fmaxf(0.0f, slide / norm * .015f * 500000.0f / (1.0f + 100.0f * threshold) - 2.0f));
             out[0] += ins[0] * weight;
             norm_j[0] += weight;
             (out + (size_t)roi_in->width * kj + ki)[0] += (ins - (size_t)roi_in->width * kj - ki)[0] * weight;
@@ -538,6 +556,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           // sliding window in j direction:
           int i = MAX(0, -ki);
           s = S + i;
+          n = N + i;
           const float *inp = in + i + (size_t)roi_in->width * (j + P + 1);
           const float *inps = in + i + ((size_t)roi_in->width * (j + P + 1 + kj) + ki);
           const float *inm = in + i + (size_t)roi_in->width * (j - P);
@@ -545,7 +564,24 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           const int last = roi_out->width + MIN(0, -ki);
           for(; i < last; i++, inp ++, inps ++, inm ++, inms ++, s++)
           {
-            s[0] += fabs(inp[0] - inps[0]) - fabs(inm[0] - inms[0]);
+            int color;
+            if (filters == 9u)
+              color = FCxtrans(j + P + 1, i, roi_in, xtrans);
+            else
+              color = FC(j + P + 1, i, filters);
+            //attention, enlever inm inms que si eux aussi sont un pixel vert !!!
+            if (color == 1) {
+              s[0] += fabs(inp[0] - inps[0]);
+              n[0]++;
+            }
+            if (filters == 9u)
+              color = FCxtrans(j - P, i, roi_in, xtrans);
+            else
+              color = FC(j - P, i, filters);
+            if (color == 1) {
+              s[0] -= fabs(inm[0] - inms[0]);
+              n[0]--;
+            }
           }
         }
         else
@@ -556,6 +592,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 
   // free shared tmp memory:
   dt_free_align(Sa);
+  dt_free_align(Na);
   //dt_free_align(in);
 
   float *out = (float *)ovoid;
@@ -565,12 +602,32 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
     {
       // printf("out: %f\n", norms[j*(roi_out->width)+i]);
       if (norms[j*(roi_out->width)+i] <= 0.00001f) {
-        out[j*(roi_out->width)+i] = 1 / 5.0f * (in[j*(roi_out->width)+i] + in[(j+raw_patern_size)*(roi_out->width)+i] + in[(j-raw_patern_size)*(roi_out->width)+i] + in[j*(roi_out->width)+i-raw_patern_size] + in[j*(roi_out->width)+i+raw_patern_size]);
+        if ((i > raw_patern_size) && (j > raw_patern_size) && (i < roi_out->width - raw_patern_size) && (j < roi_out->height - raw_patern_size)) {
+          /* perform quadratic mean */
+          float mean = 0.0f;
+          float tmp = 0.0f;
+          tmp = in[j*(roi_out->width)+i];
+          mean += tmp * tmp;
+          tmp = in[(j + raw_patern_size)*(roi_out->width)+i];
+          mean += tmp * tmp;
+          tmp = in[(j - raw_patern_size)*(roi_out->width)+i];
+          mean += tmp * tmp;
+          tmp = in[j*(roi_out->width)+i+raw_patern_size];
+          mean += tmp * tmp;
+          tmp = in[j*(roi_out->width)+i-raw_patern_size];
+          mean += tmp * tmp;
+          mean = mean / 5.0f;
+          out[j*(roi_out->width)+i] = sqrt(mean);
+        } else {
+          out[j*(roi_out->width)+i] = in[j*(roi_out->width)+i];
+        }
       } else
         out[j*(roi_out->width)+i] = (float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]);
+        out[j*(roi_out->width)+i] = (0.6f * out[j*(roi_out->width)+i] + 0.2f * in[j*(roi_out->width)+i] + 0.2f * sqrt(0.2f * in[j*(roi_out->width)+i] * in[j*(roi_out->width)+i] + 0.8f * out[j*(roi_out->width)+i] * out[j*(roi_out->width)+i]));
     }
   }
 
+  free(medians);
 
 #if 0
 
