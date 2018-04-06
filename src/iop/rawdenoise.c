@@ -459,6 +459,9 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   // for each shift vector
   for(int kj = -K; kj <= K; kj+=raw_patern_size)
   {
+    #ifdef _OPENMP
+    #pragma omp parallel for schedule(static) default(none) shared(in, Sa, Na, kj, raw_patern_size)
+    #endif
     for(int ki = -K; ki <= 0; ki+=raw_patern_size)
     {
       if ((2*K+1)*ki+kj >= 0)
@@ -474,9 +477,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
 // we will add up errors)
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
-// #ifdef _OPENMP
-// #pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa, Na)
-// #endif
+
       for(int j = 0; j < roi_out->height; j++)
       {
         if(j + kj < 0 || j + kj >= roi_out->height) continue;
