@@ -608,17 +608,17 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           float mean = 0.0f;
           float tmp = 0.0f;
           tmp = in[j*(roi_out->width)+i];
-          mean += tmp * tmp;
+          mean += tmp;
           tmp = in[(j + raw_patern_size)*(roi_out->width)+i];
-          mean += tmp * tmp;
+          mean += tmp;
           tmp = in[(j - raw_patern_size)*(roi_out->width)+i];
-          mean += tmp * tmp;
+          mean += tmp;
           tmp = in[j*(roi_out->width)+i+raw_patern_size];
-          mean += tmp * tmp;
+          mean += tmp;
           tmp = in[j*(roi_out->width)+i-raw_patern_size];
-          mean += tmp * tmp;
+          mean += tmp;
           mean = mean / 5.0f;
-          out[j*(roi_out->width)+i] = sqrt(mean);
+          out[j*(roi_out->width)+i] = mean;
         } else {
           out[j*(roi_out->width)+i] = in[j*(roi_out->width)+i];
         }
