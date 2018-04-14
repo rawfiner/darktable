@@ -94,6 +94,21 @@ void connect_key_accels(dt_iop_module_t *self)
   dt_accel_connect_slider_iop(self, "noise threshold", GTK_WIDGET(g->threshold));
 }
 
+int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
+                  void *new_params, const int new_version)
+{
+  dt_iop_rawdenoise_params_t *o = (dt_iop_rawdenoise_params_t *)old_params;
+  dt_iop_rawdenoise_params_t *n = (dt_iop_rawdenoise_params_t *)new_params;
+  if((old_version == 1) && new_version == 2)
+  {
+    n->threshold = o->threshold;
+    n->mode = MODE_WAVELETS;
+    return 0;
+  }
+  return 1;
+}
+
+
 // transposes image, it is faster to read columns than to write them.
 static void hat_transform(float *temp, const float *const base, int stride, int size, int scale)
 {
@@ -975,6 +990,7 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
 
   dt_bauhaus_slider_set(g->threshold, p->threshold);
+  dt_bauhaus_combobox_set(g->mode, p->mode);
 
   gtk_stack_set_visible_child_name(GTK_STACK(g->stack), self->hide_enable_button ? "non_raw" : "raw");
 }
