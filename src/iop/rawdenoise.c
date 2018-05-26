@@ -28,7 +28,6 @@
 #include "gui/accelerators.h"
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
-
 #include <gtk/gtk.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -530,15 +529,8 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
             const int last = roi_out->width + MIN(0, -ki);
             for(; i < last; i++, inp ++, inps ++, s++, n++)
             {
-              int color;
-              if (filters == 9u)
-                color = FCxtrans(j + jj, i, roi_in, xtrans);
-              else
-                color = FC(j + jj, i, filters);
-              if (color == 1) {
-                s[0] += fabs(inp[0] - inps[0]);
-                n[0]++;
-              }
+              s[0] += fabs(inp[0] - inps[0]);
+              n[0]++;
             }
           }
           // only reuse this if we had a full stripe
@@ -589,24 +581,10 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
           const int last = roi_out->width + MIN(0, -ki);
           for(; i < last; i++, inp ++, inps ++, inm ++, inms ++, s++)
           {
-            int color;
-            if (filters == 9u)
-              color = FCxtrans(j + P + 1, i, roi_in, xtrans);
-            else
-              color = FC(j + P + 1, i, filters);
-            //attention, enlever inm inms que si eux aussi sont un pixel vert !!!
-            if (color == 1) {
               s[0] += fabs(inp[0] - inps[0]);
               n[0]++;
-            }
-            if (filters == 9u)
-              color = FCxtrans(j - P, i, roi_in, xtrans);
-            else
-              color = FC(j - P, i, filters);
-            if (color == 1) {
               s[0] -= fabs(inm[0] - inms[0]);
               n[0]--;
-            }
           }
         }
         else
@@ -648,8 +626,17 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
         }
       } else {
         out[j*(roi_out->width)+i] = (float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]);
-        out[j*(roi_out->width)+i] = (0.6f * out[j*(roi_out->width)+i] + 0.2f * in[j*(roi_out->width)+i] + 0.2f * sqrt(0.2f * in[j*(roi_out->width)+i] * in[j*(roi_out->width)+i] + 0.8f * out[j*(roi_out->width)+i] * out[j*(roi_out->width)+i]));
+        //out[j*(roi_out->width)+i] = (0.6f * out[j*(roi_out->width)+i] + 0.2f * in[j*(roi_out->width)+i] + 0.2f * sqrt(0.2f * in[j*(roi_out->width)+i] * in[j*(roi_out->width)+i] + 0.8f * out[j*(roi_out->width)+i] * out[j*(roi_out->width)+i]));
       }
+    }
+  }
+  for(int j = 0; j < roi_out->height; j++)
+  {
+    for(int i = 0; i < roi_out->width; i++)
+    {
+      float diff = out[j*(roi_out->width)+i] - in[j*(roi_out->width)+i];
+      float opacity = exp(-fabs(diff)*40.0f); //TODO make a slide for that magic number (the higher, the less input) vary between 10 and 100
+      out[j*(roi_out->width)+i] = (1.0f - opacity) * out[j*(roi_out->width)+i] + opacity * in[j*(roi_out->width)+i];
     }
   }
 
