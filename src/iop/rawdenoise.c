@@ -44,6 +44,7 @@ typedef enum dt_iop_rawdenoise_mode_t
 typedef struct dt_iop_rawdenoise_params_t
 {
   float threshold;
+  float details;
   dt_iop_rawdenoise_mode_t mode;
 } dt_iop_rawdenoise_params_t;
 
@@ -53,12 +54,14 @@ typedef struct dt_iop_rawdenoise_gui_data_t
   GtkWidget *box_raw;
   GtkWidget *mode;
   GtkWidget *threshold;
+  GtkWidget *details;
   GtkWidget *label_non_raw;
 } dt_iop_rawdenoise_gui_data_t;
 
 typedef struct dt_iop_rawdenoise_data_t
 {
   float threshold;
+  float details;
   dt_iop_rawdenoise_mode_t mode;
 } dt_iop_rawdenoise_data_t;
 
@@ -101,6 +104,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
   if((old_version == 1) && new_version == 2)
   {
     n->threshold = o->threshold;
+    n->details = 0.0f;
     n->mode = MODE_WAVELETS;
     return 0;
   }
@@ -202,6 +206,7 @@ static void median_denoise(const float *const in, float *const out, const dt_iop
 }
 #endif
 
+#if 0
 #define ELEM_SWAP(a,b) { float t=(a);(a)=(b);(b)=t; }
 float kth_smallest(float a[], int n, int k)
 {
@@ -450,11 +455,13 @@ static inline float fast_mexp2f(const float x)
   k.i = k0 >= (float)0x800000u ? k0 : 0;
   return k.f;
 }
+#endif
 
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out, const float threshold, const uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
 {
-  const int P = ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
+#if 0
+  const int P = 2;//ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
 
   int raw_patern_size = 2;
   if (filters == 9u)
@@ -475,9 +482,9 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height);
   //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
   double *const norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
-
-  float *in = (float *)medians;
-  in = (float*)ivoid;
+#endif
+  float *in = (float*)ivoid;
+#if 0
 
   // for each shift vector
   for(int kj = -K; kj <= K; kj+=raw_patern_size)
@@ -597,50 +604,25 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   dt_free_align(Sa);
   dt_free_align(Na);
   //dt_free_align(in);
-
+#endif
   float *out = (float *)ovoid;
   for(int j = 0; j < roi_out->height; j++)
   {
     for(int i = 0; i < roi_out->width; i++)
     {
       // printf("out: %f\n", norms[j*(roi_out->width)+i]);
+#if 0
       if (norms[j*(roi_out->width)+i] <= 0.00001f) {
-        if ((i > raw_patern_size) && (j > raw_patern_size) && (i < roi_out->width - raw_patern_size) && (j < roi_out->height - raw_patern_size)) {
-          /* perform quadratic mean */
-          float mean = 0.0f;
-          float tmp = 0.0f;
-          tmp = in[j*(roi_out->width)+i];
-          mean += tmp;
-          tmp = in[(j + raw_patern_size)*(roi_out->width)+i];
-          mean += tmp;
-          tmp = in[(j - raw_patern_size)*(roi_out->width)+i];
-          mean += tmp;
-          tmp = in[j*(roi_out->width)+i+raw_patern_size];
-          mean += tmp;
-          tmp = in[j*(roi_out->width)+i-raw_patern_size];
-          mean += tmp;
-          mean = mean / 5.0f;
-          out[j*(roi_out->width)+i] = mean;
-        } else {
           out[j*(roi_out->width)+i] = in[j*(roi_out->width)+i];
-        }
       } else {
-        out[j*(roi_out->width)+i] = (float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]);
-        //out[j*(roi_out->width)+i] = (0.6f * out[j*(roi_out->width)+i] + 0.2f * in[j*(roi_out->width)+i] + 0.2f * sqrt(0.2f * in[j*(roi_out->width)+i] * in[j*(roi_out->width)+i] + 0.8f * out[j*(roi_out->width)+i] * out[j*(roi_out->width)+i]));
+#endif
+        out[j*(roi_out->width)+i] = /*(float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]) +*/ 1.0f * in[j*(roi_out->width)+i];
       }
     }
+    #if 0
   }
-  for(int j = 0; j < roi_out->height; j++)
-  {
-    for(int i = 0; i < roi_out->width; i++)
-    {
-      float diff = out[j*(roi_out->width)+i] - in[j*(roi_out->width)+i];
-      float opacity = exp(-fabs(diff)*40.0f); //TODO make a slide for that magic number (the higher, the less input) vary between 10 and 100
-      out[j*(roi_out->width)+i] = (1.0f - opacity) * out[j*(roi_out->width)+i] + opacity * in[j*(roi_out->width)+i];
-    }
-  }
-
   free(medians);
+  #endif
 }
 
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
@@ -875,6 +857,69 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
   free(fimg);
 }
 
+// void modify_roi_out (struct dt_iop_module_t *module,
+//                      struct dt_dev_pixelpipe_iop_t *piece,
+//                      dt_iop_roi_t *roi_out,
+//                      const dt_iop_roi_t *roi_in)
+// {
+//   roi_out->width /= 2;
+//   roi_out->height /= 2;
+// }
+
+void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop_roi_t * roi_out, const uint32_t filters, const uint8_t(*const xtrans)[6])
+{
+  int out_width = roi_out->width;
+  int out_height = roi_out->height;
+  int scale_factor = 2;
+  out_width /= scale_factor;
+  out_height /= scale_factor;
+  float* half_ivoid = (float*)calloc(sizeof(float), out_width * out_height * scale_factor * scale_factor);
+  float* in = (float*)ivoid;
+  for (int j = 0; j < out_height; j++)
+  {
+    for (int i = 0; i < out_width; i++)
+    {
+      int left = -MIN(i,1);
+      int right = MIN(out_width-i,1);
+      int up = -MIN(j,1);
+      int down = MIN(out_height-j,1);
+      double norm = 0;
+      double value = 0;
+      int color_big_pixel;
+      if (filters == 9u)
+        color_big_pixel = FCxtrans(j, i, roi_out, xtrans);
+      else
+        color_big_pixel = FC(j, i, filters);
+      for (int jj = (j+up)*scale_factor; jj < (j+down)*scale_factor; jj++)
+      {
+        for (int ii = (i+left)*scale_factor; ii < (i+right)*scale_factor; ii++)
+        {
+          int color;
+          if (filters == 9u)
+            color = FCxtrans(jj, ii, roi_in, xtrans);
+          else
+            color = FC(jj, ii, filters);
+
+          if (color == color_big_pixel)
+          {
+            // add 0.5f to position to place the big pixel in the center of a
+            // block of 4 pixels
+            float j_pos_big_pixel = j*scale_factor+0.5f;
+            float i_pos_big_pixel = i*scale_factor+0.5f;
+            // compute distance between pixel and big_pixel
+            float distance = sqrt((jj - j_pos_big_pixel) * (jj - j_pos_big_pixel) + (ii - i_pos_big_pixel) * (ii - i_pos_big_pixel));
+            // add normalized value to big_pixel
+            value += in[jj * roi_in->width + ii] / distance;
+            norm += 1 / distance;
+          }
+        }
+      }
+      half_ivoid[j * roi_in->width + i] = value / norm;
+    }
+  }
+  return (void *const)half_ivoid;
+}
+
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -901,7 +946,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   else
   {
-    nlm_denoise(ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece, xtrans);
+    printf("%d\n", dt_control_get_dev_closeup());
+    printf("%f\n", dt_control_get_dev_zoom_x());
+    dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
+    int closeup = dt_control_get_dev_closeup();
+    if (piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+      printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 0));
+    else if (piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
+      printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1));
+
+    void *const half_ivoid = halfscale_cfa(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out, filters, xtrans);
+    nlm_denoise(half_ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece, xtrans);
+    // dt_iop_clip_and_zoom_mosaic_half_size_f(ovoid, ivoid, roi_out, roi_in,
+    //                                           roi_out->width, roi_in->width, filters);
+    // dt_iop_clip_and_zoom_mosaic_third_size_xtrans_f(ovoid, ivoid, roi_out, roi_in,
+    //                                           roi_out->width, roi_in->width, xtrans);
   }
 }
 
@@ -953,6 +1012,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
 
   d->threshold = p->threshold;
+  d->details = p->details;
   d->mode = p->mode;
 
   if (!(pipe->image.flags & DT_IMAGE_RAW))
@@ -977,6 +1037,7 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
 
   dt_bauhaus_slider_set(g->threshold, p->threshold);
+  dt_bauhaus_slider_set(g->details, p->details);
   dt_bauhaus_combobox_set(g->mode, p->mode);
 
   gtk_stack_set_visible_child_name(GTK_STACK(g->stack), self->hide_enable_button ? "non_raw" : "raw");
@@ -988,6 +1049,15 @@ static void threshold_callback(GtkWidget *slider, gpointer user_data)
   if(self->dt->gui->reset) return;
   dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
   p->threshold = dt_bauhaus_slider_get(slider);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void details_callback(GtkWidget *slider, gpointer user_data)
+{
+  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  if(self->dt->gui->reset) return;
+  dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
+  p->details = dt_bauhaus_slider_get(slider);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -1004,7 +1074,6 @@ void gui_init(dt_iop_module_t *self)
 {
   self->gui_data = malloc(sizeof(dt_iop_rawdenoise_gui_data_t));
   dt_iop_rawdenoise_gui_data_t *g = (dt_iop_rawdenoise_gui_data_t *)self->gui_data;
-  dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
 
   self->widget = GTK_WIDGET(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
 
@@ -1018,16 +1087,24 @@ void gui_init(dt_iop_module_t *self)
   g->mode = dt_bauhaus_combobox_new(self);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->mode), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->mode, NULL, _("mode"));
-  dt_bauhaus_combobox_add(g->mode, _("green-guided non-local means"));
+  dt_bauhaus_combobox_add(g->mode, _("non-local means"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
   gtk_widget_set_tooltip_text(g->mode, _("method used in the denoising core."));
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
 
   /* threshold */
-  g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.001, p->threshold, 3);
+  g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.001, 0.2f, 3);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->threshold), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->threshold, NULL, _("noise threshold"));
   g_signal_connect(G_OBJECT(g->threshold), "value-changed", G_CALLBACK(threshold_callback), self);
+
+  /* details */
+  g->details = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.01f, 0.5f, 3);
+  gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->details), TRUE, TRUE, 0);
+  dt_bauhaus_widget_set_label(g->details, NULL, _("details reconstruction"));
+  g_signal_connect(G_OBJECT(g->details), "value-changed", G_CALLBACK(details_callback), self);
+  gtk_widget_set_tooltip_text(g->details, _("restore fine details from input after the denoising step"));
+
 
   gtk_widget_show_all(g->box_raw);
   gtk_stack_add_named(GTK_STACK(g->stack), g->box_raw, "raw");

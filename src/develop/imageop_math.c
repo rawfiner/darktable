@@ -464,7 +464,7 @@ void dt_iop_clip_and_zoom_mosaic_half_size_f_plain(float *const out, const float
 {
   // adjust to pixel region and don't sample more than scale/2 nbs!
   // pixel footprint on input buffer, radius:
-  const float px_footprint = 1.f / roi_out->scale;
+  const float px_footprint = 1.f / 0.5f;//roi_out->scale;
   // how many 2x2 blocks can be sampled inside that area
   const int samples = round(px_footprint / 2);
 
@@ -862,7 +862,7 @@ void dt_iop_clip_and_zoom_mosaic_third_size_xtrans(uint16_t *const out, const ui
                                                    const dt_iop_roi_t *const roi_in, const int32_t out_stride,
                                                    const int32_t in_stride, const uint8_t (*const xtrans)[6])
 {
-  const float px_footprint = 1.f / roi_out->scale;
+  const float px_footprint = 1.f / 0.33f;//roi_out->scale;
   // Use box filter of width px_footprint*2+1 centered on the current
   // sample (rounded to nearest input pixel) to anti-alias. Higher MP
   // images need larger filters to avoid artifacts.
@@ -904,7 +904,7 @@ void dt_iop_clip_and_zoom_mosaic_third_size_xtrans_f(float *const out, const flo
                                                      const dt_iop_roi_t *const roi_in, const int32_t out_stride,
                                                      const int32_t in_stride, const uint8_t (*const xtrans)[6])
 {
-  const float px_footprint = 1.f / roi_out->scale;
+  const float px_footprint = 1.f / 0.33f;//roi_out->scale;
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(static)
 #endif
