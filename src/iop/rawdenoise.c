@@ -457,10 +457,10 @@ static inline float fast_mexp2f(const float x)
 }
 #endif
 
+#if 0
 static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out, const float threshold, const uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
 {
-#if 0
   const int P = 2;//ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
 
   int raw_patern_size = 2;
@@ -482,16 +482,14 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height);
   //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
   double *const norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
-#endif
   float *in = (float*)ivoid;
-#if 0
 
   // for each shift vector
   for(int kj = -K; kj <= K; kj+=raw_patern_size)
   {
-    #ifdef _OPENMP
-    #pragma omp parallel for schedule(static) default(none) shared(in, Sa, Na, kj, raw_patern_size)
-    #endif
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) default(none) shared(in, Sa, Na, kj, raw_patern_size)
+#endif
     for(int ki = -K; ki <= 0; ki+=raw_patern_size)
     {
       if ((2*K+1)*ki+kj >= 0)
@@ -604,26 +602,22 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   dt_free_align(Sa);
   dt_free_align(Na);
   //dt_free_align(in);
-#endif
   float *out = (float *)ovoid;
   for(int j = 0; j < roi_out->height; j++)
   {
     for(int i = 0; i < roi_out->width; i++)
     {
       // printf("out: %f\n", norms[j*(roi_out->width)+i]);
-#if 0
       if (norms[j*(roi_out->width)+i] <= 0.00001f) {
           out[j*(roi_out->width)+i] = in[j*(roi_out->width)+i];
       } else {
-#endif
         out[j*(roi_out->width)+i] = /*(float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]) +*/ 1.0f * in[j*(roi_out->width)+i];
       }
     }
-    #if 0
   }
   free(medians);
-  #endif
 }
+#endif
 
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
                             float threshold, uint32_t filters)
@@ -866,6 +860,137 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
 //   roi_out->height /= 2;
 // }
 
+#if 0
+void *const raw_downscale(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop_roi_t * roi_out,
+                          const uint32_t filters, const uint8_t(*const xtrans)[6],
+                          int target_width, int target_height)
+{
+  float* output = (float*)calloc(sizeof(float), target_width*target_height);
+  float* weights = (float*)calloc(sizeof(float), target_width*target_height);
+  float* in = (float*)ivoid;
+  for (int j = 0; j < roi_in->height; j++)
+  {
+    for (int i = 0; i < roi_in->width; i++)
+    {
+      /* compute coordinates in downscaled raw */
+      int x = i * target_width / roi_in->width;
+      int y = j * target_height / roi_in->height;
+      int color_downscaled, color_in;
+      float distance;
+      float x_float = i * target_width / roi_in->width;
+      float y_float = j * target_height / roi_in->height;
+      if (filters == 9u)
+      {
+        color_downscaled = FCxtrans(y, x, roi_out, xtrans);
+        color_in = FCxtrans(j, i, roi_out, xtrans);
+      }
+      else
+      {
+        color_downscaled = FC(y, x, filters);
+        color_in = FC(j, i, filters);
+      }
+
+      /* find nearest-neighbor in downscaled raw pattern */
+      int nn_x = x;
+      int nn_y = y;
+      float nn_distance = 100000;
+      int nn2_x = x;
+      int nn2_y = y;
+      float nn2_distance = 100000;
+      int nn3_x = x;
+      int nn3_y = y;
+      float nn3_distance = 100000;
+      int nn4_x = x;
+      int nn4_y = y;
+      float nn4_distance = 100000;
+      int left = MAX(MAX(0, x)-1, 0);
+      int right = MIN(MIN(target_width, x)+1, target_width);
+      int up = MAX(MAX(0, y)-1, 0);
+      int down = MIN(MIN(target_height, y)+1, target_height);
+      for (int nn_j = up; nn_j < down; nn_j++)
+      {
+        for (int nn_i = left; nn_i < right; nn_i++)
+        {
+          if (filters == 9u)
+          {
+            color_downscaled = FCxtrans(nn_j, nn_i, roi_out, xtrans);
+          }
+          else
+          {
+            color_downscaled = FC(nn_j, nn_i, filters);
+          }
+
+          if (color_in != color_downscaled)
+            continue;
+
+          distance = sqrt((nn_i-x_float)*(nn_i-x_float)+(nn_j-y_float)*(nn_j-y_float));
+          if (distance < nn_distance)
+          {
+            if (nn_distance < nn2_distance)
+            {
+              if (nn2_distance < nn3_distance)
+              {
+                if (nn3_distance < nn4_distance)
+                {
+                  nn4_distance = nn3_distance;
+                  nn4_x = nn3_x;
+                  nn4_y = nn3_y;
+                }
+                nn3_distance = nn2_distance;
+                nn3_x = nn2_x;
+                nn3_y = nn2_y;
+              }
+              nn2_distance = nn_distance;
+              nn2_x = nn_x;
+              nn2_y = nn_y;
+            }
+            nn_distance = distance;
+            nn_x = nn_i;
+            nn_y = nn_j;
+          }
+        }
+      }
+      if (nn_distance < 0.0001f)
+        nn_distance = 0.0001f;
+      if (nn2_distance < 0.0001f)
+        nn2_distance = 0.0001f;
+      if (nn3_distance < 0.0001f)
+        nn3_distance = 0.0001f;
+      if (nn4_distance < 0.0001f)
+        nn4_distance = 0.0001f;
+      output[nn_y*target_width+nn_x] += in[j*roi_in->width+i]/nn_distance;
+      weights[nn_y*target_width+nn_x] += 1/nn_distance;
+      if (nn2_distance < 10000)
+      {
+        output[nn2_y*target_width+nn2_x] += in[j*roi_in->width+i]/nn2_distance;
+        weights[nn2_y*target_width+nn2_x] += 1/nn2_distance;
+      }
+      if (nn3_distance < 10000)
+      {
+        output[nn3_y*target_width+nn3_x] += in[j*roi_in->width+i]/nn3_distance;
+        weights[nn3_y*target_width+nn3_x] += 1/nn3_distance;
+      }
+      if (nn4_distance < 10000)
+      {
+        output[nn4_y*target_width+nn4_x] += in[j*roi_in->width+i]/nn4_distance;
+        weights[nn4_y*target_width+nn4_x] += 1/nn4_distance;
+      }
+    }
+  }
+  for (int j = 0; j < target_height; j++)
+  {
+    for (int i = 0; i < target_width; i++)
+    {
+      if (weights[i*target_width+j] == 0.0f)
+        printf("Problem!!\n");
+      output[j*target_width+i] /= weights[j*target_width+i];
+    }
+  }
+  free(weights);
+  return (void *const)output;
+}
+#endif
+
 void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop_roi_t * roi_out, const uint32_t filters, const uint8_t(*const xtrans)[6])
 {
   int out_width = roi_out->width;
@@ -874,15 +999,17 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
   out_width /= scale_factor;
   out_height /= scale_factor;
   float* half_ivoid = (float*)calloc(sizeof(float), out_width * out_height * scale_factor * scale_factor);
+  float *half_ovoid = (float *)calloc(sizeof(float), out_width * out_height * scale_factor * scale_factor);
   float* in = (float*)ivoid;
+#pragma omp parallel for
   for (int j = 0; j < out_height; j++)
   {
     for (int i = 0; i < out_width; i++)
     {
-      int left = -MIN(i,1);
-      int right = MIN(out_width-i,1);
-      int up = -MIN(j,1);
-      int down = MIN(out_height-j,1);
+      int left = -MIN(i, 2);
+      int right = MIN(out_width - i, 2);
+      int up = -MIN(j, 2);
+      int down = MIN(out_height - j, 2);
       double norm = 0;
       double value = 0;
       int color_big_pixel;
@@ -907,17 +1034,111 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
             float j_pos_big_pixel = j*scale_factor+0.5f;
             float i_pos_big_pixel = i*scale_factor+0.5f;
             // compute distance between pixel and big_pixel
-            float distance = sqrt((jj - j_pos_big_pixel) * (jj - j_pos_big_pixel) + (ii - i_pos_big_pixel) * (ii - i_pos_big_pixel));
+            /*int compression = 10;
+            if (color == 1)
+              compression = 10;*/
+            float distance = /*exp(-*/ sqrt((jj - j_pos_big_pixel) * (jj - j_pos_big_pixel)
+                                            + (ii - i_pos_big_pixel) * (ii - i_pos_big_pixel)) /*/compression)*/;
             // add normalized value to big_pixel
-            value += in[jj * roi_in->width + ii] / distance;
-            norm += 1 / distance;
+            if(distance < 4)
+            {
+              value += in[jj * roi_in->width + ii] / distance;
+              norm += 1 / distance;
+            }
           }
         }
       }
       half_ivoid[j * roi_in->width + i] = value / norm;
     }
   }
-  return (void *const)half_ivoid;
+#pragma omp parallel for
+  for(int j = 0; j < out_height; j++)
+  {
+    for(int i = 0; i < out_width; i++)
+    {
+      // local contrast restore
+      int color_center;
+      if(filters == 9u)
+        color_center = FCxtrans(j, i, roi_out, xtrans);
+      else
+        color_center = FC(j, i, filters);
+      // get min and max of this color in -2,+2 radius
+      int radius = 2;
+      if(color_center == 1) radius = 1;
+      int left = i - MIN(i, radius);
+      int right = i + MIN(out_width - i, radius);
+      int up = j - MIN(j, radius);
+      int down = j + MIN(out_height - j, radius);
+      float min = 10000.0f;
+      float max = 0.0f;
+      float mean = 0.0f;
+      int normalize_mean = 0;
+      for(int jj = up; jj < down; jj++)
+      {
+        for(int ii = left; ii < right; ii++)
+        {
+          int color;
+          if(filters == 9u)
+            color = FCxtrans(j, i, roi_out, xtrans);
+          else
+            color = FC(j, i, filters);
+          if(color != color_center) continue;
+          float current_pixel = half_ivoid[jj * roi_in->width + ii];
+          if(current_pixel < min) min = current_pixel;
+          if(current_pixel > max) max = current_pixel;
+          mean += current_pixel;
+          normalize_mean++;
+        }
+      }
+      mean = mean / normalize_mean;
+      // get min and max of this color in input image
+      int in_left = left * scale_factor;
+      int in_right = right * scale_factor;
+      int in_up = up * scale_factor;
+      int in_down = down * scale_factor;
+      float in_min = 10000.0f;
+      float in_max = 0.0f;
+      float in_mean = 0.0f;
+      normalize_mean = 0;
+      for(int jj = in_up; jj < in_down; jj++)
+      {
+        for(int ii = in_left; ii < in_right; ii++)
+        {
+          int color;
+          if(filters == 9u)
+            color = FCxtrans(j, i, roi_out, xtrans);
+          else
+            color = FC(j, i, filters);
+          if(color != color_center) continue;
+          float current_pixel = in[jj * roi_in->width + ii];
+          if(current_pixel < in_min) in_min = current_pixel;
+          if(current_pixel > in_max) in_max = current_pixel;
+          in_mean += current_pixel;
+          normalize_mean++;
+        }
+      }
+      in_mean = in_mean / normalize_mean;
+      in_max = 0.6 * in_max + 0.4 * max;
+      in_min = 0.6 * in_min + 0.4 * min;
+      // scale pixel
+      float current = half_ivoid[j * roi_in->width + i];
+      if(current < mean)
+      {
+        if(mean - min > 0.0001f) current = (current - min) / (mean - min) * (in_mean - in_min) + in_min;
+      }
+      else
+      {
+        if(max - mean > 0.0001f) current = (current - mean) / (max - mean) * (in_max - in_mean) + in_mean;
+      }
+      float weight = 0.6f;
+      if(color_center != 1) weight = 0.5f;
+      half_ovoid[j * roi_in->width + i]
+          = weight * current
+            + (1 - weight) * half_ivoid[j * roi_in->width + i]; /* 0.4 current + 0.6 half_ivoid marche pas mal */
+    }
+  }
+  // free(half_ivoid);
+  return (void *const)half_ovoid;
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
@@ -955,8 +1176,22 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     else if (piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
       printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1));
 
-    void *const half_ivoid = halfscale_cfa(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out, filters, xtrans);
-    nlm_denoise(half_ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece, xtrans);
+    int target_w = roi_in->width /* / 2*/;
+    int target_h = roi_in->height /* / 2*/;
+    // float *const half_ivoid = (float *const)raw_downscale(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out,
+    // filters, xtrans, target_w, target_h);
+    float *const half_ivoid
+        = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters, xtrans);
+    float *out = (float *)ovoid;
+    for(int j = 0; j < target_h; j++)
+    {
+      for(int i = 0; i < target_w; i++)
+      {
+        out[j * roi_out->width + i] = half_ivoid[j * target_w + i];
+      }
+    }
+    // free(half_ivoid);
+    // nlm_denoise(half_ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece, xtrans);
     // dt_iop_clip_and_zoom_mosaic_half_size_f(ovoid, ivoid, roi_out, roi_in,
     //                                           roi_out->width, roi_in->width, filters);
     // dt_iop_clip_and_zoom_mosaic_third_size_xtrans_f(ovoid, ivoid, roi_out, roi_in,
