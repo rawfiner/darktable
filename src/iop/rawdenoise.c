@@ -1034,13 +1034,10 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
             float j_pos_big_pixel = j*scale_factor+0.5f;
             float i_pos_big_pixel = i*scale_factor+0.5f;
             // compute distance between pixel and big_pixel
-            /*int compression = 10;
-            if (color == 1)
-              compression = 10;*/
-            float distance = /*exp(-*/ sqrt((jj - j_pos_big_pixel) * (jj - j_pos_big_pixel)
-                                            + (ii - i_pos_big_pixel) * (ii - i_pos_big_pixel)) /*/compression)*/;
+            float distance = sqrt((jj - j_pos_big_pixel) * (jj - j_pos_big_pixel)
+                                  + (ii - i_pos_big_pixel) * (ii - i_pos_big_pixel));
             // add normalized value to big_pixel
-            if(distance < 4)
+            if(distance < 2)
             {
               value += in[jj * roi_in->width + ii] / distance;
               norm += 1 / distance;
@@ -1063,7 +1060,7 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
       else
         color_center = FC(j, i, filters);
       // get min and max of this color in -2,+2 radius
-      int radius = 2;
+      int radius = 1;
       if(color_center == 1) radius = 1;
       int left = i - MIN(i, radius);
       int right = i + MIN(out_width - i, radius);
@@ -1118,23 +1115,15 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
         }
       }
       in_mean = in_mean / normalize_mean;
-      in_max = 0.6 * in_max + 0.4 * max;
-      in_min = 0.6 * in_min + 0.4 * min;
+      float w = 0.7; // TODO adjust this for xtrans / bayer (bayer result is sharper than xtrans one), and to scale
+                     // factor
+      in_max = w * in_max + (1 - w) * max;
+      in_min = w * in_min + (1 - w) * min;
       // scale pixel
       float current = half_ivoid[j * roi_in->width + i];
-      if(current < mean)
-      {
-        if(mean - min > 0.0001f) current = (current - min) / (mean - min) * (in_mean - in_min) + in_min;
-      }
-      else
-      {
-        if(max - mean > 0.0001f) current = (current - mean) / (max - mean) * (in_max - in_mean) + in_mean;
-      }
-      float weight = 0.6f;
-      if(color_center != 1) weight = 0.5f;
-      half_ovoid[j * roi_in->width + i]
-          = weight * current
-            + (1 - weight) * half_ivoid[j * roi_in->width + i]; /* 0.4 current + 0.6 half_ivoid marche pas mal */
+      if(max - min > 0.00001f) current = (current - min) / (max - min) * (in_max - in_min) + in_min;
+      float weight = sqrt(max - min);
+      half_ovoid[j * roi_in->width + i] = weight * current + (1 - weight) * half_ivoid[j * roi_in->width + i];
     }
   }
   // free(half_ivoid);
