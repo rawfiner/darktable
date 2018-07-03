@@ -995,21 +995,21 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
 {
   int out_width = roi_out->width;
   int out_height = roi_out->height;
-  int scale_factor = 2;
-  out_width /= scale_factor;
-  out_height /= scale_factor;
-  float* half_ivoid = (float*)calloc(sizeof(float), out_width * out_height * scale_factor * scale_factor);
-  float *half_ovoid = (float *)calloc(sizeof(float), out_width * out_height * scale_factor * scale_factor);
+  float scale_factor = 2.98;
+  float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
+  out_width = (int)(out_width / scale_factor);
+  out_height = (int)(out_height / scale_factor);
   float* in = (float*)ivoid;
 #pragma omp parallel for
   for (int j = 0; j < out_height; j++)
   {
     for (int i = 0; i < out_width; i++)
     {
-      int left = -MIN(i, 2);
-      int right = MIN(out_width - i, 2);
-      int up = -MIN(j, 2);
-      int down = MIN(out_height - j, 2);
+      int radius = 2;
+      int left = -MIN(i, radius);
+      int right = MIN(out_width - i, radius);
+      int up = -MIN(j, radius);
+      int down = MIN(out_height - j, radius);
       double norm = 0;
       double value = 0;
       int color_big_pixel;
@@ -1017,9 +1017,9 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
         color_big_pixel = FCxtrans(j, i, roi_out, xtrans);
       else
         color_big_pixel = FC(j, i, filters);
-      for (int jj = (j+up)*scale_factor; jj < (j+down)*scale_factor; jj++)
+      for(int jj = (int)((j + up) * scale_factor); jj < (int)((j + down) * scale_factor); jj++)
       {
-        for (int ii = (i+left)*scale_factor; ii < (i+right)*scale_factor; ii++)
+        for(int ii = (int)((i + left) * scale_factor); ii < (int)((i + right) * scale_factor); ii++)
         {
           int color;
           if (filters == 9u)
@@ -1031,16 +1031,25 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
           {
             // add 0.5f to position to place the big pixel in the center of a
             // block of 4 pixels
-            float j_pos_big_pixel = j*scale_factor+0.5f;
-            float i_pos_big_pixel = i*scale_factor+0.5f;
+            float j_pos_big_pixel = j * scale_factor + scale_factor / 2.0;
+            float i_pos_big_pixel = i * scale_factor + scale_factor / 2.0;
             // compute distance between pixel and big_pixel
-            float distance = sqrt((jj - j_pos_big_pixel) * (jj - j_pos_big_pixel)
-                                  + (ii - i_pos_big_pixel) * (ii - i_pos_big_pixel));
+            // the "+0.5" are here to take the center of the small pixels
+            float distance = sqrt((jj + 0.5 - j_pos_big_pixel) * (jj + 0.5 - j_pos_big_pixel)
+                                  + (ii + 0.5 - i_pos_big_pixel) * (ii + 0.5 - i_pos_big_pixel));
             // add normalized value to big_pixel
-            if(distance < 2)
+            if(distance < scale_factor)
             {
-              value += in[jj * roi_in->width + ii] / distance;
-              norm += 1 / distance;
+              if(distance <= 0.00001)
+              {
+                value = in[jj * roi_in->width + ii] * 10000.0;
+                norm = 10000.0;
+              }
+              else
+              {
+                value += in[jj * roi_in->width + ii] / distance;
+                norm += 1 / distance;
+              }
             }
           }
         }
@@ -1048,86 +1057,7 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
       half_ivoid[j * roi_in->width + i] = value / norm;
     }
   }
-#pragma omp parallel for
-  for(int j = 0; j < out_height; j++)
-  {
-    for(int i = 0; i < out_width; i++)
-    {
-      // local contrast restore
-      int color_center;
-      if(filters == 9u)
-        color_center = FCxtrans(j, i, roi_out, xtrans);
-      else
-        color_center = FC(j, i, filters);
-      // get min and max of this color in -2,+2 radius
-      int radius = 1;
-      if(color_center == 1) radius = 1;
-      int left = i - MIN(i, radius);
-      int right = i + MIN(out_width - i, radius);
-      int up = j - MIN(j, radius);
-      int down = j + MIN(out_height - j, radius);
-      float min = 10000.0f;
-      float max = 0.0f;
-      float mean = 0.0f;
-      int normalize_mean = 0;
-      for(int jj = up; jj < down; jj++)
-      {
-        for(int ii = left; ii < right; ii++)
-        {
-          int color;
-          if(filters == 9u)
-            color = FCxtrans(j, i, roi_out, xtrans);
-          else
-            color = FC(j, i, filters);
-          if(color != color_center) continue;
-          float current_pixel = half_ivoid[jj * roi_in->width + ii];
-          if(current_pixel < min) min = current_pixel;
-          if(current_pixel > max) max = current_pixel;
-          mean += current_pixel;
-          normalize_mean++;
-        }
-      }
-      mean = mean / normalize_mean;
-      // get min and max of this color in input image
-      int in_left = left * scale_factor;
-      int in_right = right * scale_factor;
-      int in_up = up * scale_factor;
-      int in_down = down * scale_factor;
-      float in_min = 10000.0f;
-      float in_max = 0.0f;
-      float in_mean = 0.0f;
-      normalize_mean = 0;
-      for(int jj = in_up; jj < in_down; jj++)
-      {
-        for(int ii = in_left; ii < in_right; ii++)
-        {
-          int color;
-          if(filters == 9u)
-            color = FCxtrans(j, i, roi_out, xtrans);
-          else
-            color = FC(j, i, filters);
-          if(color != color_center) continue;
-          float current_pixel = in[jj * roi_in->width + ii];
-          if(current_pixel < in_min) in_min = current_pixel;
-          if(current_pixel > in_max) in_max = current_pixel;
-          in_mean += current_pixel;
-          normalize_mean++;
-        }
-      }
-      in_mean = in_mean / normalize_mean;
-      float w = 0.7; // TODO adjust this for xtrans / bayer (bayer result is sharper than xtrans one), and to scale
-                     // factor
-      in_max = w * in_max + (1 - w) * max;
-      in_min = w * in_min + (1 - w) * min;
-      // scale pixel
-      float current = half_ivoid[j * roi_in->width + i];
-      if(max - min > 0.00001f) current = (current - min) / (max - min) * (in_max - in_min) + in_min;
-      float weight = sqrt(max - min);
-      half_ovoid[j * roi_in->width + i] = weight * current + (1 - weight) * half_ivoid[j * roi_in->width + i];
-    }
-  }
-  // free(half_ivoid);
-  return (void *const)half_ovoid;
+  return (void *const)half_ivoid;
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
@@ -1172,6 +1102,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     float *const half_ivoid
         = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters, xtrans);
     float *out = (float *)ovoid;
+    assert(out != NULL);
     for(int j = 0; j < target_h; j++)
     {
       for(int i = 0; i < target_w; i++)
