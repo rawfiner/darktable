@@ -995,7 +995,7 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
 {
   int out_width = roi_out->width;
   int out_height = roi_out->height;
-  float scale_factor = 2.98;
+  float scale_factor = 1.0;
   float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
@@ -1037,11 +1037,34 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
             // the "+0.5" are here to take the center of the small pixels
             float distance = sqrt((jj + 0.5 - j_pos_big_pixel) * (jj + 0.5 - j_pos_big_pixel)
                                   + (ii + 0.5 - i_pos_big_pixel) * (ii + 0.5 - i_pos_big_pixel));
+
             // add normalized value to big_pixel
-            if(distance < scale_factor)
+
+            float distance_max = scale_factor;
+            // handle cases where the distance_max can be too small to find any pixel
+            if((scale_factor < 1.6) && (color != 1))
+            {
+              if(filters == 9u)
+              {
+                distance_max = 1.6;
+              }
+              else
+              {
+                if(distance_max < 1.42) distance_max = 1.42;
+              }
+              if(i < 2 || out_width - i < 2 || j < 2 || out_height - j < 2)
+              {
+                // close to the image ends, the minimal distance to closer pixel
+                // is bigger (2.12 for xtrans, and 1.58 for bayer)
+                distance_max = 2.13;
+              }
+            }
+            if(distance < distance_max)
             {
               if(distance <= 0.00001)
               {
+                // big pixel is just over a small pixel
+                // give a huge weight to this small pixel
                 value = in[jj * roi_in->width + ii] * 10000.0;
                 norm = 10000.0;
               }
