@@ -991,11 +991,15 @@ void *const raw_downscale(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
 }
 #endif
 
+static float scale = 2.0;
+
 void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop_roi_t * roi_out, const uint32_t filters, const uint8_t(*const xtrans)[6])
 {
-  int out_width = roi_out->width;
-  int out_height = roi_out->height;
-  float scale_factor = 1.0;
+  printf("3 %d\n", roi_out->width);
+
+  int out_width = roi_in->width;
+  int out_height = roi_in->height;
+  float scale_factor = scale;
   float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
@@ -1005,7 +1009,11 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
   {
     for (int i = 0; i < out_width; i++)
     {
-      int radius = 2;
+      int radius = 1;
+      if(i < 4 || out_width - i < 4 || j < 4 || out_height - j < 4) // TODO 4 is probably not optimum
+      {
+        radius = 2;
+      }
       int left = -MIN(i, radius);
       int right = MIN(out_width - i, radius);
       int up = -MIN(j, radius);
@@ -1083,6 +1091,23 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
   return (void *const)half_ivoid;
 }
 
+void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
+                   dt_iop_roi_t *roi_in)
+{
+  roi_in->width = (int)(roi_in->width * scale);
+  roi_in->height = (int)(roi_in->height * scale);
+}
+
+void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
+                    const dt_iop_roi_t *roi_in)
+{
+  roi_out->x = roi_in->x;
+  roi_out->y = roi_in->y;
+  roi_out->scale = roi_in->scale * scale;
+  roi_out->width = (int)(roi_in->width / scale);
+  roi_out->height = (int)(roi_in->height / scale);
+}
+
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -1118,8 +1143,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     else if (piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
       printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1));
 
-    int target_w = roi_in->width /* / 2*/;
-    int target_h = roi_in->height /* / 2*/;
+    int target_w = roi_out->width /* / 2*/;
+    int target_h = roi_out->height /* / 2*/;
     // float *const half_ivoid = (float *const)raw_downscale(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out,
     // filters, xtrans, target_w, target_h);
     float *const half_ivoid
@@ -1130,7 +1155,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     {
       for(int i = 0; i < target_w; i++)
       {
-        out[j * roi_out->width + i] = half_ivoid[j * target_w + i];
+        out[j * roi_out->width + i] = half_ivoid[j * roi_in->width + i];
       }
     }
     // free(half_ivoid);
