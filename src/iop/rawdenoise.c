@@ -991,19 +991,22 @@ void *const raw_downscale(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
 }
 #endif
 
-static float scale = 2.0;
-
-void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop_roi_t * roi_out, const uint32_t filters, const uint8_t(*const xtrans)[6])
+void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
+                          const uint32_t filters, const uint8_t (*const xtrans)[6], float scale)
 {
-  printf("3 %d\n", roi_out->width);
+  printf("4 %f\n", scale);
 
   int out_width = roi_in->width;
   int out_height = roi_in->height;
   float scale_factor = scale;
-  float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
+  int in_width = (int)(roi_in->width * scale_factor);
+  int in_height = (int)(roi_in->height * scale_factor);
+  float *half_ivoid = (float *)calloc(sizeof(float), (in_width + 1) * (in_height + 1));
+  float *half_ovoid = (float *)calloc(sizeof(float), (in_width + 1) * (in_height + 1));
   float* in = (float*)ivoid;
+  printf("%f\n", in[6000]);
 #pragma omp parallel for
   for (int j = 0; j < out_height; j++)
   {
@@ -1044,7 +1047,8 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
             // compute distance between pixel and big_pixel
             // the "+0.5" are here to take the center of the small pixels
             float distance = sqrt((jj + 0.5 - j_pos_big_pixel) * (jj + 0.5 - j_pos_big_pixel)
-                                  + (ii + 0.5 - i_pos_big_pixel) * (ii + 0.5 - i_pos_big_pixel));
+                                  + (ii + 0.5 - i_pos_big_pixel) * (ii + 0.5 - i_pos_big_pixel))
+                             + 100;
 
             // add normalized value to big_pixel
 
@@ -1067,52 +1071,177 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
                 distance_max = 2.13;
               }
             }
-            if(distance < distance_max)
+            if(distance < distance_max + 100)
             {
               if(distance <= 0.00001)
               {
                 // big pixel is just over a small pixel
                 // give a huge weight to this small pixel
-                value = in[jj * roi_in->width + ii] * 10000.0;
+                value = in[jj * in_width + ii] * 10000.0;
                 norm = 10000.0;
               }
               else
               {
-                value += in[jj * roi_in->width + ii] / distance;
+                value += in[jj * in_width + ii] / distance;
                 norm += 1 / distance;
               }
             }
           }
         }
       }
-      half_ivoid[j * roi_in->width + i] = value / norm;
+      half_ivoid[j * in_width + i] = value / norm;
     }
   }
-  return (void *const)half_ivoid;
+  // #pragma omp parallel for
+  for(int j = 0; j < out_height; j++)
+  {
+    for(int i = 0; i < out_width; i++)
+    {
+      // local contrast restore
+      int color_center;
+      if(filters == 9u)
+        color_center = FCxtrans(j, i, roi_out, xtrans);
+      else
+        color_center = FC(j, i, filters);
+      // get min and max of this color in -2,+2 radius
+      int radius = 2;
+      if(color_center == 1) radius = 1;
+      int left = i - MIN(i, radius);
+      int right = i + MIN(out_width - i - 1, radius) + 1;
+      int up = j - MIN(j, radius);
+      int down = j + MIN(out_height - j - 1, radius) + 1;
+
+      float min = 10000.0f;
+      float max = 0.0f;
+      float mean = 0.0f;
+      int normalize_mean = 0;
+      for(int jj = up; jj < down; jj++)
+      {
+        for(int ii = left; ii < right; ii++)
+        {
+          int color;
+          if(filters == 9u)
+            color = FCxtrans(jj, ii, roi_out, xtrans);
+          else
+            color = FC(jj, ii, filters);
+          if(color != color_center) continue;
+          float current_pixel = half_ivoid[jj * in_width + ii];
+          if(current_pixel < min) min = current_pixel;
+          if(current_pixel > max) max = current_pixel;
+          mean += current_pixel;
+          normalize_mean++;
+        }
+      }
+      mean = mean / normalize_mean;
+      // get min and max of this color in input image
+      int in_left = left * scale_factor;
+      int in_right = right * scale_factor;
+      int in_up = up * scale_factor;
+      int in_down = down * scale_factor;
+      float in_min = 10000.0f;
+      float in_max = 0.0f;
+      float in_mean = 0.0f;
+      normalize_mean = 0;
+      for(int jj = in_up; jj < in_down; jj++)
+      {
+        for(int ii = in_left; ii < in_right; ii++)
+        {
+          int color;
+          if(filters == 9u)
+            color = FCxtrans(jj, ii, roi_out, xtrans);
+          else
+            color = FC(jj, ii, filters);
+          if(color != color_center) continue;
+          float current_pixel = in[jj * in_width + ii];
+          if(current_pixel < in_min) in_min = current_pixel;
+          if(current_pixel > in_max) in_max = current_pixel;
+          in_mean += current_pixel;
+          normalize_mean++;
+        }
+      }
+      in_mean = in_mean / normalize_mean;
+      // in_max = 0.6 * in_max + 0.4 * max;
+      // in_min = 0.6 * in_min + 0.4 * min;
+      // scale pixel
+      float current = half_ivoid[j * in_width + i];
+      float w = 0.25; // sqrt(fabsf(mean - in_mean));
+      if(color_center != 1) w = 0.25;
+      current = current * (1 - w) + in_mean * w;
+      // current = current - mean + in_mean;//(current + in_mean)/2;
+      float weight = 1.0f;
+      // if(color_center != 1) weight = 0.5f;
+      half_ovoid[j * in_width + i]
+          = weight * current
+            + (1 - weight) * half_ivoid[j * in_width + i]; /* 0.4 current + 0.6 half_ivoid marche pas mal */
+    }
+  }
+  return (void *const)half_ovoid;
 }
 
 void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
                    dt_iop_roi_t *roi_in)
 {
-  roi_in->width = (int)(roi_in->width * scale);
-  roi_in->height = (int)(roi_in->height * scale);
+  *roi_in = *roi_out;
+  dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
+  float scale = 1.0;
+  int closeup = dt_control_get_dev_closeup();
+  if(piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+    scale = dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 0);
+  else if(piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
+    scale = dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1);
+  if(scale > 1.0) scale = 1.0;
+  printf("mod roi in scale %f\n", scale);
+  printf("mod roi in roi out scale %f\n", roi_out->scale);
+  printf("mod roi in roi in scale %f\n", roi_in->scale);
+
+
+  printf("mod roi in w %d\n", roi_in->width);
+  roi_in->scale = scale;
+  roi_in->x /= scale;
+  roi_in->y /= scale;
+  roi_in->width /= scale;
+  roi_in->height /= scale;
+  printf("mod roi in w %d\n", roi_in->width);
 }
 
 void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
                     const dt_iop_roi_t *roi_in)
 {
+  printf("mod roi out begin : roi_out w %d\n", roi_out->width);
+  printf("mod roi out begin : roi_in w %d\n", roi_in->width);
+
+  dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
+  float scale = 1.0;
+  int closeup = dt_control_get_dev_closeup();
+  if(piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
+    scale = dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 0);
+  else if(piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
+    scale = dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1);
+  if(scale > 1.0) scale = 1.0;
+  printf("mod roi out scale %f\n", scale);
+
+  // FIXME why roi_out and roi_in point to the same memory location??
+  // forced to malloc a new roi_out so that setting roi_out->width doesn't
+  // change roi_in->width...
+  // roi_out = malloc(sizeof(dt_iop_roi_t));
+
+  roi_out->scale = scale;
   roi_out->x = roi_in->x;
   roi_out->y = roi_in->y;
-  roi_out->scale = roi_in->scale * scale;
-  roi_out->width = (int)(roi_in->width / scale);
-  roi_out->height = (int)(roi_in->height / scale);
+  roi_out->width = (int)(roi_in->width * scale);
+  roi_out->height = (int)(roi_in->height * scale);
+  printf("mod roi out end : roi_out w %d\n", roi_out->width);
+  printf("mod roi out end : roi_in w %d\n", roi_in->width);
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
+  printf("process begin : roi_out w %d\n", roi_out->width);
+  printf("process begin : roi_in w %d\n", roi_in->width);
 
+  dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
+  float scale = 1.0;
   const int width = roi_in->width;
   const int height = roi_in->height;
   const uint32_t filters = piece->pipe->dsc.filters;
@@ -1134,28 +1263,37 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   else
   {
-    printf("%d\n", dt_control_get_dev_closeup());
-    printf("%f\n", dt_control_get_dev_zoom_x());
     dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
     int closeup = dt_control_get_dev_closeup();
     if (piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
-      printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 0));
+      scale = dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 0);
     else if (piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
-      printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1));
+      scale = dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1);
+    if(scale > 1.0) scale = 1.0;
+    printf("process scale %f\n", scale);
+    printf("process roi_out scale %f\n", roi_out->scale);
+    printf("process roi_in scale %f\n", roi_out->scale);
+
+
+    // printf("dev_zoom_scale %f\n", scale);
+    // printf("control zoom scale: %f\n", dt_control_get_dev_zoom_scale());
 
     int target_w = roi_out->width /* / 2*/;
     int target_h = roi_out->height /* / 2*/;
     // float *const half_ivoid = (float *const)raw_downscale(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out,
     // filters, xtrans, target_w, target_h);
-    float *const half_ivoid
-        = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters, xtrans);
+    float *const half_ivoid = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out,
+                                                          filters, xtrans, 1 / scale);
     float *out = (float *)ovoid;
+    printf("roi_in w: %d\n", roi_in->width);
+    printf("roi_out w: %d\n", roi_out->width);
+    int in_width = roi_in->width * scale;
     assert(out != NULL);
     for(int j = 0; j < target_h; j++)
     {
       for(int i = 0; i < target_w; i++)
       {
-        out[j * roi_out->width + i] = half_ivoid[j * roi_in->width + i];
+        out[j * roi_out->width + i] = half_ivoid[j * in_width + i];
       }
     }
     // free(half_ivoid);
@@ -1165,6 +1303,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     // dt_iop_clip_and_zoom_mosaic_third_size_xtrans_f(ovoid, ivoid, roi_out, roi_in,
     //                                           roi_out->width, roi_in->width, xtrans);
   }
+  printf("process end : roi_out w %d\n", roi_out->width);
+  printf("process end : roi_in w %d\n", roi_in->width);
 }
 
 void reload_defaults(dt_iop_module_t *module)
