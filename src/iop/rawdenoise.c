@@ -995,7 +995,8 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
 {
   int out_width = roi_out->width;
   int out_height = roi_out->height;
-  float scale_factor = 1.0;
+  float scale_factor = 1.01; // + ((float)(rand() & 0xff))/100.0;
+  printf("%f\n", scale_factor);
   float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
@@ -1017,10 +1018,14 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
         color_big_pixel = FCxtrans(j, i, roi_out, xtrans);
       else
         color_big_pixel = FC(j, i, filters);
-      for(int jj = (int)((j + up) * scale_factor); jj < (int)((j + down) * scale_factor); jj++)
+      // printf("%d, %f, %d, %d, %f ,%d\n", (int)((j + up) * scale_factor), j * scale_factor + scale_factor / 2.0,
+      // (int)((j + down) * scale_factor), (int)((i + left) * scale_factor), i * scale_factor + scale_factor / 2.0,
+      // (int)((i + right) * scale_factor));
+      for(int jj = (int)((j + up) * scale_factor); jj <= (int)ceil((j + down) * scale_factor); jj++)
       {
-        for(int ii = (int)((i + left) * scale_factor); ii < (int)((i + right) * scale_factor); ii++)
+        for(int ii = (int)((i + left) * scale_factor); ii <= (int)ceil((i + right) * scale_factor); ii++)
         {
+          if(jj >= out_height || ii >= out_width) continue;
           int color;
           if (filters == 9u)
             color = FCxtrans(jj, ii, roi_in, xtrans);
@@ -1042,7 +1047,7 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
 
             float distance_max = scale_factor;
             // handle cases where the distance_max can be too small to find any pixel
-            if((scale_factor < 1.6) && (color != 1))
+            if((scale_factor < 1.6) /* && (color != 1)*/)
             {
               if(filters == 9u)
               {
@@ -1061,12 +1066,12 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
             }
             if(distance < distance_max)
             {
-              if(distance <= 0.00001)
+              if(distance <= 0.01)
               {
                 // big pixel is just over a small pixel
                 // give a huge weight to this small pixel
-                value = in[jj * roi_in->width + ii] * 10000.0;
-                norm = 10000.0;
+                value = in[jj * roi_in->width + ii] * 100.0;
+                norm = 100.0;
               }
               else
               {
