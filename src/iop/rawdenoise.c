@@ -1047,7 +1047,7 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
 
             float distance_max = scale_factor;
             // handle cases where the distance_max can be too small to find any pixel
-            if((scale_factor < 1.6) /* && (color != 1)*/)
+            if((scale_factor < 1.6) && (color != 1))
             {
               if(filters == 9u)
               {
@@ -1063,6 +1063,13 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
                 // is bigger (2.12 for xtrans, and 1.58 for bayer)
                 distance_max = 2.13;
               }
+            }
+            if((distance_max < 1.12) && (filters == 9u))
+            {
+              // the point on the xtrans grid which is the farrest from the
+              // green pixels is at a distance of sqrt(1^2+0.5^2) to the
+              // nearest green pixel center.
+              distance_max = 1.12;
             }
             if(distance < distance_max)
             {
