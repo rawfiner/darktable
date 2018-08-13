@@ -459,6 +459,10 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   int raw_patern_size = 2;
   if (filters == 9u)
     raw_patern_size = 6;
+  int coarsest_radius = 28*raw_patern_size; // 7*4*6
+  const int rad[14] = {-coarsest_radius, -15*raw_patern_size, -7*raw_patern_size, -4*raw_patern_size, -3*raw_patern_size, -2*raw_patern_size, -raw_patern_size,
+    raw_patern_size, 2*raw_patern_size, 3*raw_patern_size, 4*raw_patern_size, 7*raw_patern_size, 15*raw_patern_size, coarsest_radius};
+//  raw_patern_size = 6*10;
 
   float *medians = calloc((size_t)sizeof(float), roi_out->width * roi_out->height);
   if (filters != 9u) {
@@ -467,7 +471,7 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
     median_mean_xtrans(ivoid, xtrans, medians, roi_in);
   }
 
-  const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
+  const int K = coarsest_radius;//ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
 
   float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
   int *Na = dt_alloc_align(64, (size_t)sizeof(int) * roi_out->width * dt_get_num_threads());
@@ -480,13 +484,17 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
   in = (float*)ivoid;
 
   // for each shift vector
-  for(int kj = -K; kj <= K; kj+=raw_patern_size)
+  for (int indice_kj = 0; indice_kj < 14; indice_kj++)
+//  for(int kj = -K; kj <= K; kj+=raw_patern_size)
   {
+    int kj = rad[indice_kj];
     #ifdef _OPENMP
     #pragma omp parallel for schedule(static) default(none) shared(in, Sa, Na, kj, raw_patern_size)
     #endif
-    for(int ki = -K; ki <= 0; ki+=raw_patern_size)
+    for (int indice_ki = 0; indice_ki < 14; indice_ki++)
+    //for(int ki = -K; ki <= 0; ki+=raw_patern_size)
     {
+      int ki = rad[indice_ki];
       if ((2*K+1)*ki+kj >= 0)
         continue;
 
@@ -630,15 +638,15 @@ static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_i
       }
     }
   }
-  for(int j = 0; j < roi_out->height; j++)
-  {
-    for(int i = 0; i < roi_out->width; i++)
-    {
-      float diff = out[j*(roi_out->width)+i] - in[j*(roi_out->width)+i];
-      float opacity = exp(-fabs(diff)*40.0f); //TODO make a slide for that magic number (the higher, the less input) vary between 10 and 100
-      out[j*(roi_out->width)+i] = (1.0f - opacity) * out[j*(roi_out->width)+i] + opacity * in[j*(roi_out->width)+i];
-    }
-  }
+  // for(int j = 0; j < roi_out->height; j++)
+  // {
+  //   for(int i = 0; i < roi_out->width; i++)
+  //   {
+  //     float diff = out[j*(roi_out->width)+i] - in[j*(roi_out->width)+i];
+  //     float opacity = exp(-fabs(diff)*40.0f); //TODO make a slide for that magic number (the higher, the less input) vary between 10 and 100
+  //     out[j*(roi_out->width)+i] = (1.0f - opacity) * out[j*(roi_out->width)+i] + opacity * in[j*(roi_out->width)+i];
+  //   }
+  // }
 
   free(medians);
 }
