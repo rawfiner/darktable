@@ -381,7 +381,6 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_
   float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
-  printf("%d, %d, %d, %d\n", out_width, out_height, roi_in->width, roi_in->height);
   float* in = (float*)ivoid;
 #pragma omp parallel for
   for (int j = 0; j < out_height; j++)
@@ -456,12 +455,17 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_
             }
             if(distance < distance_max)
             {
-              if(distance <= 0.01)
+              /* as we divide by the distance, we have to check if the distance is getting
+               * very close to zero, and to prevent a divide by zero.
+               * In addition, the min_dist parameter allow to have a better average when the
+               * scale_factor is high, to prevent artefacts */
+              const float min_dist = 0.05 * scale_factor * scale_factor * scale_factor * scale_factor;
+              if(distance <= min_dist)
               {
                 // big pixel is just over a small pixel
                 // give a huge weight to this small pixel
-                value = in[jj * roi_in->width + ii] * 100.0;
-                norm = 100.0;
+                value += in[jj * roi_in->width + ii] / min_dist;
+                norm += 1 / min_dist;
               }
               else
               {
@@ -548,10 +552,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
         out[j * roi_out->width + i] = half_ivoid[j * roi_in->width + i];
       }
     }
-    // free(half_ivoid);
+    free(half_ivoid);
     // nlm_denoise(half_ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece, xtrans);
     // dt_iop_clip_and_zoom_mosaic_half_size_f(ovoid, ivoid, roi_out, roi_in,
-    //                                           roi_out->width, roi_in->width, filters);
+    //                                         roi_out->width, roi_in->width, filters);
     // dt_iop_clip_and_zoom_mosaic_third_size_xtrans_f(ovoid, ivoid, roi_out, roi_in,
     //                                           roi_out->width, roi_in->width, xtrans);
   }
