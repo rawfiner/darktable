@@ -684,7 +684,7 @@ void gui_init(dt_iop_module_t *self)
   g->mode = dt_bauhaus_combobox_new(self);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->mode), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->mode, NULL, _("mode"));
-  dt_bauhaus_combobox_add(g->mode, _("non-local means"));
+  dt_bauhaus_combobox_add(g->mode, _("raw downscaling"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
   gtk_widget_set_tooltip_text(g->mode, _("method used in the denoising core."));
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
@@ -692,7 +692,7 @@ void gui_init(dt_iop_module_t *self)
   /* threshold */
   g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.001, 0.2f, 3);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->threshold), TRUE, TRUE, 0);
-  dt_bauhaus_widget_set_label(g->threshold, NULL, _("noise threshold"));
+  dt_bauhaus_widget_set_label(g->threshold, NULL, _("scaling factor"));
   g_signal_connect(G_OBJECT(g->threshold), "value-changed", G_CALLBACK(threshold_callback), self);
 
   /* details */
