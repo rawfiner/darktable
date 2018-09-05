@@ -140,485 +140,6 @@ static void hat_transform(float *temp, const float *const base, int stride, int 
 
 #define BIT16 65536.0
 
-#if 0
-static void median_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
-                            float threshold, uint32_t filters)
-{
-  int radius = 1;
-  for (int row = 0; row < roi->height; row++) {
-    for (int col = 0; col < roi->width; col++) {
-      float* outp = out + (size_t)row * roi->width + col;
-      if (row < 2 * radius || col < 2 * radius || row >= roi->height - 2 * radius || col >= roi->width - 2 * radius)
-      {
-        const float* inp = in + (size_t)row * roi->width + col;
-        *outp = *inp;
-      }
-      else
-      {
-        if (((filters == 0x16161616 || filters == 0x94949494) && ((row & 1) == 0) && ((col & 1) == 0)) // row and col even, with pattern starting by B or R
-        ||  ((filters == 0x61616161 || filters == 0x49494949) && (((row + col) & 1) == 1))) // pattern starts with G
-        {
-          float* in_data = malloc((radius * 2 + 1) * (radius * 2 + 1) * sizeof(float));
-          for (int i = -radius; i <= radius; i++) {
-            for (int j = -radius; j <= radius; j++) {
-              in_data[(i + radius) * (radius * 2 + 1) + j + radius] = *(in + (size_t)((row + 2 * i) * roi->width + col + 2 * j));
-            }
-          }
-
-          bool median_not_found = true;
-          int median_candidate = 0;
-          while (median_not_found)
-          {
-            int number_of_lower = 0;
-            int number_of_strictly_lower = 0;
-            for (int i = 0; i < (radius * 2 + 1) * (radius * 2 + 1); i++)
-            {
-              if (i != median_candidate && in_data[i] <= in_data[median_candidate])
-                number_of_lower++;
-              if (i != median_candidate && in_data[i] < in_data[median_candidate])
-                number_of_strictly_lower++;
-            }
-            if (number_of_lower == radius * radius * 4)
-              median_not_found = false;
-            else
-              if (number_of_lower > radius * radius * 4 && number_of_strictly_lower <= radius * radius * 4)
-                median_not_found = false;
-              else
-                median_candidate++;
-          }
-          float mean = 0.0f;
-          for (int i = 0; i < (radius * 2 + 1) * (radius * 2 + 1); i++) {
-            mean += in_data[i];
-          }
-          mean = mean / (float)((radius * 2 + 1) * (radius * 2 + 1));
-
-          *outp = in_data[median_candidate];
-          free(in_data);
-        }
-        else
-        {
-          const float* inp = in + (size_t)row * roi->width + col;
-          *outp = *inp;
-        }
-      }
-    }
-  }
-}
-#endif
-
-#if 0
-#define ELEM_SWAP(a,b) { float t=(a);(a)=(b);(b)=t; }
-float kth_smallest(float a[], int n, int k)
-{
-    int i,j,l,m ;
-    float x ;
-
-    l=0 ; m=n-1 ;
-    while (l<m) {
-        x=a[k] ;
-        i=l ;
-        j=m ;
-        do {
-            while (a[i]<x) i++ ;
-            while (x<a[j]) j-- ;
-            if (i<=j) {
-                ELEM_SWAP(a[i],a[j]) ;
-                i++ ; j-- ;
-            }
-        } while (i<=j) ;
-        if (j<k) l=i ;
-        if (k<i) m=j ;
-    }
-    return a[k] ;
-}
-
-#define median(a,n) kth_smallest(a,n,(((n)&1)?((n)/2):(((n)/2)-1)))
-
-#define MEDIAN_W 0.7f
-
-static void median_mean_bayer(const float *const ivoid, uint32_t filters, float* medians, const dt_iop_roi_t *const roi_in)
-{
-  float* inp = (float*)ivoid;
-  int row_offset = 2;
-  int col_offset = 2;
-  #ifdef _OPENMP
-  #pragma omp parallel for
-  #endif
-  for (int row = row_offset; row < roi_in->height-row_offset; row++) {
-    float arrayf[9];
-    for (int col = col_offset; col < roi_in->width-col_offset; col++) {
-      arrayf[0] = inp[row * roi_in->width + col];
-      if (FC(row, col, filters) == 1) {
-        // Green
-        arrayf[1] = inp[(row + 1) * roi_in->width + col + 1];
-        arrayf[2] = inp[(row + 1) * roi_in->width + col - 1];
-        arrayf[3] = inp[(row - 1) * roi_in->width + col + 1];
-        arrayf[4] = inp[(row - 1) * roi_in->width + col - 1];
-        arrayf[5] = inp[(row + 2) * roi_in->width + col];
-        arrayf[6] = inp[(row - 2) * roi_in->width + col];
-        arrayf[7] = inp[(row) * roi_in->width + col + 2];
-        arrayf[8] = inp[(row) * roi_in->width + col - 2];
-        medians[row * roi_in->width + col] = MEDIAN_W * median(arrayf, 9) + (1.0f - MEDIAN_W) * inp[row * roi_in->width + col];
-      } else {
-        // Red or Blue
-        arrayf[1] = inp[(row + 2) * roi_in->width + col];
-        arrayf[2] = inp[(row - 2) * roi_in->width + col];
-        arrayf[3] = inp[(row) * roi_in->width + col + 2];
-        arrayf[4] = inp[(row) * roi_in->width + col - 2];
-        arrayf[5] = inp[(row + 2) * roi_in->width + col + 2];
-        arrayf[6] = inp[(row - 2) * roi_in->width + col - 2];
-        arrayf[7] = inp[(row - 2) * roi_in->width + col + 2];
-        arrayf[8] = inp[(row + 2) * roi_in->width + col - 2];
-        medians[row * roi_in->width + col] = median(arrayf, 9);
-      }
-    }
-  }
-}
-
-/* pattern_period = 3 or 6 depending of if we simply want the position of green pixels without differenciating R from B pixels,
-  or if we want the complete info */
-static void xtrans_pattern_shift(int* row_shift, int* col_shift, const uint8_t(*const xtrans)[6], const dt_iop_roi_t *const roi_in, const int pattern_period) {
-  //look for pattern start: find first GRB or GBR pattern
-  int row_start = 0;
-  int col_start = 0;
-  bool start_not_found = true;
-  while(start_not_found) {
-    if (col_start > roi_in->width-3) {
-      col_start = 0;
-      row_start++;
-    }
-    if (row_start >= roi_in->height) {
-      printf("Problem: start of xtrans pattern not found!!!");
-      row_start = 0;
-      col_start = 0;
-      start_not_found = false;
-    }
-
-    int color1 = FCxtrans(row_start, col_start, roi_in, xtrans);
-    int color2 = FCxtrans(row_start, col_start + 1, roi_in, xtrans);
-    int color3 = FCxtrans(row_start, col_start + 2, roi_in, xtrans);
-
-    if ((color1 == 1) && ((color2 ^ color3) == 2)) {
-      start_not_found = false;
-    } else {
-      col_start++;
-    }
-  }
-  *row_shift = (pattern_period - (row_start % pattern_period)) % pattern_period;
-  *col_shift = (pattern_period - (col_start % pattern_period)) % pattern_period;
-}
-
-static void median_mean_xtrans(const float *const ivoid, const uint8_t(*const xtrans)[6], float* medians, const dt_iop_roi_t *const roi_in)
-{
-  float* inp = (float*)ivoid;
-
-  const int pattern_period = 3; // Here, we don't need to differenciate R and B
-  int row_shift = 0;
-  int col_shift = 0;
-
-  xtrans_pattern_shift(&row_shift, &col_shift, xtrans, roi_in, pattern_period);
-
-  int row_offset = 6;
-  int col_offset = 6;
-  #ifdef _OPENMP
-  #pragma omp parallel for
-  #endif
-  for (int row = row_offset; row < roi_in->height-row_offset; row++) {
-    for (int col = col_offset; col < roi_in->width-col_offset; col++) {
-      int position = ((row + row_shift) % pattern_period) * pattern_period + (col + col_shift) % pattern_period;
-      float arrayf[10];
-      arrayf[0] = inp[row * roi_in->width + col];
-      switch(position) {
-        case 0:
-          arrayf[1] = inp[(row + 1) * roi_in->width + col + 1];
-          arrayf[2] = inp[(row + 1) * roi_in->width + col - 1];
-          arrayf[3] = inp[(row - 1) * roi_in->width + col + 1];
-          arrayf[4] = inp[(row - 1) * roi_in->width + col - 1];
-          arrayf[5] = inp[(row + 3) * roi_in->width + col];
-          arrayf[6] = inp[(row - 3) * roi_in->width + col];
-          arrayf[7] = inp[(row) * roi_in->width + col + 3];
-          arrayf[8] = inp[(row) * roi_in->width + col - 3];
-          medians[row * roi_in->width + col] = MEDIAN_W * median(arrayf, 9) + (1.0f - MEDIAN_W) * inp[row * roi_in->width + col];
-          break;
-        case 1:
-          arrayf[1] = inp[(row) * roi_in->width + col - 2];
-          arrayf[2] = inp[(row - 2) * roi_in->width + col - 1];
-          arrayf[3] = inp[(row + 2) * roi_in->width + col - 1];
-          arrayf[4] = inp[(row - 1) * roi_in->width + col + 2];
-          arrayf[5] = inp[(row + 1) * roi_in->width + col + 2];
-          arrayf[6] = inp[(row + 6) * roi_in->width + col];
-          arrayf[7] = inp[(row - 6) * roi_in->width + col];
-          arrayf[8] = inp[(row) * roi_in->width + col + 6];
-          arrayf[9] = inp[(row) * roi_in->width + col - 6];
-          medians[row * roi_in->width + col] = 0.5f * (kth_smallest(arrayf, 10, 4) + kth_smallest(arrayf, 10, 5));
-          break;
-        case 2:
-          arrayf[1] = inp[(row) * roi_in->width + col + 2];
-          arrayf[2] = inp[(row - 2) * roi_in->width + col + 1];
-          arrayf[3] = inp[(row + 2) * roi_in->width + col + 1];
-          arrayf[4] = inp[(row - 1) * roi_in->width + col - 2];
-          arrayf[5] = inp[(row + 1) * roi_in->width + col - 2];
-          arrayf[6] = inp[(row + 6) * roi_in->width + col];
-          arrayf[7] = inp[(row - 6) * roi_in->width + col];
-          arrayf[8] = inp[(row) * roi_in->width + col + 6];
-          arrayf[9] = inp[(row) * roi_in->width + col - 6];
-          medians[row * roi_in->width + col] = 0.5f * (kth_smallest(arrayf, 10, 4) + kth_smallest(arrayf, 10, 5));
-          break;
-        case 3:
-          arrayf[1] = inp[(row - 2) * roi_in->width + col];
-          arrayf[2] = inp[(row - 1) * roi_in->width + col - 2];
-          arrayf[3] = inp[(row - 1) * roi_in->width + col + 2];
-          arrayf[4] = inp[(row + 2) * roi_in->width + col - 1];
-          arrayf[5] = inp[(row + 2) * roi_in->width + col + 1];
-          arrayf[6] = inp[(row + 6) * roi_in->width + col];
-          arrayf[7] = inp[(row - 6) * roi_in->width + col];
-          arrayf[8] = inp[(row) * roi_in->width + col + 6];
-          arrayf[9] = inp[(row) * roi_in->width + col - 6];
-          medians[row * roi_in->width + col] = 0.5f * (kth_smallest(arrayf, 10, 4) + kth_smallest(arrayf, 10, 5));
-          break;
-        case 4:
-          arrayf[1] = inp[(row - 1) * roi_in->width + col - 1];
-          arrayf[2] = inp[(row + 1) * roi_in->width + col];
-          arrayf[3] = inp[(row) * roi_in->width + col + 1];
-          arrayf[4] = inp[(row + 1) * roi_in->width + col + 1];
-          arrayf[5] = inp[(row + 3) * roi_in->width + col];
-          arrayf[6] = inp[(row - 3) * roi_in->width + col];
-          arrayf[7] = inp[(row) * roi_in->width + col + 3];
-          arrayf[8] = inp[(row) * roi_in->width + col - 3];
-          medians[row * roi_in->width + col] = MEDIAN_W * median(arrayf, 9) + (1.0f - MEDIAN_W) * inp[row * roi_in->width + col];
-          break;
-        case 5:
-          arrayf[1] = inp[(row - 1) * roi_in->width + col + 1];
-          arrayf[2] = inp[(row + 1) * roi_in->width + col];
-          arrayf[3] = inp[(row) * roi_in->width + col - 1];
-          arrayf[4] = inp[(row + 1) * roi_in->width + col - 1];
-          arrayf[5] = inp[(row + 3) * roi_in->width + col];
-          arrayf[6] = inp[(row - 3) * roi_in->width + col];
-          arrayf[7] = inp[(row) * roi_in->width + col + 3];
-          arrayf[8] = inp[(row) * roi_in->width + col - 3];
-          medians[row * roi_in->width + col] = MEDIAN_W * median(arrayf, 9) + (1.0f - MEDIAN_W) * inp[row * roi_in->width + col];
-          break;
-        case 6:
-          arrayf[1] = inp[(row + 2) * roi_in->width + col];
-          arrayf[2] = inp[(row + 1) * roi_in->width + col - 2];
-          arrayf[3] = inp[(row + 1) * roi_in->width + col + 2];
-          arrayf[4] = inp[(row - 2) * roi_in->width + col - 1];
-          arrayf[5] = inp[(row - 2) * roi_in->width + col + 1];
-          arrayf[6] = inp[(row + 6) * roi_in->width + col];
-          arrayf[7] = inp[(row - 6) * roi_in->width + col];
-          arrayf[8] = inp[(row) * roi_in->width + col + 6];
-          arrayf[9] = inp[(row) * roi_in->width + col - 6];
-          medians[row * roi_in->width + col] = 0.5f * (kth_smallest(arrayf, 10, 4) + kth_smallest(arrayf, 10, 5));
-          break;
-        case 7:
-          arrayf[1] = inp[(row + 1) * roi_in->width + col - 1];
-          arrayf[2] = inp[(row - 1) * roi_in->width + col];
-          arrayf[3] = inp[(row) * roi_in->width + col + 1];
-          arrayf[4] = inp[(row - 1) * roi_in->width + col + 1];
-          arrayf[5] = inp[(row + 3) * roi_in->width + col];
-          arrayf[6] = inp[(row - 3) * roi_in->width + col];
-          arrayf[7] = inp[(row) * roi_in->width + col + 3];
-          arrayf[8] = inp[(row) * roi_in->width + col - 3];
-          medians[row * roi_in->width + col] = MEDIAN_W * median(arrayf, 9) + (1.0f - MEDIAN_W) * inp[row * roi_in->width + col];
-          break;
-        case 8:
-          arrayf[1] = inp[(row + 1) * roi_in->width + col + 1];
-          arrayf[2] = inp[(row - 1) * roi_in->width + col];
-          arrayf[3] = inp[(row) * roi_in->width + col - 1];
-          arrayf[4] = inp[(row - 1) * roi_in->width + col - 1];
-          arrayf[5] = inp[(row + 3) * roi_in->width + col];
-          arrayf[6] = inp[(row - 3) * roi_in->width + col];
-          arrayf[7] = inp[(row) * roi_in->width + col + 3];
-          arrayf[8] = inp[(row) * roi_in->width + col - 3];
-          medians[row * roi_in->width + col] = MEDIAN_W * median(arrayf, 9) + (1.0f - MEDIAN_W) * inp[row * roi_in->width + col];
-          break;
-      }
-    }
-  }
-}
-
-#define NORM 1
-
-typedef union floatint_t
-{
-  float f;
-  uint32_t i;
-} floatint_t;
-
-// very fast approximation for 2^-x (returns 0 for x > 126)
-static inline float fast_mexp2f(const float x)
-{
-  const float i1 = (float)0x3f800000u; // 2^0
-  const float i2 = (float)0x3f000000u; // 2^-1
-  const float k0 = i1 + x * (i2 - i1);
-  floatint_t k;
-  k.i = k0 >= (float)0x800000u ? k0 : 0;
-  return k.f;
-}
-#endif
-
-#if 0
-static void nlm_denoise(const float *const ivoid, float *const ovoid, const dt_iop_roi_t *const roi_in,
-                            const dt_iop_roi_t *const roi_out, const float threshold, const uint32_t filters, dt_dev_pixelpipe_iop_t *piece, const uint8_t(*const xtrans)[6])
-{
-  const int P = 2;//ceilf(2.0f * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f));
-
-  int raw_patern_size = 2;
-  if (filters == 9u)
-    raw_patern_size = 6;
-
-  float *medians = calloc((size_t)sizeof(float), roi_out->width * roi_out->height);
-  if (filters != 9u) {
-    median_mean_bayer(ivoid, filters, medians, roi_in);
-  } else {
-    median_mean_xtrans(ivoid, xtrans, medians, roi_in);
-  }
-
-  const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)) * raw_patern_size;
-
-  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
-  int *Na = dt_alloc_align(64, (size_t)sizeof(int) * roi_out->width * dt_get_num_threads());
-  // we want to sum up weights in col[3], so need to init to 0:
-  memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height);
-  //float *in = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
-  double *const norms = (double*)calloc(roi_out->width * roi_out->height, sizeof(double));
-  float *in = (float*)ivoid;
-
-  // for each shift vector
-  for(int kj = -K; kj <= K; kj+=raw_patern_size)
-  {
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) shared(in, Sa, Na, kj, raw_patern_size)
-#endif
-    for(int ki = -K; ki <= 0; ki+=raw_patern_size)
-    {
-      if ((2*K+1)*ki+kj >= 0)
-        continue;
-
-      // TODO: adaptive K tests here!
-      // TODO: expf eval for real bilateral experience :)
-
-      if ((kj == 0) && (ki == 0))
-        continue;
-      int inited_slide = 0;
-// don't construct summed area tables but use sliding window! (applies to cpu version res < 1k only, or else
-// we will add up errors)
-// do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
-// memory
-
-      for(int j = 0; j < roi_out->height; j++)
-      {
-        if(j + kj < 0 || j + kj >= roi_out->height) continue;
-        float *S = Sa + dt_get_thread_num() * roi_out->width;
-        int *N = Na + dt_get_thread_num() * roi_out->width;
-        const float *ins = in + ((size_t)roi_in->width * (j + kj) + ki);
-        float *out = ((float *)ovoid) + (size_t)roi_out->width * j;
-        double *norm_j = ((double *)norms) + (size_t)roi_out->width * j;
-
-        const int Pm = MIN(MIN(P, j + kj), j);
-        const int PM = MIN(MIN(P, roi_out->height - 1 - j - kj), roi_out->height - 1 - j);
-        // first line of every thread
-        // TODO: also every once in a while to assert numerical precision!
-        if(!inited_slide)
-        {
-          // sum up a line
-          memset(S, 0x0, sizeof(float) * roi_out->width);
-          memset(N, 0x0, sizeof(int) * roi_out->width);
-          for(int jj = -Pm; jj <= PM; jj++)
-          {
-            int i = MAX(0, -ki);
-            float *s = S + i;
-            int *n = N + i;
-            const float *inp = in + i + (size_t)roi_in->width * (j + jj);
-            const float *inps = in + i + ((size_t)roi_in->width * (j + jj + kj) + ki);
-            const int last = roi_out->width + MIN(0, -ki);
-            for(; i < last; i++, inp ++, inps ++, s++, n++)
-            {
-              s[0] += fabs(inp[0] - inps[0]);
-              n[0]++;
-            }
-          }
-          // only reuse this if we had a full stripe
-          if(Pm == P && PM == P) inited_slide = 1;
-        }
-
-        // sliding window for this line:
-        float *s = S;
-        int *n = N;
-        float slide = 0.0f;
-        float norm = 0.0f;
-        // sum up the first -P..P
-        for(int i = 0; i < 2 * P + 1; i++)
-        {
-          slide += s[i];
-          norm += n[i];
-        }
-        for(int i = 0; i < roi_out->width; i++, s++, ins ++, out ++, norm_j++, n++)
-        {
-          // FIXME: the comment above is actually relevant even for 1000 px width already.
-          // XXX    numerical precision will not forgive us:
-          if(i - P > 0 && i + P < roi_out->width)
-          {
-            slide += s[P] - s[-P - 1];
-            norm += n[P] - n[-P - 1];
-          }
-          if(i + ki >= 0 && i + ki < roi_out->width)
-          {
-            // TODO: could put that outside the loop.
-            // DEBUG XXX bring back to computable range:
-            double weight = fast_mexp2f(fmaxf(0.0f, slide / norm * .015f * 500000.0f / (1.0f + 100.0f * threshold) - 2.0f));
-            out[0] += ins[0] * weight;
-            norm_j[0] += weight;
-            (out + (size_t)roi_in->width * kj + ki)[0] += (ins - (size_t)roi_in->width * kj - ki)[0] * weight;
-            (norm_j + (size_t)roi_in->width * kj + ki)[0] += weight;
-          }
-        }
-        if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
-        {
-          // sliding window in j direction:
-          int i = MAX(0, -ki);
-          s = S + i;
-          n = N + i;
-          const float *inp = in + i + (size_t)roi_in->width * (j + P + 1);
-          const float *inps = in + i + ((size_t)roi_in->width * (j + P + 1 + kj) + ki);
-          const float *inm = in + i + (size_t)roi_in->width * (j - P);
-          const float *inms = in + i + ((size_t)roi_in->width * (j - P + kj) + ki);
-          const int last = roi_out->width + MIN(0, -ki);
-          for(; i < last; i++, inp ++, inps ++, inm ++, inms ++, s++)
-          {
-              s[0] += fabs(inp[0] - inps[0]);
-              n[0]++;
-              s[0] -= fabs(inm[0] - inms[0]);
-              n[0]--;
-          }
-        }
-        else
-           inited_slide = 0;
-      }
-    }
-  }
-
-  // free shared tmp memory:
-  dt_free_align(Sa);
-  dt_free_align(Na);
-  //dt_free_align(in);
-  float *out = (float *)ovoid;
-  for(int j = 0; j < roi_out->height; j++)
-  {
-    for(int i = 0; i < roi_out->width; i++)
-    {
-      // printf("out: %f\n", norms[j*(roi_out->width)+i]);
-      if (norms[j*(roi_out->width)+i] <= 0.00001f) {
-          out[j*(roi_out->width)+i] = in[j*(roi_out->width)+i];
-      } else {
-        out[j*(roi_out->width)+i] = /*(float)(((double)out[j*(roi_out->width)+i]) / norms[j*(roi_out->width)+i]) +*/ 1.0f * in[j*(roi_out->width)+i];
-      }
-    }
-  }
-  free(medians);
-}
-#endif
-
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
                             float threshold, uint32_t filters)
 {
@@ -851,162 +372,27 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
   free(fimg);
 }
 
-// void modify_roi_out (struct dt_iop_module_t *module,
-//                      struct dt_dev_pixelpipe_iop_t *piece,
-//                      dt_iop_roi_t *roi_out,
-//                      const dt_iop_roi_t *roi_in)
-// {
-//   roi_out->width /= 2;
-//   roi_out->height /= 2;
-// }
-
-#if 0
-void *const raw_downscale(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop_roi_t * roi_out,
-                          const uint32_t filters, const uint8_t(*const xtrans)[6],
-                          int target_width, int target_height)
+void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
+                          const uint32_t filters, const uint8_t (*const xtrans)[6], float scale_factor)
 {
-  float* output = (float*)calloc(sizeof(float), target_width*target_height);
-  float* weights = (float*)calloc(sizeof(float), target_width*target_height);
-  float* in = (float*)ivoid;
-  for (int j = 0; j < roi_in->height; j++)
-  {
-    for (int i = 0; i < roi_in->width; i++)
-    {
-      /* compute coordinates in downscaled raw */
-      int x = i * target_width / roi_in->width;
-      int y = j * target_height / roi_in->height;
-      int color_downscaled, color_in;
-      float distance;
-      float x_float = i * target_width / roi_in->width;
-      float y_float = j * target_height / roi_in->height;
-      if (filters == 9u)
-      {
-        color_downscaled = FCxtrans(y, x, roi_out, xtrans);
-        color_in = FCxtrans(j, i, roi_out, xtrans);
-      }
-      else
-      {
-        color_downscaled = FC(y, x, filters);
-        color_in = FC(j, i, filters);
-      }
-
-      /* find nearest-neighbor in downscaled raw pattern */
-      int nn_x = x;
-      int nn_y = y;
-      float nn_distance = 100000;
-      int nn2_x = x;
-      int nn2_y = y;
-      float nn2_distance = 100000;
-      int nn3_x = x;
-      int nn3_y = y;
-      float nn3_distance = 100000;
-      int nn4_x = x;
-      int nn4_y = y;
-      float nn4_distance = 100000;
-      int left = MAX(MAX(0, x)-1, 0);
-      int right = MIN(MIN(target_width, x)+1, target_width);
-      int up = MAX(MAX(0, y)-1, 0);
-      int down = MIN(MIN(target_height, y)+1, target_height);
-      for (int nn_j = up; nn_j < down; nn_j++)
-      {
-        for (int nn_i = left; nn_i < right; nn_i++)
-        {
-          if (filters == 9u)
-          {
-            color_downscaled = FCxtrans(nn_j, nn_i, roi_out, xtrans);
-          }
-          else
-          {
-            color_downscaled = FC(nn_j, nn_i, filters);
-          }
-
-          if (color_in != color_downscaled)
-            continue;
-
-          distance = sqrt((nn_i-x_float)*(nn_i-x_float)+(nn_j-y_float)*(nn_j-y_float));
-          if (distance < nn_distance)
-          {
-            if (nn_distance < nn2_distance)
-            {
-              if (nn2_distance < nn3_distance)
-              {
-                if (nn3_distance < nn4_distance)
-                {
-                  nn4_distance = nn3_distance;
-                  nn4_x = nn3_x;
-                  nn4_y = nn3_y;
-                }
-                nn3_distance = nn2_distance;
-                nn3_x = nn2_x;
-                nn3_y = nn2_y;
-              }
-              nn2_distance = nn_distance;
-              nn2_x = nn_x;
-              nn2_y = nn_y;
-            }
-            nn_distance = distance;
-            nn_x = nn_i;
-            nn_y = nn_j;
-          }
-        }
-      }
-      if (nn_distance < 0.0001f)
-        nn_distance = 0.0001f;
-      if (nn2_distance < 0.0001f)
-        nn2_distance = 0.0001f;
-      if (nn3_distance < 0.0001f)
-        nn3_distance = 0.0001f;
-      if (nn4_distance < 0.0001f)
-        nn4_distance = 0.0001f;
-      output[nn_y*target_width+nn_x] += in[j*roi_in->width+i]/nn_distance;
-      weights[nn_y*target_width+nn_x] += 1/nn_distance;
-      if (nn2_distance < 10000)
-      {
-        output[nn2_y*target_width+nn2_x] += in[j*roi_in->width+i]/nn2_distance;
-        weights[nn2_y*target_width+nn2_x] += 1/nn2_distance;
-      }
-      if (nn3_distance < 10000)
-      {
-        output[nn3_y*target_width+nn3_x] += in[j*roi_in->width+i]/nn3_distance;
-        weights[nn3_y*target_width+nn3_x] += 1/nn3_distance;
-      }
-      if (nn4_distance < 10000)
-      {
-        output[nn4_y*target_width+nn4_x] += in[j*roi_in->width+i]/nn4_distance;
-        weights[nn4_y*target_width+nn4_x] += 1/nn4_distance;
-      }
-    }
-  }
-  for (int j = 0; j < target_height; j++)
-  {
-    for (int i = 0; i < target_width; i++)
-    {
-      if (weights[i*target_width+j] == 0.0f)
-        printf("Problem!!\n");
-      output[j*target_width+i] /= weights[j*target_width+i];
-    }
-  }
-  free(weights);
-  return (void *const)output;
-}
-#endif
-
-void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop_roi_t * roi_out, const uint32_t filters, const uint8_t(*const xtrans)[6])
-{
-  int out_width = roi_out->width;
-  int out_height = roi_out->height;
-  float scale_factor = 1.01; // + ((float)(rand() & 0xff))/100.0;
-  printf("%f\n", scale_factor);
+  int out_width = roi_in->width;
+  int out_height = roi_in->height;
+  if(scale_factor < 1.0) scale_factor = 1.0;
   float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
+  printf("%d, %d, %d, %d\n", out_width, out_height, roi_in->width, roi_in->height);
   float* in = (float*)ivoid;
 #pragma omp parallel for
   for (int j = 0; j < out_height; j++)
   {
     for (int i = 0; i < out_width; i++)
     {
-      int radius = 2;
+      int radius = 1;
+      if(i < 4 || out_width - i < 4 || j < 4 || out_height - j < 4) // TODO 4 is probably not optimum
+      {
+        radius = 2;
+      }
       int left = -MIN(i, radius);
       int right = MIN(out_width - i, radius);
       int up = -MIN(j, radius);
@@ -1018,14 +404,11 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
         color_big_pixel = FCxtrans(j, i, roi_out, xtrans);
       else
         color_big_pixel = FC(j, i, filters);
-      // printf("%d, %f, %d, %d, %f ,%d\n", (int)((j + up) * scale_factor), j * scale_factor + scale_factor / 2.0,
-      // (int)((j + down) * scale_factor), (int)((i + left) * scale_factor), i * scale_factor + scale_factor / 2.0,
-      // (int)((i + right) * scale_factor));
       for(int jj = (int)((j + up) * scale_factor); jj <= (int)ceil((j + down) * scale_factor); jj++)
       {
         for(int ii = (int)((i + left) * scale_factor); ii <= (int)ceil((i + right) * scale_factor); ii++)
         {
-          if(jj >= out_height || ii >= out_width) continue;
+          if(jj >= roi_in->height || ii >= roi_in->width) continue;
           int color;
           if (filters == 9u)
             color = FCxtrans(jj, ii, roi_in, xtrans);
@@ -1095,6 +478,26 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t * roi_in, dt_iop
   return (void *const)half_ivoid;
 }
 
+void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
+                   dt_iop_roi_t *roi_in)
+{
+  dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
+  float scale = 1.0 / d->threshold;
+  roi_in->width = (int)(roi_in->width * scale);
+  roi_in->height = (int)(roi_in->height * scale);
+}
+
+void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
+                    const dt_iop_roi_t *roi_in)
+{
+  dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
+  float scale = 1.0 / d->threshold;
+  roi_out->x = roi_in->x;
+  roi_out->y = roi_in->y;
+  roi_out->scale = roi_in->scale; // * scale;
+  roi_out->width = (int)(roi_in->width / scale);
+  roi_out->height = (int)(roi_in->height / scale);
+}
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -1130,19 +533,19 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     else if (piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
       printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1));
 
-    int target_w = roi_in->width /* / 2*/;
-    int target_h = roi_in->height /* / 2*/;
+    int target_w = roi_out->width;
+    int target_h = roi_out->height;
     // float *const half_ivoid = (float *const)raw_downscale(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out,
     // filters, xtrans, target_w, target_h);
-    float *const half_ivoid
-        = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters, xtrans);
+    float *const half_ivoid = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out,
+                                                          filters, xtrans, 1.0 / d->threshold);
     float *out = (float *)ovoid;
     assert(out != NULL);
     for(int j = 0; j < target_h; j++)
     {
       for(int i = 0; i < target_w; i++)
       {
-        out[j * roi_out->width + i] = half_ivoid[j * target_w + i];
+        out[j * roi_out->width + i] = half_ivoid[j * roi_in->width + i];
       }
     }
     // free(half_ivoid);
