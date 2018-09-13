@@ -372,6 +372,108 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
   free(fimg);
 }
 
+void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
+                                         const uint32_t filters, float scale_factor)
+{
+  printf("in downscale_bilinear_bayer_cfa\n");
+
+  int out_width = roi_in->width;
+  int out_height = roi_in->height;
+  if(scale_factor < 1.0) scale_factor = 1.0;
+  float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
+  out_width = (int)(out_width / scale_factor);
+  out_height = (int)(out_height / scale_factor);
+  float *in = (float *)ivoid;
+#pragma omp parallel for schedule(static)
+  for(int j = 1; j < out_height - 1; j++)
+  {
+    for(int i = 1; i < out_width - 1; i++)
+    {
+      int color = FC(j, i, filters);
+      // compute point coordinates in the original scale_factor
+      // scale_factor /2 is here to give the coordinate of the middle of the pixel
+      float oj = j * scale_factor + scale_factor / 2 - 0.5;
+      float oi = i * scale_factor + scale_factor / 2 - 0.5;
+      // find closest pixel that has the same color in the original grid
+      int cj = MAX((int)(oj), 1);
+      int ci = MAX((int)(oi), 1);
+      int color_orig = FC(cj, ci, filters);
+      if(color == 1)
+      {
+        if(color_orig != color)
+        {
+          // either (0,0) or (1,1) is the center of the diamond
+          // find who is closest
+          float d0 = (oj - cj) * (oj - cj) + (oi - ci) * (oi - ci);
+          float d1 = (oj - cj - 1) * (oj - cj - 1) + (oi - ci - 1) * (oi - ci - 1);
+          if(d0 > d1)
+          {
+            // diamond is centered on d1
+            ci++;
+          }
+          else
+          {
+            // diamond is centered on d0
+            cj--;
+          }
+        }
+        else
+        {
+          // either (0,1) or (1,0) is the center of the diamond
+          // find who is closest
+          float d0 = (oj - cj - 1) * (oj - cj - 1) + (oi - ci) * (oi - ci);
+          float d1 = (oj - cj) * (oj - cj) + (oi - ci - 1) * (oi - ci - 1);
+          if(d0 < d1)
+          {
+            ci++;
+            cj--;
+          }
+        }
+        // now that ci and cj are the coordinates of the top of the diamond, we can do the interpolation
+        // point is between (ci, cj), (ci-1,cj+1), (ci+1,cj+1), (ci,cj+2)
+        // we call these points ABCD next
+        // float denom = sqrt(2);
+        float oi_b, oj_b;
+        // change of origin
+        oi_b = oi - ci;
+        oj_b = oj - cj;
+        // change of basis
+        oi_b = -(oi_b + oj_b) / 2;
+        oj_b = -(oi_b - oj_b) / 2;
+        // oi_b and oj_b are normalized distances.
+
+        // oi_b gives the normalized distance to (ci, cj) along the (ci, cj)(ci-1,cj+1) == AB axis (same direction
+        // as (ci+1,cj+1)(ci,cj+2) == CD)
+        // oj_b gives the normalized distance to (ci, cj) along the (ci, cj)(ci+1,cj+1) == AC axis (same direction
+        // as (ci-1,cj+1)(ci,cj+2) == BD)
+        // interpolate along (ci, cj)(ci-1,cj+1)
+        float ab = oi_b * in[cj * roi_in->width + ci] + (1 - oi_b) * in[(cj - 1) * roi_in->width + ci + 1];
+        float cd = oi_b * in[(cj + 1) * roi_in->width + ci + 1] + (1 - oi_b) * in[(cj + 2) * roi_in->width + ci];
+
+        // interpolate along (ci, cj)(ci+1,cj+1)
+        half_ivoid[j * roi_in->width + i] = oj_b * ab + (1 - oj_b) * cd;
+      }
+      else
+      {
+        if(color_orig != color)
+        {
+          ci--;
+          cj--;
+        }
+        // point is between (ci, cj), (ci+2,cj), (ci,cj+2), and (ci+2,cj+2)
+        // interpolate horizontally
+        float top
+            = (oi - ci) * in[cj * roi_in->width + ci] / 2 + (ci + 2 - oi) * in[cj * roi_in->width + ci + 2] / 2;
+        float bottom = (oi - ci) * in[(cj + 2) * roi_in->width + ci] / 2
+                       + (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
+        // interpolate vertically
+        half_ivoid[j * roi_in->width + i] = (oj - cj) * top / 2 + (cj + 2 - oj) * bottom / 2;
+      }
+    }
+  }
+  return half_ivoid;
+}
+
 void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
                           const uint32_t filters, const uint8_t (*const xtrans)[6], float scale_factor)
 {
@@ -382,7 +484,7 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
   float* in = (float*)ivoid;
-#pragma omp parallel for
+#pragma omp parallel for schedule(static)
   for (int j = 0; j < out_height; j++)
   {
     for (int i = 0; i < out_width; i++)
@@ -541,8 +643,18 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     int target_h = roi_out->height;
     // float *const half_ivoid = (float *const)raw_downscale(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out,
     // filters, xtrans, target_w, target_h);
-    float *const half_ivoid = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out,
-                                                          filters, xtrans, 1.0 / d->threshold);
+    float *half_ivoid;
+    if(filters == 9u)
+    {
+      half_ivoid = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters,
+                                               xtrans, 1.0 / d->threshold);
+    }
+    else
+    {
+      half_ivoid = (float *const)downscale_bilinear_bayer_cfa(
+          ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters, 1.0 / d->threshold);
+    }
+
     float *out = (float *)ovoid;
     assert(out != NULL);
     for(int j = 0; j < target_h; j++)
