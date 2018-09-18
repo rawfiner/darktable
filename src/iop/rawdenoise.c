@@ -379,7 +379,7 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
 
   int out_width = roi_in->width;
   int out_height = roi_in->height;
-  if(scale_factor < 1.0) scale_factor = 1.0;
+  // if(scale_factor < 1.0) scale_factor = 1.0;
   float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   out_width = (int)(out_width / scale_factor);
   out_height = (int)(out_height / scale_factor);
@@ -392,8 +392,8 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
       int color = FC(j, i, filters);
       // compute point coordinates in the original scale_factor
       // scale_factor /2 is here to give the coordinate of the middle of the pixel
-      float oj = j * scale_factor + scale_factor / 2 - 0.5;
-      float oi = i * scale_factor + scale_factor / 2 - 0.5;
+      float oj = j * scale_factor + scale_factor / 2;
+      float oi = i * scale_factor + scale_factor / 2;
       // find closest pixel that has the same color in the original grid
       int cj = MAX((int)(oj), 1);
       int ci = MAX((int)(oi), 1);
@@ -402,31 +402,38 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
       {
         if(color_orig != color)
         {
-          // either (0,0) or (1,1) is the center of the diamond
-          // find who is closest
-          float d0 = (oj - cj) * (oj - cj) + (oi - ci) * (oi - ci);
-          float d1 = (oj - cj - 1) * (oj - cj - 1) + (oi - ci - 1) * (oi - ci - 1);
-          if(d0 > d1)
-          {
-            // diamond is centered on d1
-            ci++;
-          }
-          else
-          {
-            // diamond is centered on d0
-            cj--;
-          }
+          cj--;
         }
         else
         {
-          // either (0,1) or (1,0) is the center of the diamond
-          // find who is closest
-          float d0 = (oj - cj - 1) * (oj - cj - 1) + (oi - ci) * (oi - ci);
-          float d1 = (oj - cj) * (oj - cj) + (oi - ci - 1) * (oi - ci - 1);
-          if(d0 < d1)
+          // distance to top left or bottom right
+          float dtl = (oj - cj) * (oj - cj) + (oi - ci) * (oi - ci);
+          float dbr = (oj - cj - 1) * (oj - cj - 1) + (oi - ci - 1) * (oi - ci - 1);
+          // if d0 < d1 => top left
+          // top right or bottom left
+          float dtr = (oj - cj) * (oj - cj) + (oi - ci - 1) * (oi - ci - 1);
+          float dbl = (oj - cj - 1) * (oj - cj - 1) + (oi - ci) * (oi - ci);
+
+          if ((dtl < dbr) && (dtr < dbl))
           {
-            ci++;
+            // top
+            cj -= 2;
+          }
+          if ((dtl < dbr) && (dtr > dbl))
+          {
+            // left
             cj--;
+            ci--;
+          }
+          if ((dtl > dbr) && (dtr > dbl))
+          {
+            // bottom, nothing to do
+          }
+          if ((dtl > dbr) && (dtr < dbl))
+          {
+            // right
+            cj--;
+            ci++;
           }
         }
         // now that ci and cj are the coordinates of the top of the diamond, we can do the interpolation
@@ -435,8 +442,8 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
         // float denom = sqrt(2);
         float oi_b, oj_b;
         // change of origin
-        oi_b = oi - ci;
-        oj_b = oj - cj;
+        oi_b = oi - ci - 0.5;
+        oj_b = oj - cj - 0.5;
         // change of basis
         oi_b = -(oi_b + oj_b) / 2;
         oj_b = -(oi_b - oj_b) / 2;
@@ -455,11 +462,25 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
       }
       else
       {
-        if(color_orig != color)
-        {
+        if (color_orig == 1) {
+          int color_left = FC(cj, ci-1, filters);
+          if (color_left == color) {
+            ci--;
+          } else {
+            cj--;
+          }
+        } else if (color_orig != color) {
           ci--;
           cj--;
         }
+
+        int new_color = FC(cj, ci, filters);
+        if (color != new_color) {
+          printf("color of new pixel and color of ref pixel are different ! %d, %d\n", color, new_color);
+        }
+
+        oi -= 0.5;
+        oj -= 0.5;
         // point is between (ci, cj), (ci+2,cj), (ci,cj+2), and (ci+2,cj+2)
         // interpolate horizontally
         float top
