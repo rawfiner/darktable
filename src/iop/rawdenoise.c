@@ -377,6 +377,8 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
 {
   printf("in downscale_bilinear_bayer_cfa\n");
 
+  // for now, only scale_factor of 2 supported
+
   int out_width = roi_in->width;
   int out_height = roi_in->height;
   // if(scale_factor < 1.0) scale_factor = 1.0;
@@ -394,18 +396,74 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
       // scale_factor /2 is here to give the coordinate of the middle of the pixel
       float oj = j * scale_factor + scale_factor / 2;
       float oi = i * scale_factor + scale_factor / 2;
+      oi -= 0.5;
+      oj -= 0.5;
       // find closest pixel that has the same color in the original grid
       int cj = MAX((int)(oj), 1);
       int ci = MAX((int)(oi), 1);
       int color_orig = FC(cj, ci, filters);
+      if(color_orig != 1) printf("problem in downscaling\n");
+
+      if(color == 1)
+      {
+        half_ivoid[j * roi_in->width + i]
+            = 0.5f * in[cj * roi_in->width + ci] + 0.5f * in[(cj + 1) * roi_in->width + (ci + 1)];
+      }
+      if(color == 2)
+      {
+        ci--;
+        float top
+            = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
+        float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
+                       + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
+        // interpolate vertically
+        half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+      }
+      if(color == 0)
+      {
+        cj--;
+        float top
+            = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
+        float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
+                       + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
+        // interpolate vertically
+        half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+      }
+#if 0
       if(color == 1)
       {
         if(color_orig != color)
         {
-          cj--;
+          cj = cj - 1;
+          ci = ci - 2;
+          float top
+              = (oi - ci) * in[cj * roi_in->width + ci] / 4 + (ci + 4 - oi) * in[cj * roi_in->width + ci + 4] / 4;
+          float bottom = (oi - ci) * in[(cj + 2) * roi_in->width + ci] / 4
+                         + (ci + 4 - oi) * in[(cj + 2) * roi_in->width + ci + 4] / 4;
+          // interpolate vertically
+          half_ivoid[j * roi_in->width + i] = (oj - cj) * top / 2 + (cj + 2 - oj) * bottom / 2;
         }
         else
         {
+          // find nearest square
+          ci--;
+          // A = (ci+1, cj)
+          // B = (ci, cj+1)
+          // C = (ci+2, cj+1)
+          // D = (ci+1, cj+2)
+          oi -= ci;
+          oj -= cj;
+          float fa = in[cj * roi_in->width + ci+1];
+          float fb = in[(cj+1) * roi_in->width + ci];
+          float fc = in[(cj+1) * roi_in->width + ci+2];
+          float fd = in[(cj+2) * roi_in->width + ci+1];
+          float a0 = 1.f/4.f * (3.f * fa + 3.f * fb - fc - fd);
+          float a1 = 1.f/4.f * (fc + fd - fa - fb);
+          float a2 = 1.f/4.f * (3.f * fa - 3.f * fb - fc + fd);
+          float a3 = 1.f/4.f * (fb - fa + fc - fd);
+          half_ivoid[j * roi_in->width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
+        }
+#if 0
           // distance to top left or bottom right
           float dtl = (oj - cj) * (oj - cj) + (oi - ci) * (oi - ci);
           float dbr = (oj - cj - 1) * (oj - cj - 1) + (oi - ci - 1) * (oi - ci - 1);
@@ -414,22 +472,22 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
           float dtr = (oj - cj) * (oj - cj) + (oi - ci - 1) * (oi - ci - 1);
           float dbl = (oj - cj - 1) * (oj - cj - 1) + (oi - ci) * (oi - ci);
 
-          if ((dtl < dbr) && (dtr < dbl))
+          if((dtl < dbr) && (dtr < dbl))
           {
             // top
             cj -= 2;
           }
-          if ((dtl < dbr) && (dtr > dbl))
+          if((dtl < dbr) && (dtr > dbl))
           {
             // left
             cj--;
             ci--;
           }
-          if ((dtl > dbr) && (dtr > dbl))
+          if((dtl > dbr) && (dtr > dbl))
           {
             // bottom, nothing to do
           }
-          if ((dtl > dbr) && (dtr < dbl))
+          if((dtl > dbr) && (dtr < dbl))
           {
             // right
             cj--;
@@ -459,28 +517,34 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
 
         // interpolate along (ci, cj)(ci+1,cj+1)
         half_ivoid[j * roi_in->width + i] = oj_b * ab + (1 - oj_b) * cd;
+#endif
       }
       else
       {
-        if (color_orig == 1) {
-          int color_left = FC(cj, ci-1, filters);
-          if (color_left == color) {
+        if(color_orig == 1)
+        {
+          int color_left = FC(cj, ci - 1, filters);
+          if(color_left == color)
+          {
             ci--;
-          } else {
+          }
+          else
+          {
             cj--;
           }
-        } else if (color_orig != color) {
+        }
+        else if(color_orig != color)
+        {
           ci--;
           cj--;
         }
 
         int new_color = FC(cj, ci, filters);
-        if (color != new_color) {
+        if(color != new_color)
+        {
           printf("color of new pixel and color of ref pixel are different ! %d, %d\n", color, new_color);
         }
 
-        oi -= 0.5;
-        oj -= 0.5;
         // point is between (ci, cj), (ci+2,cj), (ci,cj+2), and (ci+2,cj+2)
         // interpolate horizontally
         float top
@@ -490,6 +554,7 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
         // interpolate vertically
         half_ivoid[j * roi_in->width + i] = (oj - cj) * top / 2 + (cj + 2 - oj) * bottom / 2;
       }
+#endif
     }
   }
   return half_ivoid;
