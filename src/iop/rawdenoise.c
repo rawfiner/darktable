@@ -404,32 +404,31 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
       int color_orig = FC(cj, ci, filters);
       if(color_orig != 1) printf("problem in downscaling\n");
 
-      if(color == 1)
-      {
-        half_ivoid[j * roi_in->width + i]
-            = 0.5f * in[cj * roi_in->width + ci] + 0.5f * in[(cj + 1) * roi_in->width + (ci + 1)];
-      }
-      if(color == 2)
-      {
-        ci--;
-        float top
-            = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
-        float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
-                       + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
-        // interpolate vertically
-        half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
-      }
-      if(color == 0)
-      {
-        cj--;
-        float top
-            = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
-        float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
-                       + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
-        // interpolate vertically
-        half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
-      }
-#if 0
+      // if(color == 1)
+      // {
+      //   half_ivoid[j * roi_in->width + i]
+      //       = 0.5f * in[cj * roi_in->width + ci] + 0.5f * in[(cj + 1) * roi_in->width + (ci + 1)];
+      // }
+      // if(color == 2)
+      // {
+      //   ci--;
+      //   float top
+      //       = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
+      //   float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
+      //                  + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
+      //   // interpolate vertically
+      //   half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+      // }
+      // if(color == 0)
+      // {
+      //   cj--;
+      //   float top
+      //       = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
+      //   float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
+      //                  + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
+      //   // interpolate vertically
+      //   half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+      // }
       if(color == 1)
       {
         if(color_orig != color)
@@ -437,11 +436,11 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
           cj = cj - 1;
           ci = ci - 2;
           float top
-              = (oi - ci) * in[cj * roi_in->width + ci] / 4 + (ci + 4 - oi) * in[cj * roi_in->width + ci + 4] / 4;
-          float bottom = (oi - ci) * in[(cj + 2) * roi_in->width + ci] / 4
-                         + (ci + 4 - oi) * in[(cj + 2) * roi_in->width + ci + 4] / 4;
+              = (ci + 4 - oi) * in[cj * roi_in->width + ci] / 4 + (oi - ci) * in[cj * roi_in->width + ci + 4] / 4;
+          float bottom = (ci + 4 - oi) * in[(cj + 2) * roi_in->width + ci] / 4
+                         + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 4] / 4;
           // interpolate vertically
-          half_ivoid[j * roi_in->width + i] = (oj - cj) * top / 2 + (cj + 2 - oj) * bottom / 2;
+          half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
         }
         else
         {
@@ -548,13 +547,12 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
         // point is between (ci, cj), (ci+2,cj), (ci,cj+2), and (ci+2,cj+2)
         // interpolate horizontally
         float top
-            = (oi - ci) * in[cj * roi_in->width + ci] / 2 + (ci + 2 - oi) * in[cj * roi_in->width + ci + 2] / 2;
-        float bottom = (oi - ci) * in[(cj + 2) * roi_in->width + ci] / 2
-                       + (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
+            = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
+        float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
+                       + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
         // interpolate vertically
-        half_ivoid[j * roi_in->width + i] = (oj - cj) * top / 2 + (cj + 2 - oj) * bottom / 2;
+        half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
       }
-#endif
     }
   }
   return half_ivoid;
