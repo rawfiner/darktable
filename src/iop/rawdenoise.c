@@ -402,121 +402,46 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
       int cj = MAX((int)(oj), 1);
       int ci = MAX((int)(oi), 1);
       int color_orig = FC(cj, ci, filters);
-      if(color_orig != 1) printf("problem in downscaling\n");
 
-      // if(color == 1)
-      // {
-      //   half_ivoid[j * roi_in->width + i]
-      //       = 0.5f * in[cj * roi_in->width + ci] + 0.5f * in[(cj + 1) * roi_in->width + (ci + 1)];
-      // }
-      // if(color == 2)
-      // {
-      //   ci--;
-      //   float top
-      //       = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
-      //   float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
-      //                  + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
-      //   // interpolate vertically
-      //   half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
-      // }
-      // if(color == 0)
-      // {
-      //   cj--;
-      //   float top
-      //       = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
-      //   float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
-      //                  + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
-      //   // interpolate vertically
-      //   half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
-      // }
       if(color == 1)
       {
         if(color_orig != color)
         {
-          cj = cj - 1;
-          ci = ci - 2;
-          float top
-              = (ci + 4 - oi) * in[cj * roi_in->width + ci] / 4 + (oi - ci) * in[cj * roi_in->width + ci + 4] / 4;
-          float bottom = (ci + 4 - oi) * in[(cj + 2) * roi_in->width + ci] / 4
-                         + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 4] / 4;
-          // interpolate vertically
-          half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+          // find nearest square
+          float dtl = (oi - ci) * (oi - ci) + (oj - cj) * (oj - cj); // compare to top left
+          float dbr
+              = (oi - (ci + 1)) * (oi - (ci + 1)) + (oj - (cj + 1)) * (oj - (cj + 1)); // compare to bottom right
+          if(dtl < dbr)
+          {
+            ci--;
+            cj--;
+          }
         }
         else
         {
           // find nearest square
-          ci--;
-          // A = (ci+1, cj)
-          // B = (ci, cj+1)
-          // C = (ci+2, cj+1)
-          // D = (ci+1, cj+2)
-          oi -= ci;
-          oj -= cj;
-          float fa = in[cj * roi_in->width + ci+1];
-          float fb = in[(cj+1) * roi_in->width + ci];
-          float fc = in[(cj+1) * roi_in->width + ci+2];
-          float fd = in[(cj+2) * roi_in->width + ci+1];
-          float a0 = 1.f/4.f * (3.f * fa + 3.f * fb - fc - fd);
-          float a1 = 1.f/4.f * (fc + fd - fa - fb);
-          float a2 = 1.f/4.f * (3.f * fa - 3.f * fb - fc + fd);
-          float a3 = 1.f/4.f * (fb - fa + fc - fd);
-          half_ivoid[j * roi_in->width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
-        }
-#if 0
-          // distance to top left or bottom right
-          float dtl = (oj - cj) * (oj - cj) + (oi - ci) * (oi - ci);
-          float dbr = (oj - cj - 1) * (oj - cj - 1) + (oi - ci - 1) * (oi - ci - 1);
-          // if d0 < d1 => top left
-          // top right or bottom left
-          float dtr = (oj - cj) * (oj - cj) + (oi - ci - 1) * (oi - ci - 1);
-          float dbl = (oj - cj - 1) * (oj - cj - 1) + (oi - ci) * (oi - ci);
-
-          if((dtl < dbr) && (dtr < dbl))
-          {
-            // top
-            cj -= 2;
-          }
-          if((dtl < dbr) && (dtr > dbl))
-          {
-            // left
-            cj--;
+          float db = (oi - ci) * (oi - ci) + (oj - (cj + 1)) * (oj - (cj + 1)); // compare to bottom
+          float dr = (oi - (ci + 1)) * (oi - (ci + 1)) + (oj - cj) * (oj - cj); // compare to right
+          if(db < dr)
             ci--;
-          }
-          if((dtl > dbr) && (dtr > dbl))
-          {
-            // bottom, nothing to do
-          }
-          if((dtl > dbr) && (dtr < dbl))
-          {
-            // right
+          else
             cj--;
-            ci++;
-          }
         }
-        // now that ci and cj are the coordinates of the top of the diamond, we can do the interpolation
-        // point is between (ci, cj), (ci-1,cj+1), (ci+1,cj+1), (ci,cj+2)
-        // we call these points ABCD next
-        // float denom = sqrt(2);
-        float oi_b, oj_b;
-        // change of origin
-        oi_b = oi - ci - 0.5;
-        oj_b = oj - cj - 0.5;
-        // change of basis
-        oi_b = -(oi_b + oj_b) / 2;
-        oj_b = -(oi_b - oj_b) / 2;
-        // oi_b and oj_b are normalized distances.
-
-        // oi_b gives the normalized distance to (ci, cj) along the (ci, cj)(ci-1,cj+1) == AB axis (same direction
-        // as (ci+1,cj+1)(ci,cj+2) == CD)
-        // oj_b gives the normalized distance to (ci, cj) along the (ci, cj)(ci+1,cj+1) == AC axis (same direction
-        // as (ci-1,cj+1)(ci,cj+2) == BD)
-        // interpolate along (ci, cj)(ci-1,cj+1)
-        float ab = oi_b * in[cj * roi_in->width + ci] + (1 - oi_b) * in[(cj - 1) * roi_in->width + ci + 1];
-        float cd = oi_b * in[(cj + 1) * roi_in->width + ci + 1] + (1 - oi_b) * in[(cj + 2) * roi_in->width + ci];
-
-        // interpolate along (ci, cj)(ci+1,cj+1)
-        half_ivoid[j * roi_in->width + i] = oj_b * ab + (1 - oj_b) * cd;
-#endif
+        // A = (ci+1, cj)
+        // B = (ci, cj+1)
+        // C = (ci+2, cj+1)
+        // D = (ci+1, cj+2)
+        oi -= ci;
+        oj -= cj;
+        float fa = in[cj * roi_in->width + ci + 1];
+        float fb = in[(cj + 1) * roi_in->width + ci];
+        float fc = in[(cj + 1) * roi_in->width + ci + 2];
+        float fd = in[(cj + 2) * roi_in->width + ci + 1];
+        float a0 = 1.f / 4.f * (3.f * fa + 3.f * fb - fc - fd);
+        float a1 = 1.f / 4.f * (fc + fd - fa - fb);
+        float a2 = 1.f / 4.f * (3.f * fa - 3.f * fb - fc + fd);
+        float a3 = 1.f / 4.f * (fb - fa + fc - fd);
+        half_ivoid[j * roi_in->width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
       }
       else
       {
