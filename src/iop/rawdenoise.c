@@ -372,19 +372,12 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
   free(fimg);
 }
 
-void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
-                                         const uint32_t filters, float scale_factor)
+void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, int in_height, int out_width,
+                                         int out_height, const uint32_t filters)
 {
-  printf("in downscale_bilinear_bayer_cfa\n");
-
-  // for now, only scale_factor of 2 supported
-
-  int out_width = roi_in->width;
-  int out_height = roi_in->height;
   // if(scale_factor < 1.0) scale_factor = 1.0;
-  float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
-  out_width = (int)(out_width / scale_factor);
-  out_height = (int)(out_height / scale_factor);
+  float *half_ivoid = (float *)calloc(sizeof(float), in_width * in_height);
+  float scale_factor = (float)in_width / (float)out_width;
   float *in = (float *)ivoid;
 #pragma omp parallel for schedule(static)
   for(int j = 1; j < out_height - 1; j++)
@@ -433,15 +426,15 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
         // D = (ci+1, cj+2)
         oi -= ci;
         oj -= cj;
-        float fa = in[cj * roi_in->width + ci + 1];
-        float fb = in[(cj + 1) * roi_in->width + ci];
-        float fc = in[(cj + 1) * roi_in->width + ci + 2];
-        float fd = in[(cj + 2) * roi_in->width + ci + 1];
+        float fa = in[cj * in_width + ci + 1];
+        float fb = in[(cj + 1) * in_width + ci];
+        float fc = in[(cj + 1) * in_width + ci + 2];
+        float fd = in[(cj + 2) * in_width + ci + 1];
         float a0 = 1.f / 4.f * (3.f * fa + 3.f * fb - fc - fd);
         float a1 = 1.f / 4.f * (fc + fd - fa - fb);
         float a2 = 1.f / 4.f * (3.f * fa - 3.f * fb - fc + fd);
         float a3 = 1.f / 4.f * (fb - fa + fc - fd);
-        half_ivoid[j * roi_in->width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
+        half_ivoid[j * in_width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
       }
       else
       {
@@ -471,17 +464,27 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, dt_iop_roi_t *
 
         // point is between (ci, cj), (ci+2,cj), (ci,cj+2), and (ci+2,cj+2)
         // interpolate horizontally
-        float top
-            = (ci + 2 - oi) * in[cj * roi_in->width + ci] / 2 + (oi - ci) * in[cj * roi_in->width + ci + 2] / 2;
-        float bottom = (ci + 2 - oi) * in[(cj + 2) * roi_in->width + ci] / 2
-                       + (oi - ci) * in[(cj + 2) * roi_in->width + ci + 2] / 2;
+        float top = (ci + 2 - oi) * in[cj * in_width + ci] / 2 + (oi - ci) * in[cj * in_width + ci + 2] / 2;
+        float bottom
+            = (ci + 2 - oi) * in[(cj + 2) * in_width + ci] / 2 + (oi - ci) * in[(cj + 2) * in_width + ci + 2] / 2;
         // interpolate vertically
-        half_ivoid[j * roi_in->width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+        half_ivoid[j * in_width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
       }
     }
   }
+#pragma omp parallel for schedule(static)
+  for(int j = 0; j < out_height; j++)
+  {
+    // TODO handle i = 0 and i = out_width - 1
+  }
+#pragma omp parallel for schedule(static)
+  for(int i = 0; i < out_width; i++)
+  {
+    // TODO handle j = 0 and j = out_height - 1
+  }
   return half_ivoid;
 }
+
 
 void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
                           const uint32_t filters, const uint8_t (*const xtrans)[6], float scale_factor)
@@ -660,8 +663,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
     else
     {
-      half_ivoid = (float *const)downscale_bilinear_bayer_cfa(
-          ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters, 1.0 / d->threshold);
+      half_ivoid = (float *const)downscale_bilinear_bayer_cfa(ivoid, roi_in->width, roi_in->height,
+                                                              roi_in->width * d->threshold,
+                                                              roi_in->height * d->threshold, filters);
     }
 
     float *out = (float *)ovoid;
