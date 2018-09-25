@@ -376,7 +376,7 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
                                          int out_height, const uint32_t filters)
 {
   // if(scale_factor < 1.0) scale_factor = 1.0;
-  float *half_ivoid = (float *)calloc(sizeof(float), in_width * in_height);
+  float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
   float scale_factor = (float)in_width / (float)out_width;
   float *in = (float *)ivoid;
 #pragma omp parallel for schedule(static)
@@ -434,7 +434,7 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
         float a1 = 1.f / 4.f * (fc + fd - fa - fb);
         float a2 = 1.f / 4.f * (3.f * fa - 3.f * fb - fc + fd);
         float a3 = 1.f / 4.f * (fb - fa + fc - fd);
-        half_ivoid[j * in_width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
+        half_ivoid[j * out_width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
       }
       else
       {
@@ -468,7 +468,7 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
         float bottom
             = (ci + 2 - oi) * in[(cj + 2) * in_width + ci] / 2 + (oi - ci) * in[(cj + 2) * in_width + ci + 2] / 2;
         // interpolate vertically
-        half_ivoid[j * in_width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+        half_ivoid[j * out_width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
       }
     }
   }
@@ -651,8 +651,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     else if (piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
       printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1));
 
-    int target_w = roi_out->width;
-    int target_h = roi_out->height;
+    int target_w = roi_in->width * d->threshold;
+    int target_h = roi_in->height * d->threshold;
     // float *const half_ivoid = (float *const)raw_downscale(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out,
     // filters, xtrans, target_w, target_h);
     float *half_ivoid;
@@ -660,24 +660,33 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     {
       half_ivoid = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters,
                                                xtrans, 1.0 / d->threshold);
+      float *out = (float *)ovoid;
+      assert(out != NULL);
+      for(int j = 0; j < target_h; j++)
+      {
+        for(int i = 0; i < target_w; i++)
+        {
+          out[j * roi_out->width + i] = half_ivoid[j * roi_in->width + i];
+        }
+      }
+      free(half_ivoid);
     }
     else
     {
       half_ivoid = (float *const)downscale_bilinear_bayer_cfa(ivoid, roi_in->width, roi_in->height,
                                                               roi_in->width * d->threshold,
                                                               roi_in->height * d->threshold, filters);
-    }
-
-    float *out = (float *)ovoid;
-    assert(out != NULL);
-    for(int j = 0; j < target_h; j++)
-    {
-      for(int i = 0; i < target_w; i++)
+      float *out = (float *)ovoid;
+      assert(out != NULL);
+      for(int j = 0; j < target_h; j++)
       {
-        out[j * roi_out->width + i] = half_ivoid[j * roi_in->width + i];
+        for(int i = 0; i < target_w; i++)
+        {
+          out[j * roi_out->width + i] = half_ivoid[j * target_w + i];
+        }
       }
+      free(half_ivoid);
     }
-    free(half_ivoid);
     // nlm_denoise(half_ivoid, ovoid, roi_in, roi_out, d->threshold, filters, piece, xtrans);
     // dt_iop_clip_and_zoom_mosaic_half_size_f(ovoid, ivoid, roi_out, roi_in,
     //                                         roi_out->width, roi_in->width, filters);
