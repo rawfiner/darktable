@@ -376,13 +376,13 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
                                          int out_height, const uint32_t filters)
 {
   // if(scale_factor < 1.0) scale_factor = 1.0;
-  float *half_ivoid = (float *)calloc(sizeof(float), out_width * out_height);
+  float *half_ivoid = (float *)malloc(sizeof(float) * out_width * out_height);
   float scale_factor = (float)in_width / (float)out_width;
   float *in = (float *)ivoid;
 #pragma omp parallel for schedule(static)
-  for(int j = 1; j < out_height - 1; j++)
+  for(int j = 0; j < out_height; j++)
   {
-    for(int i = 1; i < out_width - 1; i++)
+    for(int i = 0; i < out_width; i++)
     {
       int color = FC(j, i, filters);
       // compute point coordinates in the original scale_factor
@@ -392,8 +392,8 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
       oi -= 0.5;
       oj -= 0.5;
       // find closest pixel that has the same color in the original grid
-      int cj = MAX((int)(oj), 1);
-      int ci = MAX((int)(oi), 1);
+      int cj = MIN(MAX((int)(oj), 1), in_height-2);
+      int ci = MIN(MAX((int)(oi), 1), in_width-2);
       int color_orig = FC(cj, ci, filters);
 
       if(color == 1)
@@ -455,13 +455,6 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
           ci--;
           cj--;
         }
-
-        int new_color = FC(cj, ci, filters);
-        if(color != new_color)
-        {
-          printf("color of new pixel and color of ref pixel are different ! %d, %d\n", color, new_color);
-        }
-
         // point is between (ci, cj), (ci+2,cj), (ci,cj+2), and (ci+2,cj+2)
         // interpolate horizontally
         float top = (ci + 2 - oi) * in[cj * in_width + ci] / 2 + (oi - ci) * in[cj * in_width + ci + 2] / 2;
@@ -471,16 +464,6 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
         half_ivoid[j * out_width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
       }
     }
-  }
-#pragma omp parallel for schedule(static)
-  for(int j = 0; j < out_height; j++)
-  {
-    // TODO handle i = 0 and i = out_width - 1
-  }
-#pragma omp parallel for schedule(static)
-  for(int i = 0; i < out_width; i++)
-  {
-    // TODO handle j = 0 and j = out_height - 1
   }
   return half_ivoid;
 }
