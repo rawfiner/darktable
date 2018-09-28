@@ -372,6 +372,49 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
   free(fimg);
 }
 
+/* total variation with l1 norm */
+void *const tv_l1_bayer_cfa(const void *const ivoid, int in_width, int in_height, const uint32_t filters)
+{
+  float *tv_l1 = (float *)calloc(sizeof(float), in_width * in_height);
+  float *in = (float *)ivoid;
+  #pragma omp parallel for schedule(static) firstprivate(in) shared(tv_l1)
+  for(int j = 2; j < in_height-2; j++)
+  {
+    for(int i = 2; i < in_width-2; i++)
+    {
+      int color = FC(j, i, filters);
+      if (color == 1)
+      {
+        const float norm = 4.8284f; /* 4*1/sqrt(2)+4*1/2 */
+        float tv = (fabs(in[j * in_width + i] - in[(j+1) * in_width + (i+1)])
+            +fabs(in[j * in_width + i] - in[(j+1) * in_width + (i-1)])
+            +fabs(in[j * in_width + i] - in[(j-1) * in_width + (i-1)])
+            +fabs(in[j * in_width + i] - in[(j-1) * in_width + (i+1)])) / 1.4142f
+            +(fabs(in[j * in_width + i] - in[(j+2) * in_width + i])
+            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i])
+            +fabs(in[j * in_width + i] - in[j * in_width + i + 2])
+            +fabs(in[j * in_width + i] - in[j * in_width + i - 2])) / 2.0f;
+        tv_l1[j * in_width + i] = tv / norm;
+      }
+      else
+      {
+        const float norm = 3.4142f; /* 4*1/(2*sqrt(2))+4*1/2 */
+        float tv = (fabs(in[j * in_width + i] - in[(j+2) * in_width + i])
+            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i])
+            +fabs(in[j * in_width + i] - in[j * in_width + i + 2])
+            +fabs(in[j * in_width + i] - in[j * in_width + i - 2])) / 2.0f
+            +(fabs(in[j * in_width + i] - in[(j+2) * in_width + i+2])
+            +fabs(in[j * in_width + i] - in[(j+2) * in_width + i-2])
+            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i+2])
+            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i-2])) / 2.8284f;
+        tv_l1[j * in_width + i] = tv / norm;
+      }
+    }
+  }
+  //TODO replace calloc by malloc and handle borders
+  return tv_l1;
+}
+
 void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, int in_height, int out_width,
                                          int out_height, const uint32_t filters)
 {
@@ -655,7 +698,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
     else
     {
-      half_ivoid = (float *const)downscale_bilinear_bayer_cfa(ivoid, roi_in->width, roi_in->height,
+      half_ivoid = (float *const)tv_l1_bayer_cfa(ivoid, roi_in->width, roi_in->height, filters);
+      half_ivoid = (float *const)downscale_bilinear_bayer_cfa(half_ivoid, roi_in->width, roi_in->height,
                                                               roi_in->width * d->threshold,
                                                               roi_in->height * d->threshold, filters);
       float *out = (float *)ovoid;
