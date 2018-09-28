@@ -375,11 +375,10 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
 void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, int in_height, int out_width,
                                          int out_height, const uint32_t filters)
 {
-  // if(scale_factor < 1.0) scale_factor = 1.0;
   float *half_ivoid = (float *)malloc(sizeof(float) * out_width * out_height);
   float scale_factor = (float)in_width / (float)out_width;
   float *in = (float *)ivoid;
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) firstprivate(scale_factor,in) shared(half_ivoid)
   for(int j = 0; j < out_height; j++)
   {
     for(int i = 0; i < out_width; i++)
@@ -392,8 +391,8 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
       oi -= 0.5;
       oj -= 0.5;
       // find closest pixel that has the same color in the original grid
-      int cj = MIN(MAX((int)(oj), 1), in_height-2);
-      int ci = MIN(MAX((int)(oi), 1), in_width-2);
+      int cj = MIN(MAX((int)(oj), 1), in_height - 2);
+      int ci = MIN(MAX((int)(oi), 1), in_width - 2);
       int color_orig = FC(cj, ci, filters);
 
       if(color == 1)
