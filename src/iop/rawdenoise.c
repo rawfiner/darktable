@@ -375,10 +375,10 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
 void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, int in_height, int out_width,
                                          int out_height, const uint32_t filters)
 {
-  float *half_ivoid = (float *)malloc(sizeof(float) * out_width * out_height);
+  float *scaled_ivoid = (float *)malloc(sizeof(float) * out_width * out_height);
   float scale_factor = (float)in_width / (float)out_width;
   float *in = (float *)ivoid;
-#pragma omp parallel for schedule(static) firstprivate(scale_factor,in) shared(half_ivoid)
+#pragma omp parallel for schedule(static) firstprivate(scale_factor, in) shared(scaled_ivoid)
   for(int j = 0; j < out_height; j++)
   {
     for(int i = 0; i < out_width; i++)
@@ -433,7 +433,7 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
         float a1 = 1.f / 4.f * (fc + fd - fa - fb);
         float a2 = 1.f / 4.f * (3.f * fa - 3.f * fb - fc + fd);
         float a3 = 1.f / 4.f * (fb - fa + fc - fd);
-        half_ivoid[j * out_width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
+        scaled_ivoid[j * out_width + i] = a0 + oi * (a1 + a2) + oj * (a1 - a2) + (oi * oi - oj * oj) * a3;
       }
       else
       {
@@ -460,11 +460,11 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
         float bottom
             = (ci + 2 - oi) * in[(cj + 2) * in_width + ci] / 2 + (oi - ci) * in[(cj + 2) * in_width + ci + 2] / 2;
         // interpolate vertically
-        half_ivoid[j * out_width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
+        scaled_ivoid[j * out_width + i] = (cj + 2 - oj) * top / 2 + (oj - cj) * bottom / 2;
       }
     }
   }
-  return half_ivoid;
+  return scaled_ivoid;
 }
 
 
