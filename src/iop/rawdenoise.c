@@ -542,7 +542,60 @@ void denoise_bayer_tv_l1(float *inout, const int w, const int h, int nb_of_scale
       }
     }
   }
+  free(tv);
+  if (nb_of_scales > 1)
+  {
+    float* downscaled = downscale_bilinear_bayer_cfa(inout, w, h, w/1.41, h/1.41, filters);
+    float* upscaled = downscale_bilinear_bayer_cfa(downscaled, w/1.41, h/1.41, w, h, filters);
+    float* diff = malloc(w*h*sizeof(float));
+    #pragma omp parallel for schedule(static) firstprivate(upscaled, w, h, inout) shared(diff)
+    for(int j = 0; j < h; j++)
+    {
+      for(int i = 0; i < w; i++)
+      {
+        diff[j*w+i] = inout[j*w+i]-upscaled[j*w+i];
+      }
+    }
+    free(upscaled);
+    denoise_bayer_tv_l1(downscaled, w/1.41, h/1.41, nb_of_scales-1, filters, threshold);
+    upscaled = downscale_bilinear_bayer_cfa(downscaled, w/1.41, h/1.41, w, h, filters);
+    free(downscaled);
+    #pragma omp parallel for schedule(static) firstprivate(upscaled, diff, w, h) shared(inout)
+    for(int j = 0; j < h; j++)
+    {
+      for(int i = 0; i < w; i++)
+      {
+        inout[j*w+i] = upscaled[j*w+i] + diff[j*w+i];
+      }
+    }
+    free(upscaled);
+    free(diff);
+  }
+  tv = tv_l1_bayer_cfa(inout, w, h, filters);
+  memcpy(in, inout, sizeof(float) * w * h);
+#pragma omp parallel for schedule(static) firstprivate(tv, w, h) shared(inout)
+  for(int j = 2; j < h - 2; j++)
+  {
+    for(int i = 2; i < w - 2; i++)
+    {
+      if(tv[j * w + i] > threshold)
+      {
+        int color = FC(j, i, filters);
+        if(color == 1)
+        {
+          inout[j * w + i] = 0.25 * (in[(j - 1) * w + i - 1] + in[(j - 1) * w + i + 1] + in[(j + 1) * w + i - 1]
+                                     + in[(j + 1) * w + i + 1]);
+        }
+        else
+        {
+          inout[j * w + i]
+              = 0.25 * (in[(j - 2) * w + i] + in[(j + 2) * w + i] + in[j * w + i - 2] + in[j * w + i + 2]);
+        }
+      }
+    }
+  }
   free(in);
+  free(tv);
 }
 
 void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
@@ -705,10 +758,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     {
       int w = roi_in->width;
       int h = roi_in->height;
-      int nb_of_scales = 1;
       float *inout = malloc(w * h * sizeof(float));
       memcpy(inout, ivoid, w * h * sizeof(float));
-      denoise_bayer_tv_l1(inout, w, h, nb_of_scales, filters, d->threshold);
+      denoise_bayer_tv_l1(inout, w, h, d->scale_number, filters, d->threshold);
       half_ivoid = (float *const)downscale_bilinear_bayer_cfa(inout, roi_in->width, roi_in->height,
                                                               roi_in->width * d->threshold,
                                                               roi_in->height * d->threshold, filters);
