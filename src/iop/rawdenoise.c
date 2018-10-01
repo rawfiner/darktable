@@ -514,6 +514,37 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
   return scaled_ivoid;
 }
 
+void denoise_bayer_tv_l1(float *inout, const int w, const int h, int nb_of_scales, const uint32_t filters,
+                         const float threshold)
+{
+  printf("%f\n", threshold);
+  float *tv = tv_l1_bayer_cfa(inout, w, h, filters);
+  float *in = malloc(sizeof(float) * w * h);
+  memcpy(in, inout, sizeof(float) * w * h);
+#pragma omp parallel for schedule(static) firstprivate(tv, w, h) shared(inout)
+  for(int j = 2; j < h - 2; j++)
+  {
+    for(int i = 2; i < w - 2; i++)
+    {
+      if(tv[j * w + i] > threshold)
+      {
+        int color = FC(j, i, filters);
+        if(color == 1)
+        {
+          inout[j * w + i] = 0.25 * (in[(j - 1) * w + i - 1] + in[(j - 1) * w + i + 1] + in[(j + 1) * w + i - 1]
+                                     + in[(j + 1) * w + i + 1]);
+        }
+        else
+        {
+          inout[j * w + i]
+              = 0.25 * (in[(j - 2) * w + i] + in[(j + 2) * w + i] + in[j * w + i - 2] + in[j * w + i + 2]);
+        }
+      }
+    }
+  }
+  free(in);
+}
+
 void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
                           const uint32_t filters, const uint8_t (*const xtrans)[6], float scale_factor)
 {
@@ -672,8 +703,13 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
     else
     {
-      half_ivoid = (float *const)tv_l1_bayer_cfa(ivoid, roi_in->width, roi_in->height, filters);
-      half_ivoid = (float *const)downscale_bilinear_bayer_cfa(half_ivoid, roi_in->width, roi_in->height,
+      int w = roi_in->width;
+      int h = roi_in->height;
+      int nb_of_scales = 1;
+      float *inout = malloc(w * h * sizeof(float));
+      memcpy(inout, ivoid, w * h * sizeof(float));
+      denoise_bayer_tv_l1(inout, w, h, nb_of_scales, filters, d->threshold);
+      half_ivoid = (float *const)downscale_bilinear_bayer_cfa(inout, roi_in->width, roi_in->height,
                                                               roi_in->width * d->threshold,
                                                               roi_in->height * d->threshold, filters);
       float *out = (float *)ovoid;
@@ -682,7 +718,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       {
         for(int i = 0; i < target_w; i++)
         {
-          out[j * roi_out->width + i] = half_ivoid[j * target_w + i];
+          out[j * roi_out->width + i] = inout[j * target_w + i];
         }
       }
       free(half_ivoid);
@@ -827,9 +863,10 @@ void gui_init(dt_iop_module_t *self)
   g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.001, 0.2f, 3);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->threshold), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->threshold, NULL, _("threshold"));
-  g_signal_connect(G_OBJECT(g->threshold),
-                   "threshold for total variation. Values that have a TVL1 over the threshold will be denoised.",
-                   G_CALLBACK(threshold_callback), self);
+  g_signal_connect(G_OBJECT(g->threshold), "value-changed", G_CALLBACK(threshold_callback), self);
+  gtk_widget_set_tooltip_text(
+      g->threshold,
+      _("threshold for total variation. Values that have a TVL1 over the threshold will be denoised."));
 
   /* scale_number */
   g->scale_number = dt_bauhaus_slider_new_with_range(self, 1.0f, 5.0f, 1.f, 2.f, 0);
