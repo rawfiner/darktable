@@ -624,26 +624,6 @@ void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_
   return (void *const)half_ivoid;
 }
 
-void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
-                   dt_iop_roi_t *roi_in)
-{
-  dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
-  float scale = 1.0 / d->threshold;
-  roi_in->width = (int)(roi_in->width * scale);
-  roi_in->height = (int)(roi_in->height * scale);
-}
-
-void modify_roi_out(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, dt_iop_roi_t *roi_out,
-                    const dt_iop_roi_t *roi_in)
-{
-  dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
-  float scale = 1.0 / d->threshold;
-  roi_out->x = roi_in->x;
-  roi_out->y = roi_in->y;
-  roi_out->scale = roi_in->scale; // * scale;
-  roi_out->width = (int)(roi_in->width / scale);
-  roi_out->height = (int)(roi_in->height / scale);
-}
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -670,24 +650,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   else
   {
-    printf("%d\n", dt_control_get_dev_closeup());
-    printf("%f\n", dt_control_get_dev_zoom_x());
-    dt_dev_zoom_t zoom = dt_control_get_dev_zoom();
-    int closeup = dt_control_get_dev_closeup();
-    if (piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
-      printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 0));
-    else if (piece->pipe->type == DT_DEV_PIXELPIPE_PREVIEW)
-      printf("%f\n", dt_dev_get_zoom_scale(self->dev, zoom, closeup ? 2.0 : 1.0, 1));
-
-    int target_w = roi_in->width * d->threshold;
-    int target_h = roi_in->height * d->threshold;
+    int target_w = roi_in->width;
+    int target_h = roi_in->height;
     // float *const half_ivoid = (float *const)raw_downscale(ivoid, (dt_iop_roi_t*)roi_in, (dt_iop_roi_t*)roi_out,
     // filters, xtrans, target_w, target_h);
     float *half_ivoid;
     if(filters == 9u)
     {
       half_ivoid = (float *const)halfscale_cfa(ivoid, (dt_iop_roi_t *)roi_in, (dt_iop_roi_t *)roi_out, filters,
-                                               xtrans, 1.0 / d->threshold);
+                                               xtrans, 1.0);
       float *out = (float *)ovoid;
       assert(out != NULL);
       for(int j = 0; j < target_h; j++)
@@ -856,7 +827,9 @@ void gui_init(dt_iop_module_t *self)
   g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.001, 0.2f, 3);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->threshold), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->threshold, NULL, _("threshold"));
-  g_signal_connect(G_OBJECT(g->threshold), "threshold for total variation. Values that have a TVL1 over the threshold will be denoised.", G_CALLBACK(threshold_callback), self);
+  g_signal_connect(G_OBJECT(g->threshold),
+                   "threshold for total variation. Values that have a TVL1 over the threshold will be denoised.",
+                   G_CALLBACK(threshold_callback), self);
 
   /* scale_number */
   g->scale_number = dt_bauhaus_slider_new_with_range(self, 1.0f, 5.0f, 1.f, 2.f, 0);
