@@ -847,7 +847,7 @@ void gui_init(dt_iop_module_t *self)
   g->mode = dt_bauhaus_combobox_new(self);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->mode), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->mode, NULL, _("mode"));
-  dt_bauhaus_combobox_add(g->mode, _("raw downscaling"));
+  dt_bauhaus_combobox_add(g->mode, _("TVL1 + interpolate"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
   gtk_widget_set_tooltip_text(g->mode, _("method used in the denoising core."));
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
@@ -855,15 +855,16 @@ void gui_init(dt_iop_module_t *self)
   /* threshold */
   g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.001, 0.2f, 3);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->threshold), TRUE, TRUE, 0);
-  dt_bauhaus_widget_set_label(g->threshold, NULL, _("scaling factor"));
-  g_signal_connect(G_OBJECT(g->threshold), "value-changed", G_CALLBACK(threshold_callback), self);
+  dt_bauhaus_widget_set_label(g->threshold, NULL, _("threshold"));
+  g_signal_connect(G_OBJECT(g->threshold), "threshold for total variation. Values that have a TVL1 over the threshold will be denoised.", G_CALLBACK(threshold_callback), self);
 
   /* scale_number */
   g->scale_number = dt_bauhaus_slider_new_with_range(self, 1.0f, 5.0f, 1.f, 2.f, 0);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->scale_number), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->scale_number, NULL, _("number of scales"));
   g_signal_connect(G_OBJECT(g->scale_number), "value-changed", G_CALLBACK(scale_number_callback), self);
-  gtk_widget_set_tooltip_text(g->scale_number, _("Number of scales to use for denoising. Increase in case of coarse grain noise."));
+  gtk_widget_set_tooltip_text(g->scale_number,
+                              _("Number of scales to use for denoising. Increase in case of coarse grain noise."));
 
 
   gtk_widget_show_all(g->box_raw);
