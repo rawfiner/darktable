@@ -44,7 +44,7 @@ typedef enum dt_iop_rawdenoise_mode_t
 typedef struct dt_iop_rawdenoise_params_t
 {
   float threshold;
-  float details;
+  int scale_number;
   dt_iop_rawdenoise_mode_t mode;
 } dt_iop_rawdenoise_params_t;
 
@@ -54,14 +54,14 @@ typedef struct dt_iop_rawdenoise_gui_data_t
   GtkWidget *box_raw;
   GtkWidget *mode;
   GtkWidget *threshold;
-  GtkWidget *details;
+  GtkWidget *scale_number;
   GtkWidget *label_non_raw;
 } dt_iop_rawdenoise_gui_data_t;
 
 typedef struct dt_iop_rawdenoise_data_t
 {
   float threshold;
-  float details;
+  int scale_number;
   dt_iop_rawdenoise_mode_t mode;
 } dt_iop_rawdenoise_data_t;
 
@@ -104,7 +104,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
   if((old_version == 1) && new_version == 2)
   {
     n->threshold = o->threshold;
-    n->details = 0.0f;
+    n->scale_number = 1;
     n->mode = MODE_WAVELETS;
     return 0;
   }
@@ -377,41 +377,45 @@ void *const tv_l1_bayer_cfa(const void *const ivoid, int in_width, int in_height
 {
   float *tv_l1 = (float *)calloc(sizeof(float), in_width * in_height);
   float *in = (float *)ivoid;
-  #pragma omp parallel for schedule(static) firstprivate(in) shared(tv_l1)
-  for(int j = 2; j < in_height-2; j++)
+#pragma omp parallel for schedule(static) firstprivate(in) shared(tv_l1)
+  for(int j = 2; j < in_height - 2; j++)
   {
-    for(int i = 2; i < in_width-2; i++)
+    for(int i = 2; i < in_width - 2; i++)
     {
       int color = FC(j, i, filters);
-      if (color == 1)
+      if(color == 1)
       {
         const float norm = 4.8284f; /* 4*1/sqrt(2)+4*1/2 */
-        float tv = (fabs(in[j * in_width + i] - in[(j+1) * in_width + (i+1)])
-            +fabs(in[j * in_width + i] - in[(j+1) * in_width + (i-1)])
-            +fabs(in[j * in_width + i] - in[(j-1) * in_width + (i-1)])
-            +fabs(in[j * in_width + i] - in[(j-1) * in_width + (i+1)])) / 1.4142f
-            +(fabs(in[j * in_width + i] - in[(j+2) * in_width + i])
-            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i])
-            +fabs(in[j * in_width + i] - in[j * in_width + i + 2])
-            +fabs(in[j * in_width + i] - in[j * in_width + i - 2])) / 2.0f;
+        float tv = (fabs(in[j * in_width + i] - in[(j + 1) * in_width + (i + 1)])
+                    + fabs(in[j * in_width + i] - in[(j + 1) * in_width + (i - 1)])
+                    + fabs(in[j * in_width + i] - in[(j - 1) * in_width + (i - 1)])
+                    + fabs(in[j * in_width + i] - in[(j - 1) * in_width + (i + 1)]))
+                       / 1.4142f
+                   + (fabs(in[j * in_width + i] - in[(j + 2) * in_width + i])
+                      + fabs(in[j * in_width + i] - in[(j - 2) * in_width + i])
+                      + fabs(in[j * in_width + i] - in[j * in_width + i + 2])
+                      + fabs(in[j * in_width + i] - in[j * in_width + i - 2]))
+                         / 2.0f;
         tv_l1[j * in_width + i] = tv / norm;
       }
       else
       {
         const float norm = 3.4142f; /* 4*1/(2*sqrt(2))+4*1/2 */
-        float tv = (fabs(in[j * in_width + i] - in[(j+2) * in_width + i])
-            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i])
-            +fabs(in[j * in_width + i] - in[j * in_width + i + 2])
-            +fabs(in[j * in_width + i] - in[j * in_width + i - 2])) / 2.0f
-            +(fabs(in[j * in_width + i] - in[(j+2) * in_width + i+2])
-            +fabs(in[j * in_width + i] - in[(j+2) * in_width + i-2])
-            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i+2])
-            +fabs(in[j * in_width + i] - in[(j-2) * in_width + i-2])) / 2.8284f;
+        float tv = (fabs(in[j * in_width + i] - in[(j + 2) * in_width + i])
+                    + fabs(in[j * in_width + i] - in[(j - 2) * in_width + i])
+                    + fabs(in[j * in_width + i] - in[j * in_width + i + 2])
+                    + fabs(in[j * in_width + i] - in[j * in_width + i - 2]))
+                       / 2.0f
+                   + (fabs(in[j * in_width + i] - in[(j + 2) * in_width + i + 2])
+                      + fabs(in[j * in_width + i] - in[(j + 2) * in_width + i - 2])
+                      + fabs(in[j * in_width + i] - in[(j - 2) * in_width + i + 2])
+                      + fabs(in[j * in_width + i] - in[(j - 2) * in_width + i - 2]))
+                         / 2.8284f;
         tv_l1[j * in_width + i] = tv / norm;
       }
     }
   }
-  //TODO replace calloc by malloc and handle borders
+  // TODO replace calloc by malloc and handle borders
   return tv_l1;
 }
 
@@ -434,8 +438,8 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
       oi -= 0.5;
       oj -= 0.5;
       // find closest pixel that has the same color in the original grid
-      int cj = MIN(MAX((int)(oj), 1), in_height - 2);
-      int ci = MIN(MAX((int)(oi), 1), in_width - 2);
+      int cj = MIN(MAX((int)(oj), 1), in_height - 3);
+      int ci = MIN(MAX((int)(oi), 1), in_width - 3);
       int color_orig = FC(cj, ci, filters);
 
       if(color == 1)
@@ -509,7 +513,6 @@ void *const downscale_bilinear_bayer_cfa(const void *const ivoid, int in_width, 
   }
   return scaled_ivoid;
 }
-
 
 void *const halfscale_cfa(const void *const ivoid, dt_iop_roi_t *roi_in, dt_iop_roi_t *roi_out,
                           const uint32_t filters, const uint8_t (*const xtrans)[6], float scale_factor)
@@ -769,7 +772,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
 
   d->threshold = p->threshold;
-  d->details = p->details;
+  d->scale_number = p->scale_number;
   d->mode = p->mode;
 
   if (!(pipe->image.flags & DT_IMAGE_RAW))
@@ -794,7 +797,7 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
 
   dt_bauhaus_slider_set(g->threshold, p->threshold);
-  dt_bauhaus_slider_set(g->details, p->details);
+  dt_bauhaus_slider_set(g->scale_number, p->scale_number);
   dt_bauhaus_combobox_set(g->mode, p->mode);
 
   gtk_stack_set_visible_child_name(GTK_STACK(g->stack), self->hide_enable_button ? "non_raw" : "raw");
@@ -809,12 +812,12 @@ static void threshold_callback(GtkWidget *slider, gpointer user_data)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-static void details_callback(GtkWidget *slider, gpointer user_data)
+static void scale_number_callback(GtkWidget *slider, gpointer user_data)
 {
   dt_iop_module_t *self = (dt_iop_module_t *)user_data;
   if(self->dt->gui->reset) return;
   dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
-  p->details = dt_bauhaus_slider_get(slider);
+  p->scale_number = dt_bauhaus_slider_get(slider);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -855,12 +858,12 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_widget_set_label(g->threshold, NULL, _("scaling factor"));
   g_signal_connect(G_OBJECT(g->threshold), "value-changed", G_CALLBACK(threshold_callback), self);
 
-  /* details */
-  g->details = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0f, 0.01f, 0.5f, 3);
-  gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->details), TRUE, TRUE, 0);
-  dt_bauhaus_widget_set_label(g->details, NULL, _("details reconstruction"));
-  g_signal_connect(G_OBJECT(g->details), "value-changed", G_CALLBACK(details_callback), self);
-  gtk_widget_set_tooltip_text(g->details, _("restore fine details from input after the denoising step"));
+  /* scale_number */
+  g->scale_number = dt_bauhaus_slider_new_with_range(self, 1.0f, 5.0f, 1.f, 2.f, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->scale_number), TRUE, TRUE, 0);
+  dt_bauhaus_widget_set_label(g->scale_number, NULL, _("number of scales"));
+  g_signal_connect(G_OBJECT(g->scale_number), "value-changed", G_CALLBACK(scale_number_callback), self);
+  gtk_widget_set_tooltip_text(g->scale_number, _("Number of scales to use for denoising. Increase in case of coarse grain noise."));
 
 
   gtk_widget_show_all(g->box_raw);
