@@ -22,6 +22,7 @@
 #endif
 #include "bauhaus/bauhaus.h"
 #include "common/darktable.h"
+#include "common/noiseprofiles.h"
 #include "control/control.h"
 #include "develop/imageop.h"
 #include "develop/imageop_math.h"
@@ -33,24 +34,37 @@
 #include <stdlib.h>
 #include <strings.h>
 
-DT_MODULE_INTROSPECTION(1, dt_iop_rawdenoise_params_t)
+DT_MODULE_INTROSPECTION(2, dt_iop_rawdenoise_params_t)
+
+typedef enum dt_iop_rawdenoise_profile_mode_t { UNPROFILED = 0, PROFILED = 1 } dt_iop_rawdenoise_profile_mode_t;
 
 typedef struct dt_iop_rawdenoise_params_t
 {
-  float threshold;
+  float threshold;                               // threshold for wavelets
+  dt_iop_rawdenoise_profile_mode_t profile_mode; // whether to use anscombe transform or not
+  float strength;                                // strength for anscombe transform
+  float a[3], b[3];                              // fit for poissonian-gaussian noise per color channel
 } dt_iop_rawdenoise_params_t;
 
 typedef struct dt_iop_rawdenoise_gui_data_t
 {
   GtkWidget *stack;
   GtkWidget *box_raw;
+  GtkWidget *profile_mode;
+  GtkWidget *strength;
+  GtkWidget *profile;
+  dt_noiseprofile_t interpolated;
+  GList *profiles;
   GtkWidget *threshold;
   GtkWidget *label_non_raw;
 } dt_iop_rawdenoise_gui_data_t;
 
 typedef struct dt_iop_rawdenoise_data_t
 {
-  float threshold;
+  float threshold;                               // threshold for wavelets
+  dt_iop_rawdenoise_profile_mode_t profile_mode; // whether to use anscombe transform or not
+  float strength;                                // strength for anscombe transform
+  float a[3], b[3];                              // fit for poissonian-gaussian noise per color channel
 } dt_iop_rawdenoise_data_t;
 
 typedef struct dt_iop_rawdenoise_global_data_t
@@ -83,6 +97,21 @@ void connect_key_accels(dt_iop_module_t *self)
 
   dt_accel_connect_slider_iop(self, "noise threshold", GTK_WIDGET(g->threshold));
 }
+
+int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version, void *new_params,
+                  const int new_version)
+{
+  dt_iop_rawdenoise_params_t *o = (dt_iop_rawdenoise_params_t *)old_params;
+  dt_iop_rawdenoise_params_t *n = (dt_iop_rawdenoise_params_t *)new_params;
+  if((old_version == 1) && (new_version == 2))
+  {
+    n->threshold = o->threshold;
+    n->profile_mode = UNPROFILED;
+    return 0;
+  }
+  return 1;
+}
+
 
 // transposes image, it is faster to read columns than to write them.
 static void hat_transform(float *temp, const float *const base, int stride, int size, int scale)
@@ -464,11 +493,29 @@ void gui_init(dt_iop_module_t *self)
 
   g->box_raw = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
 
+  g->profile_mode = dt_bauhaus_combobox_new(self);
+  g->profile = dt_bauhaus_combobox_new(self);
+  g->strength = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .05, 1.f, 3);
+  gtk_box_pack_start(GTK_BOX(g->box_raw), g->profile_mode, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_raw), g->profile, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_raw), g->strength, TRUE, TRUE, 0);
+  dt_bauhaus_widget_set_label(g->profile, NULL, _("profile"));
+  dt_bauhaus_widget_set_label(g->profile_mode, NULL, _("denoising mode"));
+  dt_bauhaus_widget_set_label(g->strength, NULL, _("strength"));
+  dt_bauhaus_combobox_add(g->profile_mode, _("unprofiled"));
+  dt_bauhaus_combobox_add(g->profile_mode, _("profiled"));
+  gtk_widget_set_tooltip_text(g->profile, _("profile used for variance stabilization"));
+  gtk_widget_set_tooltip_text(g->profile_mode,
+                              _("whether to use a camera profile for variance stabilization, or not."));
+  gtk_widget_set_tooltip_text(g->strength, _("finetune denoising strength"));
+
   /* threshold */
   g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 0.1, 0.001, p->threshold, 3);
   gtk_box_pack_start(GTK_BOX(g->box_raw), GTK_WIDGET(g->threshold), TRUE, TRUE, 0);
   dt_bauhaus_widget_set_label(g->threshold, NULL, _("noise threshold"));
   g_signal_connect(G_OBJECT(g->threshold), "value-changed", G_CALLBACK(threshold_callback), self);
+
+
 
   gtk_widget_show_all(g->box_raw);
   gtk_stack_add_named(GTK_STACK(g->stack), g->box_raw, "raw");
