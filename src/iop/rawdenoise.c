@@ -479,6 +479,47 @@ static void threshold_callback(GtkWidget *slider, gpointer user_data)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
+static void profile_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  int i = dt_bauhaus_combobox_get(w);
+  dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
+  dt_iop_rawdenoise_gui_data_t *g = (dt_iop_rawdenoise_gui_data_t *)self->gui_data;
+  const dt_noiseprofile_t *profile = &(g->interpolated);
+  if(i > 0) profile = (dt_noiseprofile_t *)g_list_nth_data(g->profiles, i - 1);
+  for(int k = 0; k < 3; k++)
+  {
+    p->a[k] = profile->a[k];
+    p->b[k] = profile->b[k];
+  }
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void profile_mode_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
+  dt_iop_rawdenoise_gui_data_t *g = (dt_iop_rawdenoise_gui_data_t *)self->gui_data;
+  p->profile_mode = dt_bauhaus_combobox_get(w);
+  if(p->profile_mode == UNPROFILED)
+  {
+    gtk_widget_set_visible(g->profile, FALSE);
+    gtk_widget_set_visible(g->strength, FALSE);
+  }
+  else
+  {
+    gtk_widget_set_visible(g->profile, TRUE);
+    gtk_widget_set_visible(g->strength, TRUE);
+  }
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void strength_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
+  p->strength = dt_bauhaus_slider_get(w);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+
 void gui_init(dt_iop_module_t *self)
 {
   self->gui_data = malloc(sizeof(dt_iop_rawdenoise_gui_data_t));
@@ -508,6 +549,9 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->profile_mode,
                               _("whether to use a camera profile for variance stabilization, or not."));
   gtk_widget_set_tooltip_text(g->strength, _("finetune denoising strength"));
+  g_signal_connect(G_OBJECT(g->profile), "value-changed", G_CALLBACK(profile_callback), self);
+  g_signal_connect(G_OBJECT(g->profile_mode), "value-changed", G_CALLBACK(profile_mode_callback), self);
+  g_signal_connect(G_OBJECT(g->strength), "value-changed", G_CALLBACK(strength_callback), self);
 
   /* threshold */
   g->threshold = dt_bauhaus_slider_new_with_range(self, 0.0, 0.1, 0.001, p->threshold, 3);
