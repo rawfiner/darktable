@@ -395,24 +395,107 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
 }
 
+// FIXME code shared with denoiseprofile.c -> refactor at a common place
+static dt_noiseprofile_t dt_iop_denoiseprofile_get_auto_profile(dt_iop_module_t *self)
+{
+  GList *profiles = dt_noiseprofile_get_matching(&self->dev->image_storage);
+  dt_noiseprofile_t interpolated = dt_noiseprofile_generic; // default to generic poissonian
+
+  const int iso = self->dev->image_storage.exif_iso;
+  dt_noiseprofile_t *last = NULL;
+  for(GList *iter = profiles; iter; iter = g_list_next(iter))
+  {
+    dt_noiseprofile_t *current = (dt_noiseprofile_t *)iter->data;
+    if(current->iso == iso)
+    {
+      interpolated = *current;
+      break;
+    }
+    if(last && last->iso < iso && current->iso > iso)
+    {
+      dt_noiseprofile_interpolate(last, current, &interpolated);
+      break;
+    }
+    last = current;
+  }
+  g_list_free_full(profiles, dt_noiseprofile_free);
+  return interpolated;
+}
+
 void reload_defaults(dt_iop_module_t *module)
 {
   // init defaults:
-  dt_iop_rawdenoise_params_t tmp = (dt_iop_rawdenoise_params_t){ .threshold = 0.01 };
+  ((dt_iop_rawdenoise_params_t *)module->default_params)->threshold = 0.01;
+  ((dt_iop_rawdenoise_params_t *)module->default_params)->strength = 1.0f;
+  ((dt_iop_rawdenoise_params_t *)module->default_params)->profile_mode = PROFILED;
 
   // we might be called from presets update infrastructure => there is no image
-  if(!module->dev) goto end;
+  if(!module->dev)
+  {
+    memcpy(module->params, module->default_params, sizeof(dt_iop_rawdenoise_params_t));
+    return;
+  }
 
   // can't be switched on for non-raw images:
   if(dt_image_is_raw(&module->dev->image_storage))
     module->hide_enable_button = 0;
   else
     module->hide_enable_button = 1;
-  module->default_enabled = 0;
 
-end:
-  memcpy(module->params, &tmp, sizeof(dt_iop_rawdenoise_params_t));
-  memcpy(module->default_params, &tmp, sizeof(dt_iop_rawdenoise_params_t));
+  module->default_enabled = 0;
+  dt_iop_rawdenoise_gui_data_t *g = (dt_iop_rawdenoise_gui_data_t *)module->gui_data;
+  if(g)
+  {
+    dt_bauhaus_combobox_clear(g->profile);
+
+    // get matching profiles:
+    char name[512];
+    if(g->profiles) g_list_free_full(g->profiles, dt_noiseprofile_free);
+    g->profiles = dt_noiseprofile_get_matching(&module->dev->image_storage);
+    g->interpolated = dt_noiseprofile_generic; // default to generic poissonian
+    g_strlcpy(name, _(g->interpolated.name), sizeof(name));
+
+    const int iso = module->dev->image_storage.exif_iso;
+    dt_noiseprofile_t *last = NULL;
+    for(GList *iter = g->profiles; iter; iter = g_list_next(iter))
+    {
+      dt_noiseprofile_t *current = (dt_noiseprofile_t *)iter->data;
+
+      if(current->iso == iso)
+      {
+        g->interpolated = *current;
+        // signal later autodetection in commit_params:
+        g->interpolated.a[0] = -1.0;
+        snprintf(name, sizeof(name), _("found match for ISO %d"), iso);
+        break;
+      }
+      if(last && last->iso < iso && current->iso > iso)
+      {
+        dt_noiseprofile_interpolate(last, current, &g->interpolated);
+        // signal later autodetection in commit_params:
+        g->interpolated.a[0] = -1.0;
+        snprintf(name, sizeof(name), _("interpolated from ISO %d and %d"), last->iso, current->iso);
+        break;
+      }
+      last = current;
+    }
+
+    dt_bauhaus_combobox_add(g->profile, name);
+    for(GList *iter = g->profiles; iter; iter = g_list_next(iter))
+    {
+      dt_noiseprofile_t *profile = (dt_noiseprofile_t *)iter->data;
+      dt_bauhaus_combobox_add(g->profile, profile->name);
+    }
+
+    ((dt_iop_rawdenoise_params_t *)module->default_params)->strength = 1.0f;
+    ((dt_iop_rawdenoise_params_t *)module->default_params)->profile_mode = PROFILED;
+    for(int k = 0; k < 3; k++)
+    {
+      ((dt_iop_rawdenoise_params_t *)module->default_params)->a[k] = g->interpolated.a[k];
+      ((dt_iop_rawdenoise_params_t *)module->default_params)->b[k] = g->interpolated.b[k];
+    }
+    memcpy(module->params, module->default_params, sizeof(dt_iop_rawdenoise_params_t));
+  }
 }
 
 void init(dt_iop_module_t *module)
@@ -443,6 +526,22 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   dt_iop_rawdenoise_data_t *d = (dt_iop_rawdenoise_data_t *)piece->data;
 
   d->threshold = p->threshold;
+  d->profile_mode = p->profile_mode;
+  d->strength = p->strength;
+
+  // compare if a[0] in params is set to "magic value" -1.0 for autodetection
+  if(p->a[0] == -1.0)
+  {
+    // autodetect matching profile again, the same way as detecting their names,
+    // this is partially duplicated code and data because we are not allowed to access
+    // gui_data here ..
+    dt_noiseprofile_t interpolated = dt_iop_denoiseprofile_get_auto_profile(self);
+    for(int k = 0; k < 3; k++)
+    {
+      d->a[k] = interpolated.a[k];
+      d->b[k] = interpolated.b[k];
+    }
+  }
 
   if (!(pipe->image.flags & DT_IMAGE_RAW))
     piece->enabled = 0;
@@ -575,6 +674,8 @@ void gui_init(dt_iop_module_t *self)
 
 void gui_cleanup(dt_iop_module_t *self)
 {
+  dt_iop_rawdenoise_gui_data_t *g = (dt_iop_rawdenoise_gui_data_t *)self->gui_data;
+  g_list_free_full(g->profiles, dt_noiseprofile_free);
   free(self->gui_data);
   self->gui_data = NULL;
 }
