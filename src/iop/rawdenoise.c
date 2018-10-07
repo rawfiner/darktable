@@ -112,6 +112,70 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
   return 1;
 }
 
+static inline void precondition(const float *const in, float *const buf, const int wd, const int ht,
+                                const float a[3], const float b[3], const dt_iop_roi_t *const roi_in,
+                                const uint32_t filters, const uint8_t (*const xtrans)[6])
+{
+  const float sigma2[3]
+      = { (b[0] / a[0]) * (b[0] / a[0]), (b[1] / a[1]) * (b[1] / a[1]), (b[2] / a[2]) * (b[2] / a[2]) };
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) default(none) shared(a)
+#endif
+  for(int j = 0; j < ht; j++)
+  {
+    float *buf2 = buf + (size_t)j * wd;
+    const float *in2 = in + (size_t)j * wd;
+    for(int i = 0; i < wd; i++)
+    {
+      int c;
+      if(filters != 9u)
+        c = FC(j, i, filters);
+      else
+        c = FCxtrans(j, i, roi_in, xtrans);
+      *buf2 = *in2 / a[c];
+      const float d = fmaxf(0.0f, *buf2 + 3. / 8. + sigma2[c]);
+      *buf2 = 2.0f * sqrtf(d);
+      buf2++;
+      in2++;
+    }
+  }
+}
+
+static inline void backtransform(float *const buf, const int wd, const int ht, const float a[3], const float b[3],
+                                 const dt_iop_roi_t *const roi_in, const uint32_t filters,
+                                 const uint8_t (*const xtrans)[6])
+{
+  const float sigma2[3]
+      = { (b[0] / a[0]) * (b[0] / a[0]), (b[1] / a[1]) * (b[1] / a[1]), (b[2] / a[2]) * (b[2] / a[2]) };
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) default(none) shared(a)
+#endif
+  for(int j = 0; j < ht; j++)
+  {
+    float *buf2 = buf + (size_t)j * wd;
+    for(int i = 0; i < wd; i++)
+    {
+      int c;
+      if(filters != 9u)
+        c = FC(j, i, filters);
+      else
+        c = FCxtrans(j, i, roi_in, xtrans);
+      const float x = *buf2;
+      // closed form approximation to unbiased inverse (input range was 0..200 for fit, not 0..1)
+      if(x < .5f)
+        *buf2 = 0.0f;
+      else
+        *buf2 = 1. / 4. * x * x + 1. / 4. * sqrtf(3. / 2.) / x - 11. / 8. * 1.0 / (x * x)
+                + 5. / 8. * sqrtf(3. / 2.) * 1.0 / (x * x * x) - 1. / 8. - sigma2[c];
+      // asymptotic form:
+      // buf2[c] = fmaxf(0.0f, 1./4.*x*x - 1./8. - sigma2[c]);
+      *buf2 *= a[c];
+      buf2++;
+    }
+  }
+}
 
 // transposes image, it is faster to read columns than to write them.
 static void hat_transform(float *temp, const float *const base, int stride, int size, int scale)
@@ -388,10 +452,29 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   {
     const uint32_t filters = piece->pipe->dsc.filters;
     const uint8_t(*const xtrans)[6] = (const uint8_t(*const)[6])piece->pipe->dsc.xtrans;
-    if (filters != 9u)
-      wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
+
+    if(d->profile_mode == UNPROFILED)
+    {
+      if(filters != 9u)
+        wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
+      else
+        wavelet_denoise_xtrans(ivoid, ovoid, roi_in, d->threshold, xtrans);
+    }
     else
-      wavelet_denoise_xtrans(ivoid, ovoid, roi_in, d->threshold, xtrans);
+    {
+      const float wb[3] = { d->strength, d->strength, d->strength };
+      const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
+      const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+      printf("%f, %f\n\n", d->a[1], d->b[1]);
+      float *in = malloc(sizeof(float) * roi_in->width * roi_in->height);
+      precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
+      if(filters != 9u)
+        wavelet_denoise(in, ovoid, roi_in, d->threshold, filters);
+      else
+        wavelet_denoise_xtrans(in, ovoid, roi_in, d->threshold, xtrans);
+      free(in);
+      backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
+    }
   }
 }
 
@@ -450,7 +533,7 @@ void reload_defaults(dt_iop_module_t *module)
 
     // get matching profiles:
     char name[512];
-    if(g->profiles) g_list_free_full(g->profiles, dt_noiseprofile_free);
+    // FIXME if(g->profiles) g_list_free_full(g->profiles, dt_noiseprofile_free);
     g->profiles = dt_noiseprofile_get_matching(&module->dev->image_storage);
     g->interpolated = dt_noiseprofile_generic; // default to generic poissonian
     g_strlcpy(name, _(g->interpolated.name), sizeof(name));
