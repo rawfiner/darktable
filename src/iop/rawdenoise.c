@@ -206,7 +206,7 @@ static void hat_transform(float *temp, const float *const base, int stride, int 
 #define BIT16 65536.0
 
 static void wavelet_denoise(const float *const in, float *const out, const dt_iop_roi_t *const roi,
-                            float threshold, uint32_t filters)
+                            float threshold, uint32_t filters, const float a[3])
 {
   int lev;
   // static float noise[] = { 1.0, 0.2735, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0 };
@@ -231,12 +231,13 @@ static void wavelet_denoise(const float *const in, float *const out, const dt_io
     if(c != 0 && c != 3)
     {
       // green pixels
-      for(int i = 0; i < 3; i++) noise[i] = noise_ref[i] / 2.0;
-      for(int i = 3; i < 8; i++) noise[i] = noise_ref[i] / 3.0;
+      for(int i = 0; i < 8; i++) noise[i] = noise_ref[i] * sqrt(a[1]) * 100.0f;
+      // for(int i = 3; i < 8; i++) noise[i] = noise_ref[i] / 3.0;
     }
     else
     {
-      for(int i = 0; i < 8; i++) noise[i] = noise_ref[i];
+      for(int i = 0; i < 8; i++) noise[i] = noise_ref[i] * sqrt(a[c >> 1]) * 100.0f;
+      printf("%f\n", a[c >> 1] / a[1]);
     }
     // zero lowest quarter part
     memset(fimg, 0, size * sizeof(float));
@@ -482,24 +483,24 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     if(d->profile_mode == UNPROFILED)
     {
       if(filters != 9u)
-        wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters);
+        wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters, d->a);
       else
         wavelet_denoise_xtrans(ivoid, ovoid, roi_in, d->threshold, xtrans);
     }
     else
     {
-      const float wb[3] = { d->strength, d->strength, d->strength };
-      const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
-      const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+      // const float wb[3] = { d->strength, d->strength, d->strength };
+      // const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
+      // const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
       printf("%f, %f\n\n", d->a[1], d->b[1]);
       float *in = malloc(sizeof(float) * roi_in->width * roi_in->height);
-      precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
+      // precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
       if(filters != 9u)
-        wavelet_denoise(in, ovoid, roi_in, d->threshold * 10.0, filters);
+        wavelet_denoise(ivoid, ovoid, roi_in, d->threshold, filters, d->a);
       else
         wavelet_denoise_xtrans(in, ovoid, roi_in, d->threshold * 10.0, xtrans);
       free(in);
-      backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
+      // backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
     }
   }
 }
