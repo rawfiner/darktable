@@ -462,16 +462,18 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
     else
     {
-      const float wb[3] = { d->strength, d->strength, d->strength };
+      const float wb[3] = { piece->pipe->dsc.processed_maximum[0] * d->strength,
+                            piece->pipe->dsc.processed_maximum[1] * d->strength,
+                            piece->pipe->dsc.processed_maximum[2] * d->strength };
       const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
       const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
       printf("%f, %f\n\n", d->a[1], d->b[1]);
       float *in = malloc(sizeof(float) * roi_in->width * roi_in->height);
       precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
       if(filters != 9u)
-        wavelet_denoise(in, ovoid, roi_in, d->threshold, filters);
+        wavelet_denoise(in, ovoid, roi_in, d->threshold * 10.0, filters);
       else
-        wavelet_denoise_xtrans(in, ovoid, roi_in, d->threshold, xtrans);
+        wavelet_denoise_xtrans(in, ovoid, roi_in, d->threshold * 10.0, xtrans);
       free(in);
       backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb, roi_in, filters, xtrans);
     }
@@ -648,7 +650,36 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_rawdenoise_params_t *p = (dt_iop_rawdenoise_params_t *)self->params;
 
   dt_bauhaus_slider_set(g->threshold, p->threshold);
-
+  dt_bauhaus_slider_set(g->strength, p->strength);
+  dt_bauhaus_combobox_set(g->profile_mode, p->profile_mode);
+  dt_bauhaus_combobox_set(g->profile, -1);
+  if(p->profile_mode == UNPROFILED)
+  {
+    gtk_widget_set_visible(g->profile, FALSE);
+    gtk_widget_set_visible(g->strength, FALSE);
+  }
+  else
+  {
+    gtk_widget_set_visible(g->profile, TRUE);
+    gtk_widget_set_visible(g->strength, TRUE);
+  }
+  if(p->a[0] == -1.0)
+  {
+    dt_bauhaus_combobox_set(g->profile, 0);
+  }
+  else
+  {
+    int i = 1;
+    for(GList *iter = g->profiles; iter; iter = g_list_next(iter), i++)
+    {
+      dt_noiseprofile_t *profile = (dt_noiseprofile_t *)iter->data;
+      if(!memcmp(profile->a, p->a, sizeof(float) * 3) && !memcmp(profile->b, p->b, sizeof(float) * 3))
+      {
+        dt_bauhaus_combobox_set(g->profile, i);
+        break;
+      }
+    }
+  }
   gtk_stack_set_visible_child_name(GTK_STACK(g->stack), self->hide_enable_button ? "non_raw" : "raw");
 }
 
