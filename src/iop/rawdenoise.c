@@ -209,7 +209,8 @@ static void wavelet_denoise(const float *const in, float *const out, const dt_io
                             float threshold, uint32_t filters)
 {
   int lev;
-  static const float noise[] = { 0.8002, 0.2735, 0.1202, 0.0585, 0.0291, 0.0152, 0.0080, 0.0044 };
+  // static float noise[] = { 1.0, 0.2735, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  static float noise_ref[] = { 0.8002, 0.2735, 0.1202, 0.0585, 0.0291, 0.0152, 0.0080, 0.0044 };
 
   const size_t size = (size_t)(roi->width / 2 + 1) * (roi->height / 2 + 1);
 #if 0
@@ -226,6 +227,17 @@ static void wavelet_denoise(const float *const in, float *const out, const dt_io
   const int nc = 4;
   for(int c = 0; c < nc; c++) /* denoise R,G1,B,G3 individually */
   {
+    static float noise[8];
+    if(c != 0 && c != 3)
+    {
+      // green pixels
+      for(int i = 0; i < 3; i++) noise[i] = noise_ref[i] / 2.0;
+      for(int i = 3; i < 8; i++) noise[i] = noise_ref[i] / 3.0;
+    }
+    else
+    {
+      for(int i = 0; i < 8; i++) noise[i] = noise_ref[i];
+    }
     // zero lowest quarter part
     memset(fimg, 0, size * sizeof(float));
 
@@ -234,7 +246,7 @@ static void wavelet_denoise(const float *const in, float *const out, const dt_io
     const int halfheight = roi->height / 2 + (roi->height & (~c) & 1);
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) shared(c) schedule(static)
+#pragma omp parallel for default(none) shared(c, filters) schedule(static)
 #endif
     for(int row = c & 1; row < roi->height; row += 2)
     {
@@ -279,7 +291,7 @@ static void wavelet_denoise(const float *const in, float *const out, const dt_io
       {
         float *fimgp = fimg + i;
         const float diff = fimgp[pass1] - fimgp[pass3];
-        fimgp[0] += copysignf(fmaxf(fabsf(diff) - thold, 0.0f), diff);
+        fimgp[0] += copysignf(fmaxf(fabsf(diff) - thold, 0), diff);
       }
 
       lastpass = pass3;
@@ -347,7 +359,7 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
   // note that these constants are the same for X-Trans and Bayer, as
   // they are proportional to image detail on each channel, not the
   // sensor pattern
-  static const float noise[] = { 0.8002, 0.2735, 0.1202, 0.0585, 0.0291, 0.0152, 0.0080, 0.0044 };
+  static float noise_ref[] = { 0.8002, 0.2735, 0.1202, 0.0585, 0.0291, 0.0152, 0.0080, 0.0044 };
 
   const int width = roi->width;
   const int height = roi->height;
@@ -357,9 +369,20 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
   for(int c = 0; c < 3; c++)
   {
     memset(fimg, 0, size * sizeof(float));
+    static float noise[8];
+    if(c != 0 && c != 2)
+    {
+      // green pixels
+      for(int i = 0; i < 3; i++) noise[i] = noise_ref[i] / 2.0;
+      for(int i = 3; i < 8; i++) noise[i] = noise_ref[i] / 3.0;
+    }
+    else
+    {
+      for(int i = 0; i < 8; i++) noise[i] = noise_ref[i];
+    }
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) shared(c) schedule(static)
+#pragma omp parallel for default(none) shared(c) schedule(static) firstprivate(noise)
 #endif
     for(int row = (c != 1); row < height - 1; row++)
     {
@@ -411,7 +434,10 @@ static void wavelet_denoise_xtrans(const float *const in, float *out, const dt_i
       {
         float *fimgp = fimg + i;
         const float diff = fimgp[pass1] - fimgp[pass3];
-        fimgp[0] += copysignf(fmaxf(fabsf(diff) - thold, 0.0f), diff);
+        fimgp[0] += /*0.4 **/ copysignf(fmaxf(fabsf(diff) - thold * 10.0, 0), diff);
+        // + 0.3 * copysignf(fmaxf(fabsf(diff) - thold * 2.0, 0), diff)
+        // + 0.2 * copysignf(fmaxf(fabsf(diff) - thold * 4.0, 0), diff)
+        // + 0.1 * copysignf(fmaxf(fabsf(diff) - thold * 8.0, 0), diff);
       }
 
       lastpass = pass3;
@@ -462,9 +488,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
     else
     {
-      const float wb[3] = { piece->pipe->dsc.processed_maximum[0] * d->strength,
-                            piece->pipe->dsc.processed_maximum[1] * d->strength,
-                            piece->pipe->dsc.processed_maximum[2] * d->strength };
+      const float wb[3] = { d->strength, d->strength, d->strength };
       const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
       const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
       printf("%f, %f\n\n", d->a[1], d->b[1]);
