@@ -1034,6 +1034,229 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height * 4);
   float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+  float *polynoms = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+
+  const float wb[3] = { piece->pipe->dsc.processed_maximum[0] * d->strength * (scale * scale),
+                        piece->pipe->dsc.processed_maximum[1] * d->strength * (scale * scale),
+                        piece->pipe->dsc.processed_maximum[2] * d->strength * (scale * scale) };
+  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
+  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+  precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb);
+
+// P will be added on the 2 sides of the 2x2 block.
+// thus, window size is P*2 + 2
+
+// convert image to polynoms
+// polynom is the unique polynom defined by:
+// P = a + b*x + c*y + d*xy
+// with a, b, c and d computed on a 2x2 square
+// using the center of the square as origin
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) firstprivate(in) shared(polynoms)
+#endif
+  for(int j = 0; j < roi_out->height - 1; j += 2)
+  {
+    for(int i = 0; i < roi_out->width - 1; i += 2)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        // a*4
+        polynoms[(j * roi_out->width + i) * 4 + c]
+            = (in[(j * roi_out->width + i) * 4 + c] + in[(j * roi_out->width + i + 1) * 4 + c]
+               + in[((j + 1) * roi_out->width + i) * 4 + c] + in[((j + 1) * roi_out->width + i + 1) * 4 + c]);
+        // b*2
+        polynoms[(j * roi_out->width + i + 1) * 4 + c]
+            = (-in[(j * roi_out->width + i) * 4 + c] + in[(j * roi_out->width + i + 1) * 4 + c]
+               - in[((j + 1) * roi_out->width + i) * 4 + c] + in[((j + 1) * roi_out->width + i + 1) * 4 + c]);
+        // c*2
+        polynoms[((j + 1) * roi_out->width + i) * 4 + c]
+            = (-in[(j * roi_out->width + i) * 4 + c] - in[(j * roi_out->width + i + 1) * 4 + c]
+               + in[((j + 1) * roi_out->width + i) * 4 + c] + in[((j + 1) * roi_out->width + i + 1) * 4 + c]);
+        // d
+        polynoms[((j + 1) * roi_out->width + i + 1) * 4 + c]
+            = in[(j * roi_out->width + i) * 4 + c] - in[(j * roi_out->width + i + 1) * 4 + c]
+              - in[((j + 1) * roi_out->width + i) * 4 + c] + in[((j + 1) * roi_out->width + i + 1) * 4 + c];
+      }
+    }
+  }
+
+  // for each shift vector
+  for(int kj = -K * 2; kj <= K * 2; kj += 2)
+  {
+    for(int ki = -K * 2; ki <= K * 2; ki += 2)
+    {
+      if(ki == 0 && kj == 0) continue;
+      // TODO: adaptive K tests here!
+      // TODO: expf eval for real bilateral experience :)
+
+      int inited_slide = 0;
+// don't construct summed area tables but use sliding window! (applies to cpu version res < 1k only, or else
+// we will add up errors)
+// do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
+// memory
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, polynoms, Sa)
+#endif
+      for(int j = 0; j < roi_out->height; j++)
+      {
+        if(j + kj < 0 || j + kj >= roi_out->height) continue;
+        float *S = Sa + dt_get_thread_num() * roi_out->width;
+        const float *ins = polynoms + 4l * ((size_t)roi_in->width * (j + kj) + ki);
+        float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
+
+        const int Pm = MIN(MIN(P, j + kj), j);
+        const int PM = MIN(MIN(P + 1, roi_out->height - 1 - j - kj), roi_out->height - 1 - j);
+        // first line of every thread
+        // TODO: also every once in a while to assert numerical precision!
+        if(!inited_slide)
+        {
+          // sum up a line
+          memset(S, 0x0, sizeof(float) * roi_out->width);
+          for(int jj = -Pm; jj <= PM; jj++)
+          {
+            int i = MAX(0, -ki);
+            float *s = S + i;
+            const float *inp = polynoms + 4 * i + (size_t)4 * roi_in->width * (j + jj);
+            const float *inps = polynoms + 4 * i + 4l * ((size_t)roi_in->width * (j + jj + kj) + ki);
+            const int last = roi_out->width + MIN(0, -ki);
+            for(; i < last; i++, inp += 4, inps += 4, s++)
+            {
+              for(int k = 0; k < 3; k++) s[0] += (inp[k] - inps[k]) * (inp[k] - inps[k]);
+            }
+          }
+          // only reuse this if we had a full stripe
+          if(Pm == P && PM == P + 1) inited_slide = 1;
+        }
+
+        // sliding window for this line:
+        float *s = S;
+        float slide = 0.0f;
+        // sum up the first -P..P
+        for(int i = 0; i < 2 * P + 2; i++) slide += s[i];
+        for(int i = 0; i < roi_out->width; i++, s++, ins += 4, out += 4)
+        {
+          // FIXME: the comment above is actually relevant even for 1000 px width already.
+          // XXX    numerical precision will not forgive us:
+          if(i - P > 0 && i + P + 1 < roi_out->width) slide += s[P + 1] - s[-P - 1];
+          if(i + ki >= 0 && i + ki < roi_out->width)
+          {
+            // TODO: could put that outside the loop.
+            // DEBUG XXX bring back to computable range:
+            const float norm = .015f / (2 * P + 1);
+            const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
+#if defined(_OPENMP) && defined(OPENMP_SIMD_)
+#pragma omp SIMD()
+#endif
+            for(size_t c = 0; c < 4; c++)
+            {
+              out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+            }
+          }
+        }
+        if(inited_slide && j + P + 2 + MAX(0, kj) < roi_out->height)
+        {
+          // sliding window in j direction:
+          int i = MAX(0, -ki);
+          s = S + i;
+          const float *inp = polynoms + 4 * i + 4l * (size_t)roi_in->width * (j + P + 2);
+          const float *inps = polynoms + 4 * i + 4l * ((size_t)roi_in->width * (j + P + 2 + kj) + ki);
+          const float *inm = polynoms + 4 * i + 4l * (size_t)roi_in->width * (j - P);
+          const float *inms = polynoms + 4 * i + 4l * ((size_t)roi_in->width * (j - P + kj) + ki);
+          const int last = roi_out->width + MIN(0, -ki);
+          for(; i < last; i++, inp += 4, inps += 4, inm += 4, inms += 4, s++)
+          {
+            float stmp = s[0];
+            for(int k = 0; k < 3; k++)
+              stmp += ((inp[k] - inps[k]) * (inp[k] - inps[k]) - (inm[k] - inms[k]) * (inm[k] - inms[k]));
+            s[0] = stmp;
+          }
+        }
+        else
+          inited_slide = 0;
+      }
+    }
+  }
+
+  float *const out = ((float *const)ovoid);
+
+// normalize
+#ifdef _OPENMP
+#pragma omp parallel for default(none) schedule(static) shared(polynoms)
+#endif
+  for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k += ch)
+  {
+    for(size_t c = 0; c < 4; c++)
+    {
+      if(out[k + 3] <= 0.0f || out[k + 3] == NAN)
+      {
+        out[k + c] = polynoms[k + c];
+      }
+      else
+      {
+        out[k + c] *= (1.0f / out[k + 3]);
+      }
+    }
+  }
+
+// transform back from polynoms to "standard"
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+  for(int j = 0; j < roi_out->height - 1; j += 2)
+  {
+    for(int i = 0; i < roi_out->width - 1; i += 2)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        float ap = out[(j * roi_out->width + i) * 4 + c] / 4.0;
+        float bp = out[(j * roi_out->width + i + 1) * 4 + c] / 2.0;
+        float cp = out[((j + 1) * roi_out->width + i) * 4 + c] / 2.0;
+        float dp = out[((j + 1) * roi_out->width + i + 1) * 4 + c];
+        // top left: (x,y)=(-0.5,-0.5)
+        out[(j * roi_out->width + i) * 4 + c] = ap - 0.5f * bp - 0.5f * cp + 0.25f * dp;
+        // top right: (x,y)=(0.5,-0.5)
+        out[(j * roi_out->width + i + 1) * 4 + c] = ap + 0.5f * bp - 0.5f * cp - 0.25f * dp;
+        // bottom left: (x,y)=(-0.5,0.5)
+        out[((j + 1) * roi_out->width + i) * 4 + c] = ap - 0.5f * bp + 0.5f * cp - 0.25f * dp;
+        // bottom right: (x,y)=(0.5,0.5)
+        out[((j + 1) * roi_out->width + i + 1) * 4 + c] = ap + 0.5f * bp + 0.5f * cp + 0.25f * dp;
+      }
+    }
+  }
+
+  // free shared tmp memory:
+  dt_free_align(Sa);
+  dt_free_align(in);
+  dt_free_align(polynoms);
+  backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb);
+
+  if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK)
+    dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
+}
+
+#if 0
+static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+                            const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
+                            const dt_iop_roi_t *const roi_out)
+{
+  // this is called for preview and full pipe separately, each with its own pixelpipe piece.
+  // get our data struct:
+  const dt_iop_denoiseprofile_params_t *const d = (const dt_iop_denoiseprofile_params_t *const)piece->data;
+
+  const int ch = piece->colors;
+
+  // TODO: fixed K to use adaptive size trading variance and bias!
+  // adjust to zoom size:
+  const float scale = fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f);
+  const int P = ceilf(d->radius * scale); // pixel filter size
+  const int K = ceilf(7 * scale);         // nbhood
+
+  // P == 0 : this will degenerate to a (fast) bilateral filter.
+
+  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
+  // we want to sum up weights in col[3], so need to init to 0:
+  memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height * 4);
+  float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
 
   const float wb[3] = { piece->pipe->dsc.processed_maximum[0] * d->strength * (scale * scale),
                         piece->pipe->dsc.processed_maximum[1] * d->strength * (scale * scale),
@@ -1047,6 +1270,8 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   {
     for(int ki = -K; ki <= K; ki++)
     {
+    if (ki == 0 && kj == 0)
+      continue;
       // TODO: adaptive K tests here!
       // TODO: expf eval for real bilateral experience :)
 
@@ -1160,6 +1385,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 
   if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 }
+#endif
 
 #if defined(__SSE2__)
 static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
