@@ -267,6 +267,7 @@ static inline float fast_mexp2f(const float x)
   return k.f;
 }
 
+#if 0
 void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
                      const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
                      struct dt_develop_tiling_t *tiling)
@@ -276,7 +277,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   if(d->mode == MODE_NLMEANS)
   {
     const int P
-        = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // pixel filter size
+        = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f))+20; // pixel filter size
     const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // nbhood
 
     tiling->factor = 4.0f + 0.25f * NUM_BUCKETS; // in + out + (2 + NUM_BUCKETS * 0.25) tmp
@@ -288,6 +289,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   }
   else
   {
+    //TODO use MACRO
     const int max_max_scale = 5; // hard limit
     int max_scale = 0;
     const float scale = roi_in->scale / piece->iscale;
@@ -320,7 +322,7 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 
   return;
 }
-
+#endif
 static inline void precondition(const float *const in, float *const buf, const int wd, const int ht,
                                 const float a[3], const float b[3])
 {
@@ -1080,6 +1082,55 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
     }
   }
 
+// smooth polynoms
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) firstprivate(in) shared(polynoms)
+#endif
+  for(int j = 2; j < roi_out->height - 4; j += 2)
+  {
+    for(int i = 2; i < roi_out->width - 4; i += 2)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        // a*4
+        polynoms[(j * roi_out->width + i) * 4 + c]
+            += 1.0 / 6.0
+               * (polynoms[(j * roi_out->width + i + 2) * 4 + c] + polynoms[((j + 2) * roi_out->width + i) * 4 + c]
+                  + polynoms[(j * roi_out->width + i - 2) * 4 + c]
+                  + polynoms[((j - 2) * roi_out->width + i) * 4 + c]
+                  + 0.5f * polynoms[((j + 2) * roi_out->width + i + 2) * 4 + c]
+                  + 0.5f * polynoms[((j - 2) * roi_out->width + i - 2) * 4 + c]
+                  + 0.5f * polynoms[((j + 2) * roi_out->width + i - 2) * 4 + c]
+                  + 0.5f * polynoms[((j - 2) * roi_out->width + i + 2) * 4 + c]);
+        polynoms[(j * roi_out->width + i) * 4 + c] /= 2;
+        // polynoms[(j * roi_out->width + i) * 4 + c] /= 4;
+
+        // vertical
+        // b*2
+        polynoms[(j * roi_out->width + i + 1) * 4 + c]
+            += 0.5 * (polynoms[((j + 2) * roi_out->width + i + 1) * 4 + c]
+                      + polynoms[((j - 2) * roi_out->width + i + 1) * 4 + c]);
+        polynoms[(j * roi_out->width + i + 1) * 4 + c] /= 2;
+
+        // horizontal
+        // c*2
+        polynoms[((j + 1) * roi_out->width + i) * 4 + c]
+            += 0.5 * (polynoms[((j + 1) * roi_out->width + i - 2) * 4 + c]
+                      + polynoms[((j + 1) * roi_out->width + i + 2) * 4 + c]);
+        polynoms[((j + 1) * roi_out->width + i) * 4 + c] /= 2;
+
+        // diagonal
+        // d
+        polynoms[((j + 1) * roi_out->width + i + 1) * 4 + c]
+            += 1.0 / 4.0 * (polynoms[((j - 1) * roi_out->width + i - 1) * 4 + c]
+                            + polynoms[((j + 3) * roi_out->width + i + 3) * 4 + c]
+                            + polynoms[((j - 1) * roi_out->width + i + 3) * 4 + c]
+                            + polynoms[((j + 3) * roi_out->width + i - 1) * 4 + c]);
+        polynoms[((j + 1) * roi_out->width + i + 1) * 4 + c] /= 2;
+      }
+    }
+  }
+
   // for each shift vector
   for(int kj = -K * 2; kj <= K * 2; kj += 2)
   {
@@ -1200,7 +1251,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 
 // transform back from polynoms to "standard"
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) shared(out)
 #endif
   for(int j = 0; j < roi_out->height - 1; j += 2)
   {
