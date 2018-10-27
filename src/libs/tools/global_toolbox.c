@@ -255,6 +255,7 @@ static void _main_do_event(GdkEvent *event, gpointer data)
                 is_language_supported = TRUE;
                 break;
               }
+              i++;
             }
             if(!is_language_supported) lang = "en";
             char *url = g_build_path("/", base_url, lang, help_url, NULL);
@@ -266,12 +267,12 @@ static void _main_do_event(GdkEvent *event, gpointer data)
 #endif
             g_free(base_url);
             g_free(url);
-            dt_control_log(_("Help url opened in web brower"));
+            dt_control_log(_("help url opened in web brower"));
           }
         }
         else
         {
-          dt_control_log(_("There is no help available for this element"));
+          dt_control_log(_("there is no help available for this element"));
         }
       }
       handled = TRUE;
