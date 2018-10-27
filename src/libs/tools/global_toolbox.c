@@ -250,7 +250,7 @@ static void _main_do_event(GdkEvent *event, gpointer data)
             int i = 0;
             while(supported_languages[i])
             {
-              if(0 == strcmp(lang, supported_languages[i]))
+              if(!strcmp(lang, supported_languages[i]))
               {
                 is_language_supported = TRUE;
                 break;
