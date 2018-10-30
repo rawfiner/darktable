@@ -1199,14 +1199,23 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 
 // normalize
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static)
+#pragma omp parallel for default(none) schedule(static) firstprivate(in)
 #endif
   for(size_t k = 0; k < (size_t)ch * roi_out->width * roi_out->height; k += ch)
   {
-    if(out[k + 3] <= 0.0f) continue;
-    for(size_t c = 0; c < 4; c++)
+    if(out[k + 3] <= 0.0f)
     {
-      out[k + c] *= (1.0f / out[k + 3]);
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[k + c] = in[k + c];
+      }
+    }
+    else
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[k + c] *= (1.0f / out[k + 3]);
+      }
     }
   }
 
@@ -1391,17 +1400,21 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   }
 // normalize
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(d)
+#pragma omp parallel for default(none) schedule(static) shared(d) firstprivate(in)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
     float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
+    float *inp = ((float *)in) + (size_t)4 * roi_out->width * j;
     for(int i = 0; i < roi_out->width; i++)
     {
       if(out[3] > 0.0f) _mm_store_ps(out, _mm_mul_ps(_mm_load_ps(out), _mm_set1_ps(1.0f / out[3])));
+      else
+        _mm_store_ps(out, _mm_load_ps(inp));
       // DEBUG show weights
       // _mm_store_ps(out, _mm_set1_ps(1.0f/out[3]));
       out += 4;
+      inp += 4;
     }
   }
   // free shared tmp memory:
@@ -1592,12 +1605,13 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
     }
 
   dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 0, sizeof(cl_mem), (void *)&dev_in);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 1, sizeof(cl_mem), (void *)&dev_U2);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 2, sizeof(cl_mem), (void *)&dev_out);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 3, sizeof(int), (void *)&width);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 4, sizeof(int), (void *)&height);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 5, 4 * sizeof(float), (void *)&aa);
-  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 6, 4 * sizeof(float), (void *)&sigma2);
+  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 1, sizeof(cl_mem), (void *)&dev_tmp);
+  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 2, sizeof(cl_mem), (void *)&dev_U2);
+  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 3, sizeof(cl_mem), (void *)&dev_out);
+  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 4, sizeof(int), (void *)&width);
+  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 5, sizeof(int), (void *)&height);
+  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 6, 4 * sizeof(float), (void *)&aa);
+  dt_opencl_set_kernel_arg(devid, gd->kernel_denoiseprofile_finish, 7, 4 * sizeof(float), (void *)&sigma2);
   err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_finish, sizes);
   if(err != CL_SUCCESS) goto error;
 
