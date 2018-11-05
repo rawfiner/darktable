@@ -49,6 +49,8 @@
 #define DT_IOP_DENOISE_PROFILE_RES 64
 #define DT_IOP_DENOISE_PROFILE_BANDS 5
 
+#define DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE 7
+
 typedef enum dt_iop_denoiseprofile_mode_t
 {
   MODE_NLMEANS = 0,
@@ -292,11 +294,11 @@ void init_presets(dt_iop_module_so_t *self)
 {
   // these blobs were exported as dtstyle and copied from there:
   add_preset(self, _("chroma (use on 1st instance)"),
-             "gz04eJxjYGiwZ2B44MAAphv2b4vdb1mnYGTFLcZomryXxzRr910TRgYYaLADEkB1DvYQ9RSJURUDAIFFGLo=", 5,
+             "gz03eJxjYGiwZ2B44MAAphv2b4vdb1mnYGTFLcZomryXxzRr910TRgYYaLADEkB1DvYQ9eSLiUf9s+te/s/OjJPV/sA7Y3vZI/X2EHnyMAB8fx/c", 5,
              "gz12eJxjZGBgEGYAgRNODESDBnsIHll8AM62GP8=", 7);
   add_preset(self, _("luma (use on 2nd instance)"),
-             "gz04eJxjYGhwYGB4AMQM9gwMDfu3xe63rFMwsuIWYzRN3stjmrX7rgkDHDTYQdQ5gNTaUyhGVQwAImYYOg==", 5,
-             "gz12eJxjZGBgEGAAgWlODESDBnsIHll8AJKaGMo=", 7);
+             "gz03eJxjYGiwZwCCWTNn2jEwNOz3swywdJ+7z/KSnqppIsdzk/BMa1NGBhhoAKphAKp3AGKIPnLF/B78sT2hqm33u3yhnWH2D7vC1qVQefIwAPd8IVk=", 5,
+             "gz12eJxjZGBgEGAAgR4nBqJBgz0Ejyw+AIdGGMA=", 7);
 }
 
 typedef union floatint_t
@@ -326,7 +328,8 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   {
     const int P
         = ceilf(d->radius * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // pixel filter size
-    const int K = ceilf(7 * fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f)); // nbhood
+    const int K = ceilf(DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE * fmin(roi_in->scale, 2.0f)
+                        / fmax(piece->iscale, 1.0f)); // nbhood
     const int max_K = ceilf(d->nbhood * K * K + K);
 
     tiling->factor = 4.0f + 0.25f * NUM_BUCKETS; // in + out + (2 + NUM_BUCKETS * 0.25) tmp
@@ -1067,8 +1070,6 @@ static int sign(int a)
   return (a > 0) - (a < 0);
 }
 
-#define DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE 7
-
 static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                             const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out)
@@ -1083,10 +1084,10 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   // adjust to zoom size:
   const float scale = fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
-  const int K = ceilf(DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE * scale);
+  const int K = ceilf(DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE * scale);
 
-  int coordinate_offsets[DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE];
-  for(int i = 0; i < DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE; i++)
+  int coordinate_offsets[DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE];
+  for(int i = 0; i < DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE; i++)
   {
     coordinate_offsets[i] = i * i * d->nbhood + i;
   }
@@ -1238,10 +1239,10 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   // adjust to zoom size:
   const float scale = fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
-  const int K = ceilf(DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE * scale);
+  const int K = ceilf(DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE * scale);
 
-  int coordinate_offsets[DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE];
-  for(int i = 0; i < DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE; i++)
+  int coordinate_offsets[DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE];
+  for(int i = 0; i < DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE; i++)
   {
     coordinate_offsets[i] = i * i * d->nbhood + i;
   }
@@ -1463,9 +1464,9 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
 
   const float scale = fmin(roi_in->scale, 2.0f) / fmax(piece->iscale, 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
-  const int K = ceilf(DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE * scale);
-  int coordinate_offsets[DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE];
-  for(int i = 0; i < DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE; i++)
+  const int K = ceilf(DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE * scale);
+  int coordinate_offsets[DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE];
+  for(int i = 0; i < DT_IOP_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE; i++)
   {
     coordinate_offsets[i] = i * i * d->nbhood + i;
   }
