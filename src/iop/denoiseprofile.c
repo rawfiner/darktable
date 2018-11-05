@@ -151,11 +151,6 @@ typedef struct dt_iop_denoiseprofile_global_data_t
   int kernel_denoiseprofile_reduce_second;
 } dt_iop_denoiseprofile_global_data_t;
 
-static int sign(int a)
-{
-  return (a > 0) - (a < 0);
-}
-
 #define DT_DENOISE_PROFILE_NBHOOD_NORMAL_SIZE 7
 
 static dt_noiseprofile_t dt_iop_denoiseprofile_get_auto_profile(dt_iop_module_t *self);
