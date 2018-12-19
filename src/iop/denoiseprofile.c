@@ -48,10 +48,10 @@
 #define DT_IOP_DENOISE_PROFILE_RES 64
 #define DT_IOP_DENOISE_PROFILE_BANDS 5
 
-typedef enum dt_iop_denoiseprofile_mode_t
-{
+typedef enum dt_iop_denoiseprofile_mode_t {
   MODE_NLMEANS = 0,
-  MODE_WAVELETS = 1
+  MODE_WAVELETS = 1,
+  MODE_GUIDED_NLMEANS = 2
 } dt_iop_denoiseprofile_mode_t;
 
 typedef enum dt_iop_denoiseprofile_channel_t
@@ -1151,12 +1151,18 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
             // DEBUG XXX bring back to computable range:
             const float norm = .015f / (2 * P + 1);
             const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
+            const float *inp = in + 4 * i + (size_t)4 * roi_in->width * j;
+            const float *inps = in + 4 * i + 4l * ((size_t)roi_in->width * (j + kj) + ki);
+            float tmp2 = 0.0f;
+            for(int k = 0; k < 3; k++) tmp2 += (inp[k] - inps[k]) * (inp[k] - inps[k]);
+            float tmp = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+            tmp2 = fast_mexp2f(fmaxf(0.0f, tmp2 * (2 * P + 1) * .015f - 2.0f));
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
 #endif
             for(size_t c = 0; c < 4; c++)
             {
-              out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+              out[c] += iv[c] * (tmp + tmp2);
             }
           }
         }
@@ -2698,6 +2704,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_widget_set_label(g->strength, NULL, _("strength"));
   dt_bauhaus_combobox_add(g->mode, _("non-local means"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
+  dt_bauhaus_combobox_add(g->mode, _("guided non-local means"));
   gtk_widget_set_tooltip_text(g->profile, _("profile used for variance stabilization"));
   gtk_widget_set_tooltip_text(g->mode, _("method used in the denoising core. "
                                          "non-local means works best for `lightness' blending, "
