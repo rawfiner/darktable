@@ -1209,15 +1209,34 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
             // DEBUG XXX bring back to computable range:
             const float norm = .015f / (2 * P + 1);
             const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
+            const float *inp = in + 4 * i + (size_t)4 * roi_in->width * j;
+            const float *inps = in + 4 * i + 4l * ((size_t)roi_in->width * (j + kj) + ki);
+            float tmp2 = 0.0f;
+            for(int k = 0; k < 3; k++) tmp2 += (inp[k] - inps[k]) * (inp[k] - inps[k]);
+            float tmp = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+            tmp2 = fast_mexp2f(fmaxf(0.0f, tmp2 * (2 * P + 1) * .015f - 2.0f));
+            float min = tmp;
+            float max = tmp2;
+            float weightm = 0.3f;
+            if(tmp2 < min)
+            {
+              min = tmp2;
+              max = tmp;
+            }
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
 #endif
             for(size_t c = 0; c < 4; c++)
             {
-              out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+              out[c] += iv[c] * (weightm * min
+                                 + (1.0 - weightm) * max) /* / ((max - min)*2.0f+1.0f)*/; // do the divide only if
+                                                                                          // current value inp is
+                                                                                          // in an interval (not
+                                                                                          // too high, not too low)
             }
           }
         }
+
         if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
         {
           // sliding window in j direction:
