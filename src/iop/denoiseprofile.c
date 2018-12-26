@@ -101,6 +101,7 @@ typedef struct dt_iop_denoiseprofile_params_t
   float radius;     // patch size
   float nbhood;     // search radius
   float strength;   // noise level after equalization
+  float balance_nlm_bilat; // balance between a bilateral filter and non local means filter
   float scattering; // spread the patch search zone without increasing number of patches
   float a[3], b[3]; // fit for poissonian-gaussian noise per color channel.
   dt_iop_denoiseprofile_mode_t mode; // switch between nlmeans and wavelets
@@ -116,6 +117,7 @@ typedef struct dt_iop_denoiseprofile_gui_data_t
   GtkWidget *nbhood;
   GtkWidget *strength;
   GtkWidget *scattering;
+  GtkWidget *balance_nlm_bilat;
   dt_noiseprofile_t interpolated; // don't use name, maker or model, they may point to garbage
   GList *profiles;
   GtkWidget *stack;
@@ -140,6 +142,7 @@ typedef struct dt_iop_denoiseprofile_data_t
   float radius;                      // search radius
   float nbhood;                      // search radius
   float strength;                    // noise level after equalization
+  float balance_nlm_bilat;           // balance between a bilateral filter and non local means filter
   float scattering;                  // spread the search zone without changing number of patches
   float a[3], b[3];                  // fit for poissonian-gaussian noise per color channel.
   dt_iop_denoiseprofile_mode_t mode; // switch between nlmeans and wavelets
@@ -277,6 +280,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
       }
     }
     v6->scattering = 0.0; // no scattering
+    v6->balance_nlm_bilat = 0.0; // fully nlmeans output, bilateral output not used
     return 0;
   }
   return 1;
@@ -1160,7 +1164,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa)
+#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide, d) shared(kj, ki, in, Sa)
 #endif
       for(int j = 0; j < roi_out->height; j++)
       {
@@ -1211,28 +1215,17 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
             const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
             const float *inp = in + 4 * i + (size_t)4 * roi_in->width * j;
             const float *inps = in + 4 * i + 4l * ((size_t)roi_in->width * (j + kj) + ki);
-            float tmp2 = 0.0f;
-            for(int k = 0; k < 3; k++) tmp2 += (inp[k] - inps[k]) * (inp[k] - inps[k]);
-            float tmp = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
-            tmp2 = fast_mexp2f(fmaxf(0.0f, tmp2 * (2 * P + 1) * .015f - 2.0f));
-            float min = tmp;
-            float max = tmp2;
-            float weightm = 0.3f;
-            if(tmp2 < min)
-            {
-              min = tmp2;
-              max = tmp;
-            }
+            float wbilat = 0.0f;
+            for(int k = 0; k < 3; k++) wbilat += (inp[k] - inps[k]) * (inp[k] - inps[k]);
+            float wnlm = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
+            wbilat = fast_mexp2f(fmaxf(0.0f, wbilat * (2 * P + 1) * .015f - 2.0f));
+            float balance_nlm_bilat = d->balance_nlm_bilat;
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
 #endif
             for(size_t c = 0; c < 4; c++)
             {
-              out[c] += iv[c] * (weightm * min
-                                 + (1.0 - weightm) * max) /* / ((max - min)*2.0f+1.0f)*/; // do the divide only if
-                                                                                          // current value inp is
-                                                                                          // in an interval (not
-                                                                                          // too high, not too low)
+              out[c] += iv[c] * ((1.0 - balance_nlm_bilat) * wnlm + balance_nlm_bilat * wbilat);
             }
           }
         }
@@ -2129,6 +2122,7 @@ void reload_defaults(dt_iop_module_t *module)
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->radius = 1.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->nbhood = 7.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->scattering = 0.0f;
+    ((dt_iop_denoiseprofile_params_t *)module->default_params)->balance_nlm_bilat = 0.4f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->strength = 1.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->mode = MODE_NLMEANS;
     for(int k = 0; k < 3; k++)
@@ -2244,6 +2238,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   d->radius = p->radius;
   d->nbhood = p->nbhood;
   d->scattering = p->scattering;
+  d->balance_nlm_bilat = p->balance_nlm_bilat;
   d->strength = p->strength;
   for(int i = 0; i < 3; i++)
   {
@@ -2345,6 +2340,13 @@ static void scattering_callback(GtkWidget *w, dt_iop_module_t *self)
 {
   dt_iop_denoiseprofile_params_t *p = self->params;
   p->scattering = dt_bauhaus_slider_get(w);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void balance_nlm_bilat_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  dt_iop_denoiseprofile_params_t *p = self->params;
+  p->balance_nlm_bilat = dt_bauhaus_slider_get(w);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -2723,7 +2725,8 @@ void gui_init(dt_iop_module_t *self)
   g->mode = dt_bauhaus_combobox_new(self);
   g->radius = dt_bauhaus_slider_new_with_range(self, 0.0f, 4.0f, 1.f, 1.f, 0);
   g->nbhood = dt_bauhaus_slider_new_with_range(self, 1.0f, 30.0f, 1.f, 7.f, 0);
-  g->scattering = dt_bauhaus_slider_new_with_range(self, 0.0f, 1.0f, 0.01, 0.0f, 2);
+  g->scattering = dt_bauhaus_slider_new_with_range(self, 0.0f, 2.0f, 0.01, 0.0f, 2);
+  g->balance_nlm_bilat = dt_bauhaus_slider_new_with_range(self, 0.0f, 1.0f, 0.01, 0.0f, 2);
   g->strength = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .05, 1.f, 3);
   g->channel = dt_conf_get_int("plugins/darkroom/denoiseprofile/gui_channel");
 
@@ -2736,6 +2739,7 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(g->box_nlm), g->radius, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(g->box_nlm), g->nbhood, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(g->box_nlm), g->scattering, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_nlm), g->balance_nlm_bilat, TRUE, TRUE, 0);
 
   g->channel_tabs = GTK_NOTEBOOK(gtk_notebook_new());
 
@@ -2798,6 +2802,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_widget_set_label(g->nbhood, NULL, _("search radius"));
   dt_bauhaus_slider_set_format(g->nbhood, "%.0f");
   dt_bauhaus_widget_set_label(g->scattering, NULL, _("scattering (coarse-grain noise reduction)"));
+  dt_bauhaus_widget_set_label(g->balance_nlm_bilat, NULL, _("center pixel weight"));
   dt_bauhaus_widget_set_label(g->strength, NULL, _("strength"));
   dt_bauhaus_combobox_add(g->mode, _("non-local means"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
@@ -2810,12 +2815,16 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->scattering,
                               _("scattering of the neighbourhood to search patches in. increase for better "
                                 "coarse-grain noise reduction. does not affect execution time."));
+  gtk_widget_set_tooltip_text(
+      g->balance_nlm_bilat,
+      _("gives more weight to the center pixel of patches. A setting of 1 is equivalent to a bilateral filter."));
   gtk_widget_set_tooltip_text(g->strength, _("finetune denoising strength"));
   g_signal_connect(G_OBJECT(g->profile), "value-changed", G_CALLBACK(profile_callback), self);
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
   g_signal_connect(G_OBJECT(g->radius), "value-changed", G_CALLBACK(radius_callback), self);
   g_signal_connect(G_OBJECT(g->nbhood), "value-changed", G_CALLBACK(nbhood_callback), self);
   g_signal_connect(G_OBJECT(g->scattering), "value-changed", G_CALLBACK(scattering_callback), self);
+  g_signal_connect(G_OBJECT(g->balance_nlm_bilat), "value-changed", G_CALLBACK(balance_nlm_bilat_callback), self);
   g_signal_connect(G_OBJECT(g->strength), "value-changed", G_CALLBACK(strength_callback), self);
 }
 
