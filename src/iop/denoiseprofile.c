@@ -2119,10 +2119,10 @@ void reload_defaults(dt_iop_module_t *module)
       dt_bauhaus_combobox_add(g->profile, profile->name);
     }
 
-    ((dt_iop_denoiseprofile_params_t *)module->default_params)->radius = 1.0f;
+    ((dt_iop_denoiseprofile_params_t *)module->default_params)->radius = 4.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->nbhood = 7.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->scattering = 0.0f;
-    ((dt_iop_denoiseprofile_params_t *)module->default_params)->balance_nlm_bilat = 0.4f;
+    ((dt_iop_denoiseprofile_params_t *)module->default_params)->balance_nlm_bilat = 0.2f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->strength = 1.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->mode = MODE_NLMEANS;
     for(int k = 0; k < 3; k++)
@@ -2364,6 +2364,8 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_denoiseprofile_params_t *p = (dt_iop_denoiseprofile_params_t *)self->params;
   dt_bauhaus_slider_set(g->radius, p->radius);
   dt_bauhaus_slider_set(g->nbhood, p->nbhood);
+  dt_bauhaus_slider_set(g->scattering, p->scattering);
+  dt_bauhaus_slider_set(g->balance_nlm_bilat, p->balance_nlm_bilat);
   dt_bauhaus_slider_set(g->strength, p->strength);
   dt_bauhaus_combobox_set(g->mode, p->mode);
   dt_bauhaus_combobox_set(g->profile, -1);
