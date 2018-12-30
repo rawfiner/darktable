@@ -2820,9 +2820,8 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->scattering,
                               _("scattering of the neighbourhood to search patches in. increase for better "
                                 "coarse-grain noise reduction. does not affect execution time."));
-  gtk_widget_set_tooltip_text(
-      g->balance_nlm_bilat,
-      _("gives more weight to the center pixel of patches. A setting of 1 is equivalent to a bilateral filter."));
+  gtk_widget_set_tooltip_text(g->balance_nlm_bilat, _("gives more weight to the center pixel of patches. "
+                                                      "useful to restore some details."));
   gtk_widget_set_tooltip_text(g->strength, _("finetune denoising strength"));
   g_signal_connect(G_OBJECT(g->profile), "value-changed", G_CALLBACK(profile_callback), self);
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
