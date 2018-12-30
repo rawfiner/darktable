@@ -2726,10 +2726,13 @@ void gui_init(dt_iop_module_t *self)
   g->profile = dt_bauhaus_combobox_new(self);
   g->mode = dt_bauhaus_combobox_new(self);
   g->radius = dt_bauhaus_slider_new_with_range(self, 0.0f, 4.0f, 1.f, 1.f, 0);
+  dt_bauhaus_slider_enable_soft_boundaries(g->radius, 0.0f, 10.0f);
   g->nbhood = dt_bauhaus_slider_new_with_range(self, 1.0f, 30.0f, 1.f, 7.f, 0);
-  g->scattering = dt_bauhaus_slider_new_with_range(self, 0.0f, 2.0f, 0.01, 0.0f, 2);
+  g->scattering = dt_bauhaus_slider_new_with_range(self, 0.0f, 1.0f, 0.01, 0.0f, 2);
+  dt_bauhaus_slider_enable_soft_boundaries(g->scattering, 0.0f, 4.0f);
   g->balance_nlm_bilat = dt_bauhaus_slider_new_with_range(self, 0.0f, 1.0f, 0.01, 0.0f, 2);
   g->strength = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .05, 1.f, 3);
+  dt_bauhaus_slider_enable_soft_boundaries(g->strength, 0.001f, 1000.0f);
   g->channel = dt_conf_get_int("plugins/darkroom/denoiseprofile/gui_channel");
 
   gtk_box_pack_start(GTK_BOX(self->widget), g->profile, TRUE, TRUE, 0);
