@@ -1217,15 +1217,15 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
             const float *inps = in + 4 * i + 4l * ((size_t)roi_in->width * (j + kj) + ki);
             float wbilat = 0.0f;
             for(int k = 0; k < 3; k++) wbilat += (inp[k] - inps[k]) * (inp[k] - inps[k]);
-            float wnlm = fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
-            wbilat = fast_mexp2f(fmaxf(0.0f, wbilat * (2 * P + 1) * .015f - 2.0f));
             float balance_nlm_bilat = d->balance_nlm_bilat;
+            float slide2 = slide + wbilat * balance_nlm_bilat * (2 * P + 1) * (2 * P + 1);
+            slide2 /= (1.0 + balance_nlm_bilat);
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
 #endif
             for(size_t c = 0; c < 4; c++)
             {
-              out[c] += iv[c] * ((1.0 - balance_nlm_bilat) * wnlm + balance_nlm_bilat * wbilat);
+              out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, slide2 * norm - 2.0f));
             }
           }
         }
@@ -2804,7 +2804,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_widget_set_label(g->nbhood, NULL, _("search radius"));
   dt_bauhaus_slider_set_format(g->nbhood, "%.0f");
   dt_bauhaus_widget_set_label(g->scattering, NULL, _("scattering (coarse-grain noise reduction)"));
-  dt_bauhaus_widget_set_label(g->balance_nlm_bilat, NULL, _("center pixel weight"));
+  dt_bauhaus_widget_set_label(g->balance_nlm_bilat, NULL, _("center pixel weight (details)"));
   dt_bauhaus_widget_set_label(g->strength, NULL, _("strength"));
   dt_bauhaus_combobox_add(g->mode, _("non-local means"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
