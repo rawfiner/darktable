@@ -1073,7 +1073,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 
   // P == 0 : this will degenerate to a (fast) bilateral filter.
 
-  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
+  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * (roi_out->width + 2 * P) * dt_get_num_threads());
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height * 4);
   float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
@@ -1104,7 +1104,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
       for(int j = 0; j < roi_out->height; j++)
       {
         if(j + kj < 0 || j + kj >= roi_out->height) continue;
-        float *S = Sa + dt_get_thread_num() * roi_out->width;
+        float *S = Sa + dt_get_thread_num() * (roi_out->width + 2 * P) + P;
         const float *ins = in + 4l * ((size_t)roi_in->width * (j + kj) + ki);
         float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
 
@@ -1115,7 +1115,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
         if(!inited_slide)
         {
           // sum up a line
-          memset(S, 0x0, sizeof(float) * roi_out->width);
+          memset(S - P, 0x0, sizeof(float) * (roi_out->width + 2 * P));
           for(int jj = -Pm; jj <= PM; jj++)
           {
             int i = MAX(0, -ki);
@@ -1136,17 +1136,45 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
         float *s = S;
         float slide = 0.0f;
         // sum up the first -P..P
-        for(int i = 0; i < 2 * P + 1; i++) slide += s[i];
+        for(int i = -P; i <= P; i++) slide += s[i];
         for(int i = 0; i < roi_out->width; i++, s++, ins += 4, out += 4)
         {
           // FIXME: the comment above is actually relevant even for 1000 px width already.
           // XXX    numerical precision will not forgive us:
-          if(i - P > 0 && i + P < roi_out->width) slide += s[P] - s[-P - 1];
+          slide += s[P] - s[-P - 1];
           if(i + ki >= 0 && i + ki < roi_out->width)
           {
             // TODO: could put that outside the loop.
             // DEBUG XXX bring back to computable range:
-            const float norm = .015f / (2 * P + 1);
+
+            // adaptive norm
+            // depending on the position on the image, the number of pixels
+            // involved in the norm is different.
+            // we adapt the norm to this count.
+            float norm = .015f / (Pm + PM + 1);
+            if(i < P)
+            {
+              norm = .015f / (Pm + PM + 1) * (2 * P + 1) / (P + i + 1);
+            }
+            if(i + P >= roi_out->width)
+            {
+              norm = .015f / (Pm + PM + 1) * (2 * P + 1) / (P + roi_out->width - i + 1);
+            }
+            if(ki > 0)
+            {
+              if(i + ki + P >= roi_out->width)
+              {
+                norm = .015f / (Pm + PM + 1) * (2 * P + 1) / (P + MAX(roi_out->width - i - ki, 0) + 1);
+              }
+            }
+            else
+            {
+              if(i + ki - P < 0)
+              {
+                norm = .015f / (Pm + PM + 1) * (2 * P + 1) / (P + i + ki + 1);
+              }
+            }
+
             const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
