@@ -1073,7 +1073,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 
   // P == 0 : this will degenerate to a (fast) bilateral filter.
 
-  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * (roi_out->width + 2 * P) * dt_get_num_threads());
+  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * (roi_out->width + 2 * P + 1) * dt_get_num_threads());
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height * 4);
   float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
@@ -1104,7 +1104,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
       for(int j = 0; j < roi_out->height; j++)
       {
         if(j + kj < 0 || j + kj >= roi_out->height) continue;
-        float *S = Sa + dt_get_thread_num() * (roi_out->width + 2 * P) + P;
+        float *S = Sa + dt_get_thread_num() * (roi_out->width + 2 * P + 1) + P;
         const float *ins = in + 4l * ((size_t)roi_in->width * (j + kj) + ki);
         float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
 
@@ -1137,11 +1137,10 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
         float slide = 0.0f;
         // sum up the first -P..P
         for(int i = -P; i <= P; i++) slide += s[i];
-        for(int i = 0; i < roi_out->width; i++, s++, ins += 4, out += 4)
+        for(int i = 0; i < roi_out->width; i++, ins += 4, out += 4)
         {
           // FIXME: the comment above is actually relevant even for 1000 px width already.
           // XXX    numerical precision will not forgive us:
-          slide += s[P] - s[-P - 1];
           if(i + ki >= 0 && i + ki < roi_out->width)
           {
             // TODO: could put that outside the loop.
@@ -1184,6 +1183,8 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
               out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f));
             }
           }
+          s++;
+          slide += s[P] - s[-P - 1];
         }
         if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
         {
