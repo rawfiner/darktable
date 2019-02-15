@@ -1269,7 +1269,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa)
+#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide, d) shared(kj, ki, in, Sa)
 #endif
       for(int j = 0; j < roi_out->height; j++)
       {
@@ -1316,7 +1316,17 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
           {
             // TODO: could put that outside the loop.
             // DEBUG XXX bring back to computable range:
-            const float norm = .015f / (2 * P + 1);
+            // Each patch has a width of 2P+1 and a height of 2P+1
+            // thus, divide by (2P+1)^2.
+            // The 0.045 was derived from the old formula, to keep the
+            // norm identical when P=1, as the norm for P=1 seemed
+            // to work quite well: 0.045 = 0.015 * (2 * P + 1) with P=1.
+            float norm = .045f / ((2 * P + 1) * (2 * P + 1));
+            if(!d->fix_nlmeans_norm)
+            {
+              // use old formula
+              norm = .015f / (2 * P + 1);
+            }
             const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
@@ -1381,7 +1391,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
 {
   // this is called for preview and full pipe separately, each with its own pixelpipe piece.
   // get our data struct:
-  dt_iop_denoiseprofile_params_t *d = (dt_iop_denoiseprofile_params_t *)piece->data;
+  dt_iop_denoiseprofile_data_t *d = (dt_iop_denoiseprofile_data_t *)piece->data;
 
   // adjust to zoom size:
   const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
@@ -1446,7 +1456,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide) shared(kj, ki, in, Sa)
+#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide, d) shared(kj, ki, in, Sa)
 #endif
       for(int j = 0; j < roi_out->height; j++)
       {
@@ -1493,7 +1503,17 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
           {
             // TODO: could put that outside the loop.
             // DEBUG XXX bring back to computable range:
-            const float norm = .015f / (2 * P + 1);
+            // Each patch has a width of 2P+1 and a height of 2P+1
+            // thus, divide by (2P+1)^2.
+            // The 0.045 was derived from the old formula, to keep the
+            // norm identical when P=1, as the norm for P=1 seemed
+            // to work quite well: 0.045 = 0.015 * (2 * P + 1) with P=1.
+            float norm = .045f / ((2 * P + 1) * (2 * P + 1));
+            if(!d->fix_nlmeans_norm)
+            {
+              // use old formula
+              norm = .015f / (2 * P + 1);
+            }
             const __m128 iv = { ins[0], ins[1], ins[2], 1.0f };
             _mm_store_ps(out,
                          _mm_load_ps(out) + iv * _mm_set1_ps(fast_mexp2f(fmaxf(0.0f, slide * norm - 2.0f))));
@@ -1616,7 +1636,7 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
                               cl_mem dev_out, const dt_iop_roi_t *const roi_in,
                               const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_denoiseprofile_params_t *d = (dt_iop_denoiseprofile_params_t *)piece->data;
+  dt_iop_denoiseprofile_data_t *d = (dt_iop_denoiseprofile_data_t *)piece->data;
   dt_iop_denoiseprofile_global_data_t *gd = (dt_iop_denoiseprofile_global_data_t *)self->data;
 
   const int devid = piece->pipe->devid;
@@ -1638,7 +1658,18 @@ static int process_nlmeans_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop
   const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
   const int K = ceilf(d->nbhood * scale); // nbhood
-  const float norm = 0.015f / (2 * P + 1);
+
+  // Each patch has a width of 2P+1 and a height of 2P+1
+  // thus, divide by (2P+1)^2.
+  // The 0.045 was derived from the old formula, to keep the
+  // norm identical when P=1, as the norm for P=1 seemed
+  // to work quite well: 0.045 = 0.015 * (2 * P + 1) with P=1.
+  float norm = .045f / ((2 * P + 1) * (2 * P + 1));
+  if(!d->fix_nlmeans_norm)
+  {
+    // use old formula
+    norm = .015f / (2 * P + 1);
+  }
 
   const float wb_mean = (piece->pipe->dsc.temperature.coeffs[0] + piece->pipe->dsc.temperature.coeffs[1]
                          + piece->pipe->dsc.temperature.coeffs[2])
@@ -2333,6 +2364,9 @@ void init(dt_iop_module_t *module)
       tmp.y[ch][k] = 0.5f;
     }
   }
+  tmp.fix_anscombe = TRUE;
+  tmp.fix_nlmeans_norm = TRUE;
+  tmp.wb_adaptive_anscombe = TRUE;
   memcpy(module->params, &tmp, sizeof(dt_iop_denoiseprofile_params_t));
   memcpy(module->default_params, &tmp, sizeof(dt_iop_denoiseprofile_params_t));
 }
