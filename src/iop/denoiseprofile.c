@@ -113,6 +113,9 @@ typedef struct dt_iop_denoiseprofile_params_t
   float radius;     // patch size
   float nbhood;     // search radius
   float strength;   // noise level after equalization
+  float force_red;  // nlmeans param to adjust blur amount on red channel
+  float force_green; // nlmeans param to adjust blur amount on green channel
+  float force_blue;  // nlmeans param to adjust blur amount on blue channel
   float scattering; // spread the patch search zone without increasing number of patches
   float central_pixel_weight; // increase central pixel's weight in patch comparison
   float a[3], b[3]; // fit for poissonian-gaussian noise per color channel.
@@ -134,6 +137,9 @@ typedef struct dt_iop_denoiseprofile_gui_data_t
   GtkWidget *strength;
   GtkWidget *scattering;
   GtkWidget *central_pixel_weight;
+  GtkWidget *force_red;
+  GtkWidget *force_green;
+  GtkWidget *force_blue;
   dt_noiseprofile_t interpolated; // don't use name, maker or model, they may point to garbage
   GList *profiles;
   GtkWidget *stack;
@@ -164,6 +170,9 @@ typedef struct dt_iop_denoiseprofile_data_t
   float radius;                      // search radius
   float nbhood;                      // search radius
   float strength;                    // noise level after equalization
+  float force_red;                   // nlmeans param to adjust blur amount on red channel
+  float force_green;                 // nlmeans param to adjust blur amount on green channel
+  float force_blue;                  // nlmeans param to adjust blur amount on blue channel
   float scattering;                  // spread the search zone without changing number of patches
   float central_pixel_weight;        // increase central pixel's weight in patch comparison
   float a[3], b[3];                  // fit for poissonian-gaussian noise per color channel.
@@ -341,6 +350,9 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
     v7->fix_anscombe = FALSE;     // don't fix anscombe to ensure backward compatibility
     v7->fix_nlmeans_norm = FALSE; // don't fix norm to ensure backward compatibility
     v7->wb_adaptive_anscombe = TRUE;
+    v7->force_red = 1.0;
+    v7->force_green = 1.0;
+    v7->force_blue = 1.0;
     return 0;
   }
   return 1;
@@ -2359,6 +2371,9 @@ void reload_defaults(dt_iop_module_t *module)
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->scattering = 0.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->central_pixel_weight = 0.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->strength = 1.0f;
+    ((dt_iop_denoiseprofile_params_t *)module->default_params)->force_red = 1.0f;
+    ((dt_iop_denoiseprofile_params_t *)module->default_params)->force_green = 1.0f;
+    ((dt_iop_denoiseprofile_params_t *)module->default_params)->force_blue = 1.0f;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->mode = MODE_NLMEANS;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->fix_anscombe = TRUE;
     ((dt_iop_denoiseprofile_params_t *)module->default_params)->fix_nlmeans_norm = TRUE;
@@ -2393,6 +2408,9 @@ void init(dt_iop_module_t *module)
   tmp.fix_anscombe = TRUE;
   tmp.fix_nlmeans_norm = TRUE;
   tmp.wb_adaptive_anscombe = TRUE;
+  tmp.force_red = 1.0f;
+  tmp.force_green = 1.0f;
+  tmp.force_blue = 1.0f;
   memcpy(module->params, &tmp, sizeof(dt_iop_denoiseprofile_params_t));
   memcpy(module->default_params, &tmp, sizeof(dt_iop_denoiseprofile_params_t));
 }
@@ -2490,6 +2508,9 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   d->scattering = p->scattering;
   d->central_pixel_weight = p->central_pixel_weight;
   d->strength = p->strength;
+  d->force_red = p->force_red;
+  d->force_green = p->force_green;
+  d->force_blue = p->force_blue;
   for(int i = 0; i < 3; i++)
   {
     d->a[i] = p->a[i];
@@ -2611,6 +2632,27 @@ static void strength_callback(GtkWidget *w, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
+static void force_red_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  dt_iop_denoiseprofile_params_t *p = self->params;
+  p->force_red = dt_bauhaus_slider_get(w);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void force_green_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  dt_iop_denoiseprofile_params_t *p = self->params;
+  p->force_green = dt_bauhaus_slider_get(w);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void force_blue_callback(GtkWidget *w, dt_iop_module_t *self)
+{
+  dt_iop_denoiseprofile_params_t *p = self->params;
+  p->force_blue = dt_bauhaus_slider_get(w);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
 void gui_update(dt_iop_module_t *self)
 {
   // let gui slider match current parameters:
@@ -2621,6 +2663,9 @@ void gui_update(dt_iop_module_t *self)
   dt_bauhaus_slider_set_soft(g->strength, p->strength);
   dt_bauhaus_slider_set_soft(g->scattering, p->scattering);
   dt_bauhaus_slider_set_soft(g->central_pixel_weight, p->central_pixel_weight);
+  dt_bauhaus_slider_set_soft(g->force_red, p->force_red);
+  dt_bauhaus_slider_set_soft(g->force_green, p->force_green);
+  dt_bauhaus_slider_set_soft(g->force_blue, p->force_blue);
   dt_bauhaus_combobox_set(g->mode, p->mode);
   dt_bauhaus_combobox_set(g->profile, -1);
   if(p->mode == MODE_WAVELETS)
@@ -3029,6 +3074,18 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_slider_enable_soft_boundaries(g->central_pixel_weight, 0.0, 10.0);
   g->strength = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .05, 1.f, 3);
   dt_bauhaus_slider_enable_soft_boundaries(g->strength, 0.001f, 1000.0f);
+  g->force_red = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .01, 1.0f, 3);
+  g->force_green = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .01, 1.0f, 3);
+  g->force_blue = dt_bauhaus_slider_new_with_range(self, 0.001f, 4.0f, .01, 1.0f, 3);
+  dt_bauhaus_slider_enable_soft_boundaries(g->force_red, 0.0001f, 1000.0f);
+  dt_bauhaus_slider_enable_soft_boundaries(g->force_green, 0.0001f, 1000.0f);
+  dt_bauhaus_slider_enable_soft_boundaries(g->force_blue, 0.0001f, 1000.0f);
+  dt_bauhaus_slider_set_stop(g->force_red, 0.0f, 0.8f, 0.0f, 0.0f);
+  dt_bauhaus_slider_set_stop(g->force_red, 1.0f, 0.8f, 0.0f, 0.0f);
+  dt_bauhaus_slider_set_stop(g->force_green, 0.0f, 0.0f, 0.8f, 0.0f);
+  dt_bauhaus_slider_set_stop(g->force_green, 1.0f, 0.0f, 0.8f, 0.0f);
+  dt_bauhaus_slider_set_stop(g->force_blue, 0.0f, 0.0f, 0.0f, 0.8f);
+  dt_bauhaus_slider_set_stop(g->force_blue, 1.0f, 0.0f, 0.0f, 0.8f);
   g->channel = dt_conf_get_int("plugins/darkroom/denoiseprofile/gui_channel");
 
   g->box_nlm = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
@@ -3038,6 +3095,10 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(g->box_nlm), g->nbhood, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(g->box_nlm), g->scattering, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(g->box_nlm), g->central_pixel_weight, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_nlm), g->strength, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_nlm), g->force_red, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_nlm), g->force_green, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_nlm), g->force_blue, TRUE, TRUE, 0);
 
   g->channel_tabs = GTK_NOTEBOOK(gtk_notebook_new());
 
@@ -3071,6 +3132,7 @@ void gui_init(dt_iop_module_t *self)
 
   gtk_box_pack_start(GTK_BOX(g->box_wavelets), GTK_WIDGET(g->channel_tabs), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(g->box_wavelets), GTK_WIDGET(g->area), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(g->box_wavelets), g->strength, TRUE, TRUE, 0);
 
   gtk_widget_add_events(GTK_WIDGET(g->area), GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK
                                                  | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
@@ -3147,6 +3209,10 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_widget_set_label(g->scattering, NULL, _("scattering (coarse-grain noise)"));
   dt_bauhaus_widget_set_label(g->central_pixel_weight, NULL, _("central pixel weight (details)"));
   dt_bauhaus_widget_set_label(g->strength, NULL, _("strength"));
+  dt_bauhaus_widget_set_label(g->force_red, NULL, _("red force"));
+  dt_bauhaus_widget_set_label(g->force_green, NULL, _("green force"));
+  dt_bauhaus_widget_set_label(g->force_blue, NULL, _("blue force"));
+
   dt_bauhaus_combobox_add(g->mode, _("non-local means"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
   gtk_widget_set_tooltip_text(g->profile, _("profile used for variance stabilization"));
@@ -3163,6 +3229,9 @@ void gui_init(dt_iop_module_t *self)
                                                          "useful to recover details when patch size\n"
                                                          "is quite big."));
   gtk_widget_set_tooltip_text(g->strength, _("finetune denoising strength"));
+  gtk_widget_set_tooltip_text(g->force_red, _("finetune denoising strength for red channel"));
+  gtk_widget_set_tooltip_text(g->force_green, _("finetune denoising strength for green channel"));
+  gtk_widget_set_tooltip_text(g->force_blue, _("finetune denoising strength for blue channel"));
   g_signal_connect(G_OBJECT(g->profile), "value-changed", G_CALLBACK(profile_callback), self);
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
   g_signal_connect(G_OBJECT(g->radius), "value-changed", G_CALLBACK(radius_callback), self);
@@ -3171,6 +3240,9 @@ void gui_init(dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(g->central_pixel_weight), "value-changed", G_CALLBACK(central_pixel_weight_callback),
                    self);
   g_signal_connect(G_OBJECT(g->strength), "value-changed", G_CALLBACK(strength_callback), self);
+  g_signal_connect(G_OBJECT(g->force_red), "value-changed", G_CALLBACK(force_red_callback), self);
+  g_signal_connect(G_OBJECT(g->force_green), "value-changed", G_CALLBACK(force_green_callback), self);
+  g_signal_connect(G_OBJECT(g->force_blue), "value-changed", G_CALLBACK(force_blue_callback), self);
 }
 
 void gui_cleanup(dt_iop_module_t *self)
