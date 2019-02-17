@@ -1353,12 +1353,13 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
             contribution_center *= (2 * P + 1) * (2 * P + 1);
             float patch_dissimilarity = slide + contribution_center * d->central_pixel_weight;
             patch_dissimilarity /= (1.0 + d->central_pixel_weight);
+            const float channel_force[4] = { d->force_red, d->force_green, d->force_blue, 1.0f };
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
 #endif
             for(size_t c = 0; c < 4; c++)
             {
-              out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm - 2.0f));
+              out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm / channel_force[c] - 2.0f));
             }
           }
         }
@@ -1429,6 +1430,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height * 4);
   float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+  const float *sum_of_weights = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
 
   const float wb_mean = (piece->pipe->dsc.temperature.coeffs[0] + piece->pipe->dsc.temperature.coeffs[1]
                          + piece->pipe->dsc.temperature.coeffs[2])
@@ -1481,7 +1483,8 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide, d) shared(kj, ki, in, Sa)
+#pragma omp parallel for schedule(static) default(none) firstprivate(inited_slide, d,                             \
+                                                                     sum_of_weights) shared(kj, ki, in, Sa)
 #endif
       for(int j = 0; j < roi_out->height; j++)
       {
@@ -1489,6 +1492,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
         float *S = Sa + dt_get_thread_num() * roi_out->width;
         const float *ins = in + 4l * ((size_t)roi_in->width * (j + kj) + ki);
         float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
+        float *sum_of_weights_pixel = ((float *)sum_of_weights) + (size_t)4 * roi_out->width * j;
 
         const int Pm = MIN(MIN(P, j + kj), j);
         const int PM = MIN(MIN(P, roi_out->height - 1 - j - kj), roi_out->height - 1 - j);
@@ -1549,13 +1553,18 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
             contribution_center *= (2 * P + 1) * (2 * P + 1);
             float patch_dissimilarity = slide + contribution_center * d->central_pixel_weight;
             patch_dissimilarity /= (1.0 + d->central_pixel_weight);
-            _mm_store_ps(out, _mm_load_ps(out)
-                                  + iv * _mm_set1_ps(fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm - 2.0f))));
+            const __m128 channel
+                = { fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm / d->force_red - 2.0f)),
+                    fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm / d->force_green - 2.0f)),
+                    fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm / d->force_blue - 2.0f)), 1.0f };
+            _mm_store_ps(out, _mm_load_ps(out) + iv * channel);
+            _mm_store_ps(sum_of_weights_pixel, _mm_load_ps(sum_of_weights_pixel) + channel);
             // _mm_store_ps(out, _mm_load_ps(out) + iv * _mm_set1_ps(fast_mexp2f(fmaxf(0.0f, slide*norm))));
           }
           s++;
           ins += 4;
           out += 4;
+          sum_of_weights_pixel += 4;
         }
         if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
         {
@@ -1633,22 +1642,26 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   }
 // normalize
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) shared(d)
+#pragma omp parallel for default(none) schedule(static) firstprivate(sum_of_weights) shared(d)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
     float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
+    float *sum_of_weights_pixel = ((float *)sum_of_weights) + (size_t)4 * roi_out->width * j;
     for(int i = 0; i < roi_out->width; i++)
     {
-      if(out[3] > 0.0f) _mm_store_ps(out, _mm_mul_ps(_mm_load_ps(out), _mm_set1_ps(1.0f / out[3])));
-      // DEBUG show weights
-      // _mm_store_ps(out, _mm_set1_ps(1.0f/out[3]));
+      for(int c = 0; c < 3; c++)
+      {
+        if(sum_of_weights_pixel[c] > 0.0f) out[c] = out[c] / sum_of_weights_pixel[c];
+      }
       out += 4;
+      sum_of_weights_pixel += 4;
     }
   }
   // free shared tmp memory:
   dt_free_align(Sa);
   dt_free_align(in);
+  dt_free_align((float *)sum_of_weights);
   backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb);
 
   if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
