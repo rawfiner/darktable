@@ -821,13 +821,34 @@ static void eaw_synthesize(float *const out, const float *const in, const float 
   const float boost[4] = { boostf[0], boostf[1], boostf[2], boostf[3] };
 
 #ifdef _OPENMP
-#pragma omp parallel for SIMD() default(none) schedule(static) collapse(2)
+#pragma omp parallel for default(none) schedule(static)
 #endif
   for(size_t k = 0; k < (size_t)4 * width * height; k += 4)
   {
+    const int rad = 3; // must be > 0
+    float norm2 = 0.0;
+    for (int ii = -rad; ii <=rad; ii++)
+    {
+      for (int jj = -rad; jj <=rad; jj++)
+      {
+        float norm[4] = {0.0, 0.0, 0.0, 0.0};
+        for(size_t c = 0; c < 4; c++)
+        {
+          uint32_t index = k + c + jj * width + ii;
+          if (index >= 4 * width * height)
+            index = k + c;
+          norm[c] = fabs(detail[index])+1.0;
+        }
+        norm2 += (norm[0]*norm[1]*norm[2])-1.0;
+      }
+    }
+    //norm2 /= 8192.0;
+    norm2 /= ((rad*2+1)*(rad*2+1));
+    norm2 = sqrt(norm2) / 8;
     for(size_t c = 0; c < 4; c++)
     {
-      const float absamt = MAX(0.0f, (fabsf(detail[k + c]) - threshold[c]));
+      const float thresh = expf(-norm2) * threshold[c];
+      const float absamt = MAX(0.0f, (fabsf(detail[k + c]) - thresh));
       const float amount = copysignf(absamt, detail[k + c]);
       out[k + c] = in[k + c] + (boost[c] * amount);
     }
@@ -921,9 +942,9 @@ static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   tmp = dt_alloc_align(64, (size_t)4 * sizeof(float) * npixels);
 
   const float wb[3] = { // twice as many samples in green channel:
-                        2.0f * piece->pipe->dsc.processed_maximum[0] * d->strength * (in_scale * in_scale),
+                        piece->pipe->dsc.processed_maximum[0] * d->strength * (in_scale * in_scale),
                         piece->pipe->dsc.processed_maximum[1] * d->strength * (in_scale * in_scale),
-                        2.0f * piece->pipe->dsc.processed_maximum[2] * d->strength * (in_scale * in_scale)
+                        piece->pipe->dsc.processed_maximum[2] * d->strength * (in_scale * in_scale)
   };
   // only use green channel + wb for now:
   const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
@@ -1769,9 +1790,9 @@ static int process_wavelets_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_io
     if(dev_detail[k] == NULL) goto error;
   }
 
-  const float wb[4] = { 2.0f * piece->pipe->dsc.processed_maximum[0] * d->strength * (scale * scale),
+  const float wb[4] = { piece->pipe->dsc.processed_maximum[0] * d->strength * (scale * scale),
                         piece->pipe->dsc.processed_maximum[1] * d->strength * (scale * scale),
-                        2.0f * piece->pipe->dsc.processed_maximum[2] * d->strength * (scale * scale), 0.0f };
+                        piece->pipe->dsc.processed_maximum[2] * d->strength * (scale * scale), 0.0f };
   const float aa[4] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2], 1.0f };
   const float bb[4] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2], 1.0f };
   const float sigma2[4] = { (bb[0] / aa[0]) * (bb[0] / aa[0]), (bb[1] / aa[1]) * (bb[1] / aa[1]),
@@ -2028,7 +2049,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   if(d->mode == MODE_NLMEANS)
     process_nlmeans(self, piece, ivoid, ovoid, roi_in, roi_out);
   else
-    process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_decompose, eaw_synthesize);
+    process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_decompose, eaw_synthesize_sse2);
 }
 
 #if defined(__SSE2__)
@@ -2039,7 +2060,7 @@ void process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, c
   if(d->mode == MODE_NLMEANS)
     process_nlmeans_sse(self, piece, ivoid, ovoid, roi_in, roi_out);
   else
-    process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_decompose_sse, eaw_synthesize_sse2);
+    process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_decompose_sse, eaw_synthesize);
 }
 #endif
 
