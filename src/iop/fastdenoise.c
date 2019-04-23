@@ -120,18 +120,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     //res2 *= 3.0;
     //res3 *= 10.0;
     //max *= 10.0;
-    norm[j]   = inr/res;//inr /wb[0] / d->strengthluma;
-    norm[j+1] = inb/res;//ing /wb[1] / d->strengthluma;
-    norm[j+2] = ing/res;//inb /wb[2] / d->strengthluma;
-    norm[j+3] = max/res;
-    norm1[j/4] = res;
+    float minusmax = 1.0 - max;
+    if(minusmax < thrs)
+      minusmax = thrs;
+    norm[j]   = 1.0-inr/wb[0] / max;//inr /wb[0] / d->strengthluma;
+    norm[j+1] = 1.0-ing/wb[1] / max;//ing /wb[1] / d->strengthluma;
+    norm[j+2] = 1.0-inb/wb[2] / max;//inb /wb[2] / d->strengthluma;
+    norm[j+3] = res/max;
+    norm1[j/4] = max;
     normluma[j]   = pow(res,0.7);//inr /wb[0] / d->strengthluma;
     normluma[j+1] = pow(res2,0.7);//ing /wb[1] / d->strengthluma;
     normluma[j+2] = pow(res3,0.7);//inb /wb[2] / d->strengthluma;
     normluma[j+3] = pow(max,0.7);
-    rratios[j/4] = inr/wb[0] / res;
-    gratios[j/4] = ing/wb[1] / res;
-    bratios[j/4] = inb/wb[2] / res;
+    rratios[j/4] = inr/wb[0] / max;
+    gratios[j/4] = ing/wb[1] / max;
+    bratios[j/4] = inb/wb[2] / max;
   }
 
   float *rratios_out = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
@@ -139,13 +142,13 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float *bratios_out = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
   float *norm1_out = dt_alloc_align(64, (size_t)sizeof(float) * roi_in->width * roi_in->height);
 
-  const float w = 1.0f;
+  const float w = 10.0f;
   guided_filter(norm, rratios, rratios_out, roi_in->width, roi_in->height, 4, d->radius,
-                    d->strength / 500.0, w, 0.0f, 1000000000.0f);
+                    d->strength / 70.0, w, 0.0f, 1000000000.0f);
   guided_filter(norm, gratios, gratios_out, roi_in->width, roi_in->height, 4, d->radius,
-                    d->strength / 500.0, w, 0.0f, 1000000000.0f);
+                    d->strength / 70.0, w, 0.0f, 1000000000.0f);
   guided_filter(norm, bratios, bratios_out, roi_in->width, roi_in->height, 4, d->radius,
-                    d->strength / 500.0, w, 0.0f, 1000000000.0f);
+                    d->strength / 70.0, w, 0.0f, 1000000000.0f);
   guided_filter(normluma, norm1, norm1_out, roi_in->width, roi_in->height, 4, d->radius,
                     d->strengthluma / 10.0, 1000.0, 0.0f, 1000000000.0f);
 
