@@ -1120,9 +1120,25 @@ static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   }
   // update the coeffs with strength and scale
   for(int i = 0; i < 3; i++) wb[i] *= d->strength * (in_scale * in_scale);
-  // only use green channel + wb for now:
-  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
-  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+  float aa[3] = { wb[0], wb[1], wb[2] };
+  float bb[3] = { wb[0], wb[1], wb[2] };
+  if(d->profile_version == 1)
+  {
+    // only use the profile of green channel
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[1];
+      bb[i] *= d->b[1];
+    }
+  }
+  else if(d->profile_version == 2)
+  {
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[i];
+      bb[i] *= d->b[i];
+    }
+  }
 
 
   precondition((float *)ivoid, (float *)ovoid, width, height, aa, bb);
@@ -1306,8 +1322,25 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   // update the coeffs with strength and scale
   for(int i = 0; i < 3; i++) wb[i] *= d->strength * (scale * scale);
 
-  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
-  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+  float aa[3] = { wb[0], wb[1], wb[2] };
+  float bb[3] = { wb[0], wb[1], wb[2] };
+  if(d->profile_version == 1)
+  {
+    // only use the profile of green channel
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[1];
+      bb[i] *= d->b[1];
+    }
+  }
+  else if(d->profile_version == 2)
+  {
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[i];
+      bb[i] *= d->b[i];
+    }
+  }
   precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb);
 
   // for each shift vector
@@ -1509,8 +1542,25 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   // update the coeffs with strength and scale
   for(int i = 0; i < 3; i++) wb[i] *= d->strength * (scale * scale);
 
-  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
-  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+  float aa[3] = { wb[0], wb[1], wb[2] };
+  float bb[3] = { wb[0], wb[1], wb[2] };
+  if(d->profile_version == 1)
+  {
+    // only use the profile of green channel
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[1];
+      bb[i] *= d->b[1];
+    }
+  }
+  else if(d->profile_version == 2)
+  {
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[i];
+      bb[i] *= d->b[i];
+    }
+  }
   precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb);
 
   // for each shift vector
@@ -1814,8 +1864,25 @@ static void process_variance(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   // update the coeffs with strength
   for(int i = 0; i < 3; i++) wb[i] *= d->strength;
 
-  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
-  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+  float aa[3] = { wb[0], wb[1], wb[2] };
+  float bb[3] = { wb[0], wb[1], wb[2] };
+  if(d->profile_version == 1)
+  {
+    // only use the profile of green channel
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[1];
+      bb[i] *= d->b[1];
+    }
+  }
+  else if(d->profile_version == 2)
+  {
+    for(int i = 0; i < 3; i++)
+    {
+      aa[i] *= d->a[i];
+      bb[i] *= d->b[i];
+    }
+  }
   precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb);
 
   float *out = (float *)ovoid;
