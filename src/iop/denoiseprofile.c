@@ -1589,7 +1589,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
     for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.processed_maximum[i];
   }
   // update the coeffs with strength and scale
-  for(int i = 0; i < 3; i++) wb[i] *= d->strength * (scale * scale);
+  for(int i = 0; i < 3; i++) wb[i] *= d->strength * scale;
 
   float aa[3] = { wb[0], wb[1], wb[2] };
   float bb[3] = { wb[0], wb[1], wb[2] };
@@ -1693,6 +1693,10 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
               // use old formula
               norm = .015f / (2 * P + 1);
             }
+            // adjust norm to scale so that preview is accurate
+            // the 0.3 constant was empirically determined
+            // at 100% zoom, scale == 1 and norm is kept unchanged
+            norm *= (0.3+scale)/1.3;
             const __m128 iv = { ins[0], ins[1], ins[2], 1.0f };
             const float *inp = in + 4 * i + (size_t)4 * roi_in->width * j;
             const float *inps = in + 4 * i + 4l * ((size_t)roi_in->width * (j + kj) + ki);
