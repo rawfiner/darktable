@@ -9,7 +9,7 @@ DT_SRC_DIR=$(cd "$DT_SRC_DIR" && pwd -P)
 # Set default values to option vars
 # ---------------------------------------------------------------------------
 
-INSTALL_PREFIX_DEFAULT="/opt/darktable"
+INSTALL_PREFIX_DEFAULT="./binaries"
 INSTALL_PREFIX="$INSTALL_PREFIX_DEFAULT"
 BUILD_TYPE_DEFAULT="RelWithDebInfo"
 BUILD_TYPE="$BUILD_TYPE_DEFAULT"
@@ -280,7 +280,7 @@ if [ $ADDRESS_SANITIZER -ne 0 ] ; then
 fi
 
 
-cmd_config="${ASAN_FLAGS}cmake -G \"$BUILD_GENERATOR\" -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} ${CMAKE_MORE_OPTIONS} \"$DT_SRC_DIR\""
+cmd_config="${ASAN_FLAGS}cmake -G \"$BUILD_GENERATOR\" -DBUILD_NOISE_TOOLS=On -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} ${CMAKE_MORE_OPTIONS} \"$DT_SRC_DIR\""
 cmd_build="cmake --build "$BUILD_DIR" -- -j$MAKE_TASKS"
 cmd_install="${SUDO}cmake --build \"$BUILD_DIR\" --target install -- -j$MAKE_TASKS"
 

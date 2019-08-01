@@ -276,8 +276,8 @@ int main(int argc, char *arg[])
         for(int c = 0; c < 3; c++)
         {
           int index = (i * wd + j) * 3 + c;
-          input[index] = 2 * pow(input[index]+b[c], -p[c]/2+1) / ((-p[c]+2) /** sqrt(a[c])*/);
-          input2[index] = 2 * pow(input2[index]+b[c], -p[c]/2+1) / ((-p[c]+2) /** sqrt(a[c])*/);
+          input[index] = 2 * pow(input[index]+b[c], -p[c]/2+1) / ((-p[c]+2) * sqrt(a[c]));
+          input2[index] = 2 * pow(input2[index]+b[c], -p[c]/2+1) / ((-p[c]+2) * sqrt(a[c]));
         }
       }
     }
@@ -300,16 +300,22 @@ int main(int argc, char *arg[])
           double beta = 1.0-p[c]/2.0;
           double a0 = alpha;
           double a1 = (1.0-beta)/(2.0*alpha*beta*alpha/a[c]);
-          double delta = outputblurred[index]*outputblurred[index] + 4.0*a0*a1;
+          double delta = outputblurred[index]*outputblurred[index] + 4.0*(1-beta)/beta*(1-(beta-2)*1/2);
           double z1 = (outputblurred[index] + sqrt(delta))/(2.0*a0);
           double z2 = outputblurred[index] / a0;
+          double x1 = pow(z1, 1.0/beta) - b[c];
+          double delta2 = outputblurred[index]*outputblurred[index] + 4.0*(1-beta)/beta*(1-(beta-2)*x1*x1/(x1+b[c]);
+          z1 = (outputblurred[index] + sqrt(delta))/(2.0*a0);
           outputblurred[index] = pow(z1, 1.0/beta) - b[c];
           //outputblurred[index] = pow(z2, 1.0/beta) - b[c];
           //outputblurred[index] = pow(z1, 1.0/beta) - pow(z2, 1.0/beta);
 
-          delta = output2blurred[index]*output2blurred[index] + 4.0*a0*a1;
+          delta = output2blurred[index]*output2blurred[index] + 4.0*(1-beta)/beta*(1-(beta-2)*1/2);
           z1 = (output2blurred[index] + sqrt(delta))/(2.0*a0);
           z2 = output2blurred[index] / a0;
+          x1 = pow(z1, 1.0/beta) - b[c];
+          delta2 = outputblurred[index]*outputblurred[index] + 4.0*(1-beta)/beta*(1-(beta-2)*x1*x1/(x1+b[c]);
+          z1 = (output2blurred[index] + sqrt(delta))/(2.0*a0);
           output2blurred[index] = pow(z1, 1.0/beta) - b[c];
           //output2blurred[index] = pow(z2, 1.0/beta) - b[c];
         }
@@ -345,13 +351,13 @@ int main(int argc, char *arg[])
         {
           bias[c][level] /= nb_elts[c][level];
           double var = bias[c][level];
-          double alpha = 2.0/(/*sqrt(a[c])**/(2.0-p[c]));
+          double alpha = 2.0/(sqrt(a[c])*(2.0-p[c]));
           double beta = 1.0-p[c]/2.0;
           double a0 = alpha;
-          double a1 = (1.0-beta)/(2.0*alpha*beta*alpha/a[c]);
+          double a1 = (1.0-beta)/(2.0*alpha*beta);
           double delta = var*var + 4.0*a0*a1;
           double z1 = (var + sqrt(delta))/(2.0*a0);
-          bias[c][level] = pow(z1, 1.0/beta) - b[c];
+          bias[c][level] = MAX(pow(z1, 1.0/beta) - b[c], 0.0f);
           // double z2 = var / a0;
           // bias[c][level] = pow(z2, 1.0/beta) - b[c];
         }
@@ -368,7 +374,7 @@ int main(int argc, char *arg[])
       for(int c = 0; c < 3; c++)
       {
         array_for_median[c][(level+1)%3] = bias[c][level+1];
-        bias[c][level] = median(array_for_median[c]) + 0.0001;
+        bias[c][level] += /*median(array_for_median[c]) +*/ 0.0001;
       }
       double level_normalized = level / (double)NB_CLASSES ;
       double level2 = level_normalized + 0.0001;

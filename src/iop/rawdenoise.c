@@ -38,7 +38,7 @@ DT_MODULE_INTROSPECTION(2, dt_iop_rawdenoise_params_t)
 
 #define DT_IOP_RAWDENOISE_INSET DT_PIXEL_APPLY_DPI(5)
 #define DT_IOP_RAWDENOISE_RES 64
-#define DT_IOP_RAWDENOISE_BANDS 5
+#define DT_IOP_RAWDENOISE_BANDS 6
 
 typedef enum dt_iop_rawdenoise_channel_t
 {
@@ -251,7 +251,7 @@ static void wavelet_denoise(const float *const in, float *const out, const dt_io
 
     int lastpass;
 
-    for(lev = 0; lev < 5; lev++)
+    for(lev = 0; lev < DT_IOP_RAWDENOISE_BANDS; lev++)
     {
       const size_t pass1 = size * ((lev & 1) * 2 + 1);
       const size_t pass2 = 2 * size;
@@ -283,8 +283,15 @@ static void wavelet_denoise(const float *const in, float *const out, const dt_io
       for(size_t i = 0; i < (size_t)halfwidth * halfheight; i++)
       {
         float *fimgp = fimg + i;
-        const float diff = fimgp[pass1] - fimgp[pass3];
-        fimgp[0] += copysignf(fmaxf(fabsf(diff) - thold, 0.0f), diff);
+        float *fimgpl = fimg + MAX(i-1,0);
+        float *fimgpr = fimg + MIN(i+1,halfwidth-1);
+        float *fimgpu = fimg + MAX(i-halfwidth,0);
+        float *fimgpd = fimg + MIN(i+halfwidth,halfwidth * halfheight-1);
+        const float pss1 = fabs(fimgp[pass1])*fabs(fimgpl[pass1])*fabs(fimgpr[pass1]);
+        const float pss3 = fabs(fimgp[pass3])*fabs(fimgpu[pass3])*fabs(fimgpd[pass3]);
+        const float diff = (powf(pss1,1/3)+powf(pss3,1/3))/10.0;
+        const float factor = fmaxf(fmaxf(fabsf(diff) - thold, 0.0f) / (fabsf(diff) + 0.00001f),0.01f);
+        fimgp[0] += factor * (fimgp[pass1]-fimgp[pass3]);
       }
 
       lastpass = pass3;

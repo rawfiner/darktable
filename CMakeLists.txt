@@ -79,7 +79,7 @@ option(VALIDATE_APPDATA_FILE "Use appstream-util (if found) to validate the .app
 option(BUILD_TESTS "Build tests in src/tests/, runnable from the build/ directory" OFF)
 option(BUILD_BATTERY_INDICATOR "Add an icon to the top toolbar showing the state of a laptop battery" OFF)
 option(BUILD_MSYS2_INSTALL "Build an MSYS2 version of the install, aka for Windows platform, but without dependency installs" OFF)
-option(BUILD_NOISE_TOOLS "Build tools for generating noise proifles" OFF)
+option(BUILD_NOISE_TOOLS "Build tools for generating noise proifles" ON)
 option(BUILD_CURVE_TOOLS "Build tools for generating base and tone curves" OFF)
 option(USE_LENSFUN "Enable LensFun support" ON)
 

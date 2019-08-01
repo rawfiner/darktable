@@ -200,6 +200,21 @@ static gboolean dt_noiseprofile_verify(JsonParser *parser)
           }
           json_reader_end_member(reader);
 
+          //TODO only check this if profile_version == 2
+          // p
+          if(!is_member(member_names, "p"))
+          {
+            g_strfreev(member_names);
+            _ERROR("missing `p`");
+          }
+          json_reader_read_member(reader, "p");
+          if(json_reader_count_elements(reader) != 3)
+          {
+            g_strfreev(member_names);
+            _ERROR("`p` with size != 3");
+          }
+          json_reader_end_member(reader);
+
           // b
           if(!is_member(member_names, "b"))
           {
@@ -211,6 +226,20 @@ static gboolean dt_noiseprofile_verify(JsonParser *parser)
           {
             g_strfreev(member_names);
             _ERROR("`b` with size != 3");
+          }
+          json_reader_end_member(reader);
+
+          // e
+          if(!is_member(member_names, "e"))
+          {
+            g_strfreev(member_names);
+            _ERROR("missing `e`");
+          }
+          json_reader_read_member(reader, "e");
+          if(json_reader_count_elements(reader) != 3)
+          {
+            g_strfreev(member_names);
+            _ERROR("`e` with size != 3");
           }
           json_reader_end_member(reader);
 
@@ -356,12 +385,32 @@ GList *dt_noiseprofile_get_matching(const dt_image_t *cimg, unsigned profile_ver
                 }
                 json_reader_end_member(reader);
 
+                // p
+                json_reader_read_member(reader, "p");
+                for(int p = 0; p < 3; p++)
+                {
+                  json_reader_read_element(reader, p);
+                  tmp_profile.p[p] = json_reader_get_double_value(reader);
+                  json_reader_end_element(reader);
+                }
+                json_reader_end_member(reader);
+
                 // b
                 json_reader_read_member(reader, "b");
                 for(int b = 0; b < 3; b++)
                 {
                   json_reader_read_element(reader, b);
                   tmp_profile.b[b] = json_reader_get_double_value(reader);
+                  json_reader_end_element(reader);
+                }
+                json_reader_end_member(reader);
+
+                // e
+                json_reader_read_member(reader, "e");
+                for(int e = 0; e < 3; e++)
+                {
+                  json_reader_read_element(reader, e);
+                  tmp_profile.e[e] = json_reader_get_double_value(reader);
                   json_reader_end_element(reader);
                 }
                 json_reader_end_member(reader);
