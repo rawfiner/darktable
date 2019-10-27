@@ -231,6 +231,7 @@ static int _ioppr_legacy_iop_order_step(GList **_iop_order_list, GList *history_
         { 11.0, "rotatepixels"},
         { 12.0, "scalepixels"},
         { 13.0, "lens"},
+        { 13.5, "msca"}, //FIXME
         { 14.0, "hazeremoval"},
         { 15.0, "ashift"},
         { 16.0, "flip"},
@@ -314,9 +315,9 @@ static int _ioppr_legacy_iop_order_step(GList **_iop_order_list, GList *history_
         { 77.0, "gamma"},
       };
 
-      if(g_list_length(*_iop_order_list) != 77)
+      if(g_list_length(*_iop_order_list) != 78)
       {
-        fprintf(stderr, "_ioppr_legacy_iop_order_step list should have 77 entries found %d\n",
+        fprintf(stderr, "_ioppr_legacy_iop_order_step list should have 78 entries found %d\n",
                 g_list_length(*_iop_order_list));
         return 4;
       }
@@ -428,6 +429,7 @@ static GList *_ioppr_get_iop_order_v1()
                                                   { 0.0, "spots" },
                                                   { 0.0, "retouch" },
                                                   { 0.0, "lens" },
+                                                  { 0.0, "msca" },
                                                   { 0.0, "ashift" },
                                                   { 0.0, "liquify" },
                                                   { 0.0, "rotatepixels" },
