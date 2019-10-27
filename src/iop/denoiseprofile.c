@@ -3285,6 +3285,8 @@ void process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, c
     process_nlmeans_sse(self, piece, ivoid, ovoid, roi_in, roi_out);
   else if(d->mode == MODE_WAVELETS || d->mode == MODE_WAVELETS_AUTO)
     process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_decompose_sse, eaw_synthesize_sse2);
+  else if(d->mode == MODE_RBF)
+    process_rbf(self, piece, ivoid, ovoid, roi_in, roi_out);
   else
     process_variance(self, piece, ivoid, ovoid, roi_in, roi_out);
 }
@@ -3628,6 +3630,7 @@ static void mode_callback(GtkWidget *w, dt_iop_module_t *self)
       gtk_widget_hide(g->box_wavelets);
       gtk_widget_hide(g->box_variance);
       gtk_widget_show_all(g->box_nlm);
+      break;
     case 5:
       p->mode = MODE_VARIANCE;
       gtk_widget_hide(g->box_wavelets);
