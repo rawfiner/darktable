@@ -1939,8 +1939,8 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   float* m_up_pass_factor = malloc(width_height * sizeof(float));
 
   // compute a lookup table
-  float alpha_f = (expf(-sqrt(2.0) / sigma_spatial));
-  float inv_alpha_f = 1.f - alpha_f;
+  const float alpha_f = (expf(-sqrt(2.0) / sigma_spatial));
+  const float inv_alpha_f = 1.f - alpha_f;
 
   ///////////////
 	// Left pass
@@ -1949,6 +1949,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 		float* left_pass_color = m_left_pass_color;
 		float* left_pass_factor = m_left_pass_factor;
 
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(src_color, alpha_f, inv_alpha_f) \
+    firstprivate(left_pass_color, left_pass_factor, height, width) \
+    schedule(static)
+#endif
 		for (int y = 0; y < height; y++)
 		{
       // process 1st pixel separately since it has no previous
@@ -1987,6 +1993,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 		float* right_pass_color = m_right_pass_color;
 		float* right_pass_factor = m_right_pass_factor;
 
+    #ifdef _OPENMP
+    #pragma omp parallel for default(none) \
+        dt_omp_firstprivate(src_color, alpha_f, inv_alpha_f) \
+        firstprivate(right_pass_color, right_pass_factor, height, width) \
+        schedule(static)
+    #endif
 		for (int y = 0; y < height; y++)
 		{
       // process 1st pixel separately since it has no previous
@@ -2027,6 +2039,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     const float* right_pass_color = m_right_pass_color;
     const float* right_pass_factor = m_right_pass_factor;
 
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(channel, left_pass_color, left_pass_factor, right_pass_color, right_pass_factor) \
+    firstprivate(width_height, img_out) \
+    schedule(static)
+#endif
     for (int i = 0; i < width_height; i++)
     {
       // average color divided by average factor
@@ -2039,6 +2057,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   }
 
   //TODO temporary
+  #ifdef _OPENMP
+  #pragma omp parallel for default(none) \
+      dt_omp_firstprivate(channel) \
+      firstprivate(width_height, img_out, img_dst) \
+      schedule(static)
+  #endif
   for (int i = 0; i < width_height; i++)
   {
     for (int c = 0; c < channel; c++)
