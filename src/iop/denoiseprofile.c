@@ -1914,6 +1914,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
   }
 
+  const float* img = ivoid;
   float* img_src = in;
   float* img_dst = ovoid;
   // alloc memory
@@ -1951,7 +1952,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(src_color, alpha_f, inv_alpha_f) \
+    dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
     firstprivate(left_pass_color, left_pass_factor, height, width) \
     schedule(static)
 #endif
@@ -1961,7 +1962,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
       left_pass_factor[y * width] = 1.0f;
       for (int c = 0; c < channel; c++)
 			{
-				left_pass_color[y * width * channel + c] = src_color[y * width * channel + c];
+				left_pass_color[y * width * channel + c] = img[y * width * channel + c];
 			}
       // handle other pixels
       for (int x = 1; x < width; x++)
@@ -1979,7 +1980,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
                                   + alpha_f * diff * left_pass_factor[iprevf];
         for (int c = 0; c < channel; c++)
         {
-          left_pass_color[icurr + c] = inv_alpha_f * src_color[icurr + c]
+          left_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
                                      + alpha_f * diff * left_pass_color[iprev + c];
         }
       }
@@ -1995,7 +1996,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
     #ifdef _OPENMP
     #pragma omp parallel for default(none) \
-        dt_omp_firstprivate(src_color, alpha_f, inv_alpha_f) \
+        dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
         firstprivate(right_pass_color, right_pass_factor, height, width) \
         schedule(static)
     #endif
@@ -2005,7 +2006,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
       right_pass_factor[y * width + width - 1] = 1.0f;
       for (int c = 0; c < channel; c++)
 			{
-				right_pass_color[(y * width + width - 1) * channel + c] = src_color[(y * width  + width - 1) * channel + c];
+				right_pass_color[(y * width + width - 1) * channel + c] = img[(y * width  + width - 1) * channel + c];
 			}
       // handle other pixels
       for (int x = 1; x < width; x++)
@@ -2023,7 +2024,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
                                    + alpha_f * diff * right_pass_factor[iprevf];
         for (int c = 0; c < channel; c++)
         {
-          right_pass_color[icurr + c] = inv_alpha_f * src_color[icurr + c]
+          right_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
                                       + alpha_f * diff * right_pass_color[iprev + c];
         }
       }
@@ -2060,7 +2061,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   #ifdef _OPENMP
   #pragma omp parallel for default(none) \
       dt_omp_firstprivate(channel) \
-      firstprivate(width_height, img_out, img_dst) \
+      firstprivate(width_height, img_dst, img_out) \
       schedule(static)
   #endif
   for (int i = 0; i < width_height; i++)
@@ -2079,15 +2080,6 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   free(m_down_pass_factor);
   free(m_up_pass_color);
   free(m_up_pass_factor);
-
-  if(!d->use_new_vst)
-  {
-    backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb);
-  }
-  else
-  {
-    backtransform_v2((float *)ovoid, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(scale), wb);
-  }
 }
 
 
