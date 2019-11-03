@@ -1524,7 +1524,7 @@ static inline float getDiffFactor(const float* color1, const float* color2, cons
   for (int i = 0; i < MIN(channels, 3); i++)
   {
     float diff = color1[i] - color2[i];
-    totaldiff += diff * diff;
+    totaldiff += fabs(diff);//* diff;
   }
   return fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 2.0f));
 }
@@ -1863,8 +1863,8 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
                             const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_denoiseprofile_data_t *const d = piece->data;
-  const float sigma_range = 15.0f;
-  const float sigma_spatial = 20.0f;
+  const float sigma_range = 5.0f;
+  const float sigma_spatial = 1000.0f;
 
   const int channel = 4;//piece->colors;
   const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
@@ -1952,6 +1952,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 		for (int y = 0; y < height; y++)
 		{
       // process 1st pixel separately since it has no previous
+      left_pass_factor[y * width] = 1.0f;
       for (int c = 0; c < channel; c++)
 			{
 				left_pass_color[y * width * channel + c] = src_color[y * width * channel + c];
@@ -1989,6 +1990,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 		for (int y = 0; y < height; y++)
 		{
       // process 1st pixel separately since it has no previous
+      right_pass_factor[y * width + width - 1] = 1.0f;
       for (int c = 0; c < channel; c++)
 			{
 				right_pass_color[(y * width + width - 1) * channel + c] = src_color[(y * width  + width - 1) * channel + c];
@@ -2031,7 +2033,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
       float factor = 1.f / (left_pass_factor[i] + right_pass_factor[i]);
       for (int c = 0; c < channel; c++)
       {
-        img_out[i * channel] = factor * (left_pass_color[i * channel] + right_pass_color[i * channel]);
+        img_out[i * channel + c] = factor * (left_pass_color[i * channel + c] + right_pass_color[i * channel + c]);
       }
     }
   }
