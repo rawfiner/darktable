@@ -1529,6 +1529,7 @@ static inline float getDiffFactor(const float* color1, const float* color2, cons
   return fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 2.0f));
 }
 
+#if 0
 // recursive bilateral filter
 // implementation modified from https://github.com/Fig1024/OP_RBF
 // TODO use different image for averaging and computing weights
@@ -1537,10 +1538,10 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
                             const dt_iop_roi_t *const roi_out)
 {
   const dt_iop_denoiseprofile_data_t *const d = piece->data;
-  const float sigma_range = 22.0f;
-  const float sigma_spatial = 200.0f;
+  const float sigma_range = 15.0f;
+  const float sigma_spatial = 1000.0f;
 
-  const int channel = piece->colors;
+  const int channel = 4;//piece->colors;
   const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
   float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
 
@@ -1658,12 +1659,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 	// Right pass
 	{
 		// start from end and then go up to begining
-		int last_index = width * height * channel - 1;
+		int last_index = width * height * channel - 1;// RBF_FIXME le -1 me parait bizarre
 		const float* src_color = img_src + last_index;
 		float* right_pass_color = m_right_pass_color + last_index;
-		float* right_pass_factor = m_right_pass_factor + width * height - 1;
+		float* right_pass_factor = m_right_pass_factor + width * height;
 
-		for (int y = 0; y < height; y++)
+		for (int y = 0; y < height-1; y++)
 		{
 			// const float* src_prev = src_color;
 			const float* prev_factor = right_pass_factor;
@@ -1681,7 +1682,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 			{
 				// determine difference in pixel color between current and previous
 				// calculation is different depending on number of channels
-				float diff = getDiffFactor(src_color, src_color - 3, channel, sigma_range);
+				float diff = getDiffFactor(src_color - 3, src_color - 3 - channel, channel, sigma_range);
 				//	src_prev = src_color;
 
 				*right_pass_factor-- = inv_alpha_f + alpha_f * diff * (*prev_factor--);
@@ -1706,7 +1707,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 		for (int i = 0; i < width_height; i++)
 		{
 			// average color divided by average factor
-			float factor = 1.f / ((*left_pass_factor++) + (*right_pass_factor++));
+			float factor = 1.f / ((*left_pass_factor++) + (*right_pass_factor++) + 0.0000001f);
 			for (int c = 0; c < channel; c++)
 			{
 				*img_out++ = (factor * ((*left_pass_color++) + (*right_pass_color++)));
@@ -1714,6 +1715,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 		}
 	}
 
+#if 0
 	///////////////
 	// Down pass
 	{
@@ -1822,6 +1824,16 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 			}
 		}
 	}
+  #endif
+  float* img_out = m_left_pass_color; // use as temporary buffer
+  for (int i = 0; i < width_height; i++)
+  {
+    for (int c = 0; c < channel; c++)
+    {
+      *img_dst++ = *img_out++;
+    }
+  }
+
 
   free(m_left_pass_color);
   free(m_left_pass_factor);
@@ -1841,6 +1853,217 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     backtransform_v2((float *)ovoid, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(scale), wb);
   }
 }
+#endif
+
+// recursive bilateral filter
+// implementation modified from https://github.com/Fig1024/OP_RBF
+// TODO use different image for averaging and computing weights
+static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+                            const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
+                            const dt_iop_roi_t *const roi_out)
+{
+  const dt_iop_denoiseprofile_data_t *const d = piece->data;
+  const float sigma_range = 15.0f;
+  const float sigma_spatial = 20.0f;
+
+  const int channel = 4;//piece->colors;
+  const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
+  float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+
+  const float wb_mean = (piece->pipe->dsc.temperature.coeffs[0] + piece->pipe->dsc.temperature.coeffs[1]
+                         + piece->pipe->dsc.temperature.coeffs[2])
+                        / 3.0f;
+  // we init wb by the mean of the coeffs, which corresponds to the mean
+  // amplification that is done in addition to the "ISO" related amplification
+  float wb[3] = { wb_mean, wb_mean, wb_mean };
+  if(d->fix_anscombe_and_nlmeans_norm)
+  {
+    if(wb_mean != 0.0f && d->wb_adaptive_anscombe)
+    {
+      for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.temperature.coeffs[i];
+    }
+    else if(wb_mean == 0.0f)
+    {
+      // temperature coeffs are equal to 0 if we open a JPG image.
+      // in this case consider them equal to 1.
+      for(int i = 0; i < 3; i++) wb[i] = 1.0f;
+    }
+    // else, wb_adaptive_anscombe is false and our wb array is
+    // filled with the wb_mean
+  }
+  else
+  {
+    for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.processed_maximum[i];
+  }
+  // adaptive p depending on white balance
+  const float p[3] = { MAX(d->shadows + 0.1 * logf(scale / wb[0]), 0.0f) ,
+                       MAX(d->shadows + 0.1 * logf(scale / wb[1]), 0.0f),
+                       MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f)};
+
+  // update the coeffs with strength and scale
+  for(int i = 0; i < 3; i++) wb[i] *= d->strength * scale;
+  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
+  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+  const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
+  if(!d->use_new_vst)
+  {
+    precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb);
+  }
+  else
+  {
+    precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
+  }
+
+  float* img_src = in;
+  float* img_dst = ovoid;
+  // alloc memory
+  uint32_t m_reserve_width = roi_in->width;
+  uint32_t m_reserve_height = roi_in->height;
+  uint32_t width = roi_in->width;
+  uint32_t height = roi_in->height;
+  uint32_t m_reserve_channels = channel;
+
+  int width_height = m_reserve_width * m_reserve_height;
+  int width_height_channel = width_height * m_reserve_channels;
+
+  float* m_left_pass_color = malloc(width_height_channel * sizeof(float));
+  float* m_left_pass_factor = malloc(width_height * sizeof(float));
+
+  float* m_right_pass_color = malloc(width_height_channel * sizeof(float));
+  float* m_right_pass_factor = malloc(width_height * sizeof(float));
+
+  float* m_down_pass_color = malloc(width_height_channel * sizeof(float));
+  float* m_down_pass_factor = malloc(width_height * sizeof(float));
+
+  float* m_up_pass_color = malloc(width_height_channel * sizeof(float));
+  float* m_up_pass_factor = malloc(width_height * sizeof(float));
+
+  // compute a lookup table
+  float alpha_f = (expf(-sqrt(2.0) / sigma_spatial));
+  float inv_alpha_f = 1.f - alpha_f;
+
+  ///////////////
+	// Left pass
+	{
+		const float* src_color = img_src;
+		float* left_pass_color = m_left_pass_color;
+		float* left_pass_factor = m_left_pass_factor;
+
+		for (int y = 0; y < height; y++)
+		{
+      // process 1st pixel separately since it has no previous
+      for (int c = 0; c < channel; c++)
+			{
+				left_pass_color[y * width * channel + c] = src_color[y * width * channel + c];
+			}
+      // handle other pixels
+      for (int x = 1; x < width; x++)
+      {
+        unsigned icurr = (y * width + x) * channel;
+        unsigned iprev = (y * width + x - 1) * channel;
+        unsigned icurrf = (y * width + x);
+        unsigned iprevf = (y * width + x - 1);
+        // determine difference in pixel color between current and previous
+        // calculation is different depending on number of channels
+        float diff = getDiffFactor(&src_color[icurr],
+                                   &src_color[iprev],
+                                   channel, sigma_range);
+        left_pass_factor[icurrf]  = inv_alpha_f
+                                  + alpha_f * diff * left_pass_factor[iprevf];
+        for (int c = 0; c < channel; c++)
+        {
+          left_pass_color[icurr + c] = inv_alpha_f * src_color[icurr + c]
+                                     + alpha_f * diff * left_pass_color[iprev + c];
+        }
+      }
+    }
+  }
+
+	///////////////
+  // Right pass
+  {
+    const float* src_color = img_src;
+		float* right_pass_color = m_right_pass_color;
+		float* right_pass_factor = m_right_pass_factor;
+
+		for (int y = 0; y < height; y++)
+		{
+      // process 1st pixel separately since it has no previous
+      for (int c = 0; c < channel; c++)
+			{
+				right_pass_color[(y * width + width - 1) * channel + c] = src_color[(y * width  + width - 1) * channel + c];
+			}
+      // handle other pixels
+      for (int x = 1; x < width; x++)
+      {
+        unsigned icurr = (y * width + width - x - 1) * channel;
+        unsigned iprev = (y * width + width - x) * channel;
+        unsigned icurrf = (y * width + width - x - 1);
+        unsigned iprevf = (y * width + width - x);
+        // determine difference in pixel color between current and previous
+        // calculation is different depending on number of channels
+        float diff = getDiffFactor(&src_color[icurr],
+                                   &src_color[iprev],
+                                   channel, sigma_range);
+        right_pass_factor[icurrf]  = inv_alpha_f
+                                   + alpha_f * diff * right_pass_factor[iprevf];
+        for (int c = 0; c < channel; c++)
+        {
+          right_pass_color[icurr + c] = inv_alpha_f * src_color[icurr + c]
+                                      + alpha_f * diff * right_pass_color[iprev + c];
+        }
+      }
+    }
+  }
+
+  float* img_out = m_left_pass_color; // use as temporary buffer
+  // vertical pass will be applied on top on horizontal pass, while using pixel differences from original image
+  // result color stored in 'm_left_pass_color' and vertical pass will use it as source color
+  {
+    const float* left_pass_color = m_left_pass_color;
+    const float* left_pass_factor = m_left_pass_factor;
+    const float* right_pass_color = m_right_pass_color;
+    const float* right_pass_factor = m_right_pass_factor;
+
+    for (int i = 0; i < width_height; i++)
+    {
+      // average color divided by average factor
+      float factor = 1.f / (left_pass_factor[i] + right_pass_factor[i]);
+      for (int c = 0; c < channel; c++)
+      {
+        img_out[i * channel] = factor * (left_pass_color[i * channel] + right_pass_color[i * channel]);
+      }
+    }
+  }
+
+  //TODO temporary
+  for (int i = 0; i < width_height; i++)
+  {
+    for (int c = 0; c < channel; c++)
+    {
+      img_dst[i * channel + c] = img_out[i * channel + c];
+    }
+  }
+
+  free(m_left_pass_color);
+  free(m_left_pass_factor);
+  free(m_right_pass_color);
+  free(m_right_pass_factor);
+  free(m_down_pass_color);
+  free(m_down_pass_factor);
+  free(m_up_pass_color);
+  free(m_up_pass_factor);
+
+  if(!d->use_new_vst)
+  {
+    backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb);
+  }
+  else
+  {
+    backtransform_v2((float *)ovoid, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(scale), wb);
+  }
+}
+
 
 static int sign(int a)
 {
