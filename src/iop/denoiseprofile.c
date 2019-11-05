@@ -1524,7 +1524,7 @@ static inline float getDiffFactor(const float* color1, const float* color2, cons
   for (int i = 0; i < MIN(channels, 3); i++)
   {
     float diff = color1[i] - color2[i];
-    totaldiff += fabs(diff);//* diff;
+    totaldiff += fabs(diff);
   }
   return fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 2.0f));
 }
@@ -1864,7 +1864,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 {
   const dt_iop_denoiseprofile_data_t *const d = piece->data;
   const float sigma_range = 5.0f;
-  const float sigma_spatial = 10000.0f;
+  const float sigma_spatial = 100.0f;
 
   const int channel = 4;//piece->colors;
   const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
@@ -1941,6 +1941,13 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
   const float alpha_f = (expf(-sqrt(2.0) / sigma_spatial));
   const float inv_alpha_f = 1.f - alpha_f;
+
+  //TODO perform left right down and up passes separately
+  // 1 thread per pass?
+  // then merge the result using one weighted average that takes into
+  // account both the factor and the distance to a border.
+  // Arrange the image using rotations or reflexion beforehand (especially
+  // for down and up passes) to lower the number of cache misses.
 
   ///////////////
 	// Left pass
