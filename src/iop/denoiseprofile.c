@@ -1822,19 +1822,28 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 #pragma omp parallel for default(none) \
     dt_omp_firstprivate(left_pass_color, left_pass_factor, right_pass_color, right_pass_factor) \
     dt_omp_firstprivate(channel, down_pass_color, down_pass_factor, up_pass_color, up_pass_factor) \
-    firstprivate(width_height, img_dst) \
+    firstprivate(width_height, img_dst, width, height) \
     schedule(static)
 #endif
 		for (int i = 0; i < width_height; i++)
 		{
 			// average color divided by average factor
-			float factor = 1.f / (left_pass_factor[i] + right_pass_factor[i] + up_pass_factor[i] + down_pass_factor[i]);
+      unsigned ih = i % width;
+      unsigned iv = i / width;
+      float wl = (ih < sigma_spatial) ? 1.0f / (sigma_spatial - ih) : 1.0f;
+      float wr = (width - ih < sigma_spatial) ? 1.0f / (sigma_spatial - width + ih) : 1.0f;
+      float wd = (iv < sigma_spatial) ? 1.0f / (sigma_spatial - iv) : 1.0f;
+      float wu = (height - iv < sigma_spatial) ? 1.0f / (sigma_spatial - height + iv) : 1.0f;
+			float factor = 1.f / (wl * left_pass_factor[i]
+                          + wr * right_pass_factor[i]
+                          + wu * up_pass_factor[i]
+                          + wd * down_pass_factor[i]);
 			for (int c = 0; c < channel; c++)
 			{
-				img_dst[i * channel + c] = factor * (left_pass_color[i * channel + c]
-                                            + right_pass_color[i * channel + c]
-                                            + up_pass_color[i * channel + c]
-                                            + down_pass_color[i * channel + c]);
+				img_dst[i * channel + c] = factor * (wl * left_pass_color[i * channel + c]
+                                            + wr * right_pass_color[i * channel + c]
+                                            + wu * up_pass_color[i * channel + c]
+                                            + wd * down_pass_color[i * channel + c]);
 			}
 		}
 	}
