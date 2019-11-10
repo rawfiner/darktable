@@ -1529,332 +1529,6 @@ static inline float getDiffFactor(const float* color1, const float* color2, cons
   return fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 2.0f));
 }
 
-#if 0
-// recursive bilateral filter
-// implementation modified from https://github.com/Fig1024/OP_RBF
-// TODO use different image for averaging and computing weights
-static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
-                            const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
-                            const dt_iop_roi_t *const roi_out)
-{
-  const dt_iop_denoiseprofile_data_t *const d = piece->data;
-  const float sigma_range = 15.0f;
-  const float sigma_spatial = 1000.0f;
-
-  const int channel = 4;//piece->colors;
-  const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
-  float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
-
-  const float wb_mean = (piece->pipe->dsc.temperature.coeffs[0] + piece->pipe->dsc.temperature.coeffs[1]
-                         + piece->pipe->dsc.temperature.coeffs[2])
-                        / 3.0f;
-  // we init wb by the mean of the coeffs, which corresponds to the mean
-  // amplification that is done in addition to the "ISO" related amplification
-  float wb[3] = { wb_mean, wb_mean, wb_mean };
-  if(d->fix_anscombe_and_nlmeans_norm)
-  {
-    if(wb_mean != 0.0f && d->wb_adaptive_anscombe)
-    {
-      for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.temperature.coeffs[i];
-    }
-    else if(wb_mean == 0.0f)
-    {
-      // temperature coeffs are equal to 0 if we open a JPG image.
-      // in this case consider them equal to 1.
-      for(int i = 0; i < 3; i++) wb[i] = 1.0f;
-    }
-    // else, wb_adaptive_anscombe is false and our wb array is
-    // filled with the wb_mean
-  }
-  else
-  {
-    for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.processed_maximum[i];
-  }
-  // adaptive p depending on white balance
-  const float p[3] = { MAX(d->shadows + 0.1 * logf(scale / wb[0]), 0.0f) ,
-                       MAX(d->shadows + 0.1 * logf(scale / wb[1]), 0.0f),
-                       MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f)};
-
-  // update the coeffs with strength and scale
-  for(int i = 0; i < 3; i++) wb[i] *= d->strength * scale;
-  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
-  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
-  const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
-  if(!d->use_new_vst)
-  {
-    precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb);
-  }
-  else
-  {
-    precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
-  }
-
-  float* img_src = in;
-  float* img_dst = ovoid;
-  // alloc memory
-  uint32_t m_reserve_width = roi_in->width;
-  uint32_t m_reserve_height = roi_in->height;
-  uint32_t width = roi_in->width;
-  uint32_t height = roi_in->height;
-  uint32_t m_reserve_channels = channel;
-
-  int width_height = m_reserve_width * m_reserve_height;
-  int width_height_channel = width_height * m_reserve_channels;
-
-  float* m_left_pass_color = malloc(width_height_channel * sizeof(float));
-  float* m_left_pass_factor = malloc(width_height * sizeof(float));
-
-  float* m_right_pass_color = malloc(width_height_channel * sizeof(float));
-  float* m_right_pass_factor = malloc(width_height * sizeof(float));
-
-  float* m_down_pass_color = malloc(width_height_channel * sizeof(float));
-  float* m_down_pass_factor = malloc(width_height * sizeof(float));
-
-  float* m_up_pass_color = malloc(width_height_channel * sizeof(float));
-  float* m_up_pass_factor = malloc(width_height * sizeof(float));
-
-	// compute a lookup table
-	float alpha_f = (expf(-sqrt(2.0) / sigma_spatial));
-	float inv_alpha_f = 1.f - alpha_f;
-
-	///////////////
-	// Left pass
-	{
-		const float* src_color = img_src;
-		float* left_pass_color = m_left_pass_color;
-		float* left_pass_factor = m_left_pass_factor;
-
-		for (int y = 0; y < height; y++)
-		{
-			const float* src_prev = src_color;
-			const float* prev_factor = left_pass_factor;
-			const float* prev_color = left_pass_color;
-
-			// process 1st pixel separately since it has no previous
-			*left_pass_factor++ = 1.f;
-			for (int c = 0; c < channel; c++)
-			{
-				*left_pass_color++ = *src_color++;
-			}
-
-			// handle other pixels
-			for (int x = 1; x < width; x++)
-			{
-				// determine difference in pixel color between current and previous
-				// calculation is different depending on number of channels
-				float diff = getDiffFactor(src_color, src_prev, channel, sigma_range);
-				src_prev = src_color;
-
-				*left_pass_factor++ = inv_alpha_f + alpha_f * diff * (*prev_factor++);
-
-				for (int c = 0; c < channel; c++)
-				{
-					*left_pass_color++ = inv_alpha_f * (*src_color++) + alpha_f * diff * (*prev_color++);
-				}
-			}
-		}
-	}
-
-	///////////////
-	// Right pass
-	{
-		// start from end and then go up to begining
-		int last_index = width * height * channel - 1;// RBF_FIXME le -1 me parait bizarre
-		const float* src_color = img_src + last_index;
-		float* right_pass_color = m_right_pass_color + last_index;
-		float* right_pass_factor = m_right_pass_factor + width * height;
-
-		for (int y = 0; y < height-1; y++)
-		{
-			// const float* src_prev = src_color;
-			const float* prev_factor = right_pass_factor;
-			const float* prev_color = right_pass_color;
-
-			// process 1st pixel separately since it has no previous
-			*right_pass_factor-- = 1.f;
-			for (int c = 0; c < channel; c++)
-			{
-				*right_pass_color-- = *src_color--;
-			}
-
-			// handle other pixels
-			for (int x = 1; x < width; x++)
-			{
-				// determine difference in pixel color between current and previous
-				// calculation is different depending on number of channels
-				float diff = getDiffFactor(src_color - 3, src_color - 3 - channel, channel, sigma_range);
-				//	src_prev = src_color;
-
-				*right_pass_factor-- = inv_alpha_f + alpha_f * diff * (*prev_factor--);
-
-				for (int c = 0; c < channel; c++)
-				{
-					*right_pass_color-- = inv_alpha_f * (*src_color--) + alpha_f * diff * (*prev_color--);
-				}
-			}
-		}
-	}
-
-	// vertical pass will be applied on top on horizontal pass, while using pixel differences from original image
-	// result color stored in 'm_left_pass_color' and vertical pass will use it as source color
-	{
-		float* img_out = m_left_pass_color; // use as temporary buffer
-		const float* left_pass_color = m_left_pass_color;
-		const float* left_pass_factor = m_left_pass_factor;
-		const float* right_pass_color = m_right_pass_color;
-		const float* right_pass_factor = m_right_pass_factor;
-
-		for (int i = 0; i < width_height; i++)
-		{
-			// average color divided by average factor
-			float factor = 1.f / ((*left_pass_factor++) + (*right_pass_factor++) + 0.0000001f);
-			for (int c = 0; c < channel; c++)
-			{
-				*img_out++ = (factor * ((*left_pass_color++) + (*right_pass_color++)));
-			}
-		}
-	}
-
-#if 0
-	///////////////
-	// Down pass
-	{
-		const float* src_color_hor = m_left_pass_color; // result of horizontal pass filter
-
-		const float* src_color = img_src;
-		float* down_pass_color = m_down_pass_color;
-		float* down_pass_factor = m_down_pass_factor;
-
-		const float* src_prev = src_color;
-		const float* prev_color = down_pass_color;
-		const float* prev_factor = down_pass_factor;
-
-		// 1st line done separately because no previous line
-		for (int x = 0; x < width; x++)
-		{
-			*down_pass_factor++ = 1.f;
-			for (int c = 0; c < channel; c++)
-			{
-				*down_pass_color++ = *src_color_hor++;
-			}
-			src_color += channel;
-		}
-
-		// handle other lines
-		for (int y = 1; y < height; y++)
-		{
-			for (int x = 0; x < width; x++)
-			{
-				// determine difference in pixel color between current and previous
-				// calculation is different depending on number of channels
-				float diff = getDiffFactor(src_color, src_prev, channel, sigma_range);
-				src_prev += channel;
-				src_color += channel;
-
-				*down_pass_factor++ = inv_alpha_f + alpha_f * diff * (*prev_factor++);
-
-				for (int c = 0; c < channel; c++)
-				{
-					*down_pass_color++ = inv_alpha_f * (*src_color_hor++) + alpha_f * diff * (*prev_color++);
-				}
-			}
-		}
-	}
-
-	///////////////
-	// Up pass
-	{
-		// start from end and then go up to begining
-		int last_index = width * height * channel - 1;
-		const float* src_color = img_src + last_index;
-		const float* src_color_hor = m_left_pass_color + last_index; // result of horizontal pass filter
-		float* up_pass_color = m_up_pass_color + last_index;
-		float* up_pass_factor = m_up_pass_factor + (width * height - 1);
-
-		//	const float* src_prev = src_color;
-		const float* prev_color = up_pass_color;
-		const float* prev_factor = up_pass_factor;
-
-		// 1st line done separately because no previous line
-		for (int x = 0; x < width; x++)
-		{
-			*up_pass_factor-- = 1.f;
-			for (int c = 0; c < channel; c++)
-			{
-				*up_pass_color-- = *src_color_hor--;
-			}
-			src_color -= channel;
-		}
-
-		// handle other lines
-		for (int y = 1; y < height; y++)
-		{
-			for (int x = 0; x < width; x++)
-			{
-				// determine difference in pixel color between current and previous
-				// calculation is different depending on number of channels
-				src_color -= channel;
-				float diff = getDiffFactor(src_color, src_color + width * channel, channel, sigma_range);
-
-				*up_pass_factor-- = inv_alpha_f + alpha_f * diff * (*prev_factor--);
-
-				for (int c = 0; c < channel; c++)
-				{
-					*up_pass_color-- = inv_alpha_f * (*src_color_hor--) + alpha_f * diff * (*prev_color--);
-				}
-			}
-		}
-	}
-
-	///////////////
-	// average result of vertical pass is written to output buffer
-	{
-		const float* down_pass_color = m_down_pass_color;
-		const float* down_pass_factor = m_down_pass_factor;
-		const float* up_pass_color = m_up_pass_color;
-		const float* up_pass_factor = m_up_pass_factor;
-
-		for (int i = 0; i < width_height; i++)
-		{
-			// average color divided by average factor
-			float factor = 1.f / ((*up_pass_factor++) + (*down_pass_factor++));
-			for (int c = 0; c < channel; c++)
-			{
-				*img_dst++ = (unsigned char)(factor * ((*up_pass_color++) + (*down_pass_color++)));
-			}
-		}
-	}
-  #endif
-  float* img_out = m_left_pass_color; // use as temporary buffer
-  for (int i = 0; i < width_height; i++)
-  {
-    for (int c = 0; c < channel; c++)
-    {
-      *img_dst++ = *img_out++;
-    }
-  }
-
-
-  free(m_left_pass_color);
-  free(m_left_pass_factor);
-  free(m_right_pass_color);
-  free(m_right_pass_factor);
-  free(m_down_pass_color);
-  free(m_down_pass_factor);
-  free(m_up_pass_color);
-  free(m_up_pass_factor);
-
-  if(!d->use_new_vst)
-  {
-    backtransform((float *)ovoid, roi_in->width, roi_in->height, aa, bb);
-  }
-  else
-  {
-    backtransform_v2((float *)ovoid, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(scale), wb);
-  }
-}
-#endif
-
 // recursive bilateral filter
 // implementation modified from https://github.com/Fig1024/OP_RBF
 // TODO use different image for averaging and computing weights
@@ -2037,32 +1711,6 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     }
   }
 
-  float* img_out = m_left_pass_color; // use as temporary buffer
-  // vertical pass will be applied on top on horizontal pass, while using pixel differences from original image
-  // result color stored in 'm_left_pass_color' and vertical pass will use it as source color
-  {
-    const float* left_pass_color = m_left_pass_color;
-    const float* left_pass_factor = m_left_pass_factor;
-    const float* right_pass_color = m_right_pass_color;
-    const float* right_pass_factor = m_right_pass_factor;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(channel, left_pass_color, left_pass_factor, right_pass_color, right_pass_factor) \
-    firstprivate(width_height, img_out) \
-    schedule(static)
-#endif
-    for (int i = 0; i < width_height; i++)
-    {
-      // average color divided by average factor
-      float factor = 1.f / (left_pass_factor[i] + right_pass_factor[i]);
-      for (int c = 0; c < channel; c++)
-      {
-        img_out[i * channel + c] = factor * (left_pass_color[i * channel + c] + right_pass_color[i * channel + c]);
-      }
-    }
-  }
-
   ///////////////
   // Down pass
   {
@@ -2076,13 +1724,13 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 			down_pass_factor[x] = 1.0f;
 			for (int c = 0; c < channel; c++)
 			{
-				down_pass_color[x * channel + c] = img_out[x * channel + c];
+				down_pass_color[x * channel + c] = img[x * channel + c];
 			}
 		}
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(img_out, src_color, alpha_f, inv_alpha_f) \
+    dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
     firstprivate(down_pass_color, down_pass_factor, height, width) \
     schedule(static)
 #endif
@@ -2099,12 +1747,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
         // calculation is different depending on number of channels
         float diff = getDiffFactor(&src_color[icurr],
                                    &src_color[iprev],
-                                   channel, sigma_range / 1.5f);
+                                   channel, sigma_range);
         down_pass_factor[icurrf]  = inv_alpha_f
                                   + alpha_f * diff * down_pass_factor[iprevf];
         for (int c = 0; c < channel; c++)
         {
-          down_pass_color[icurr + c] = inv_alpha_f * img_out[icurr + c]
+          down_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
                                      + alpha_f * diff * down_pass_color[iprev + c];
         }
       }
@@ -2124,13 +1772,13 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
       up_pass_factor[height * width - x] = 1.0f;
       for (int c = 0; c < channel; c++)
       {
-        up_pass_color[(height * width - x) * channel + c] = img_out[(height * width - x) * channel + c];
+        up_pass_color[(height * width - x) * channel + c] = img[(height * width - x) * channel + c];
       }
     }
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(img_out, src_color, alpha_f, inv_alpha_f) \
+    dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
     firstprivate(up_pass_color, up_pass_factor, height, width) \
     schedule(static)
 #endif
@@ -2147,12 +1795,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
         // calculation is different depending on number of channels
         float diff = getDiffFactor(&src_color[icurr],
                                    &src_color[iprev],
-                                   channel, sigma_range / 1.5f);
+                                   channel, sigma_range);
         up_pass_factor[icurrf]  = inv_alpha_f
                                   + alpha_f * diff * up_pass_factor[iprevf];
         for (int c = 0; c < channel; c++)
         {
-          up_pass_color[icurr + c] = inv_alpha_f * img_out[icurr + c]
+          up_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
                                      + alpha_f * diff * up_pass_color[iprev + c];
         }
       }
@@ -2160,25 +1808,33 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   }
 
   ///////////////
-	// average result of vertical pass is written to output buffer
+	// average result of all passes is written to output buffer
 	{
+    const float* left_pass_color = m_left_pass_color;
+    const float* left_pass_factor = m_left_pass_factor;
+    const float* right_pass_color = m_right_pass_color;
+    const float* right_pass_factor = m_right_pass_factor;
 		const float* down_pass_color = m_down_pass_color;
 		const float* down_pass_factor = m_down_pass_factor;
 		const float* up_pass_color = m_up_pass_color;
 		const float* up_pass_factor = m_up_pass_factor;
-    #ifdef _OPENMP
-    #pragma omp parallel for default(none) \
-        dt_omp_firstprivate(channel, down_pass_color, down_pass_factor, up_pass_color, up_pass_factor) \
-        firstprivate(width_height, img_dst, img_out) \
-        schedule(static)
-    #endif
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(left_pass_color, left_pass_factor, right_pass_color, right_pass_factor) \
+    dt_omp_firstprivate(channel, down_pass_color, down_pass_factor, up_pass_color, up_pass_factor) \
+    firstprivate(width_height, img_dst) \
+    schedule(static)
+#endif
 		for (int i = 0; i < width_height; i++)
 		{
 			// average color divided by average factor
-			float factor = 1.f / (up_pass_factor[i] + down_pass_factor[i]);
+			float factor = 1.f / (left_pass_factor[i] + right_pass_factor[i] + up_pass_factor[i] + down_pass_factor[i]);
 			for (int c = 0; c < channel; c++)
 			{
-				img_dst[i * channel + c] = (factor * (up_pass_color[i * channel + c] + down_pass_color[i * channel + c]));
+				img_dst[i * channel + c] = factor * (left_pass_color[i * channel + c]
+                                            + right_pass_color[i * channel + c]
+                                            + up_pass_color[i * channel + c]
+                                            + down_pass_color[i * channel + c]);
 			}
 		}
 	}
