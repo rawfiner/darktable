@@ -1531,7 +1531,6 @@ static inline float getDiffFactor(const float* color1, const float* color2, cons
 
 // recursive bilateral filter
 // implementation modified from https://github.com/Fig1024/OP_RBF
-// TODO use different image for averaging and computing weights
 static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                             const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out)
@@ -1623,201 +1622,193 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   // Arrange the image using rotations or reflexion beforehand (especially
   // for down and up passes) to lower the number of cache misses.
 
-  ///////////////
-	// Left pass
-	{
-		const float* src_color = img_src;
-		float* left_pass_color = m_left_pass_color;
-		float* left_pass_factor = m_left_pass_factor;
-
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
-    firstprivate(left_pass_color, left_pass_factor, height, width) \
+    dt_omp_firstprivate(img, img_src, alpha_f, inv_alpha_f) \
+    firstprivate(m_left_pass_color, m_left_pass_factor, height, width) \
+    firstprivate(m_right_pass_color, m_right_pass_factor) \
+    firstprivate(m_down_pass_color, m_down_pass_factor) \
+    firstprivate(m_up_pass_color, m_up_pass_factor) \
     schedule(static)
 #endif
-		for (int y = 0; y < height; y++)
-		{
-      // process 1st pixel separately since it has no previous
-      left_pass_factor[y * width] = 1.0f;
-      for (int c = 0; c < channel; c++)
-			{
-				left_pass_color[y * width * channel + c] = img[y * width * channel + c];
-			}
-      // handle other pixels
-      for (int x = 1; x < width; x++)
+  for (int k = 0; k < 4; k++)
+  {
+    ///////////////
+    // Left pass
+    if(k == 0)
+    {
+      const float* src_color = img_src;
+      float* left_pass_color = m_left_pass_color;
+      float* left_pass_factor = m_left_pass_factor;
+
+      for (int y = 0; y < height; y++)
       {
-        unsigned icurr = (y * width + x) * channel;
-        unsigned iprev = (y * width + x - 1) * channel;
-        unsigned icurrf = (y * width + x);
-        unsigned iprevf = (y * width + x - 1);
-        // determine difference in pixel color between current and previous
-        // calculation is different depending on number of channels
-        float diff = getDiffFactor(&src_color[icurr],
-                                   &src_color[iprev],
-                                   channel, sigma_range);
-        left_pass_factor[icurrf]  = inv_alpha_f
-                                  + alpha_f * diff * left_pass_factor[iprevf];
+        // process 1st pixel separately since it has no previous
+        left_pass_factor[y * width] = 1.0f;
         for (int c = 0; c < channel; c++)
         {
-          left_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
-                                     + alpha_f * diff * left_pass_color[iprev + c];
+          left_pass_color[y * width * channel + c] = img[y * width * channel + c];
+        }
+        // handle other pixels
+        for (int x = 1; x < width; x++)
+        {
+          unsigned icurr = (y * width + x) * channel;
+          unsigned iprev = (y * width + x - 1) * channel;
+          unsigned icurrf = (y * width + x);
+          unsigned iprevf = (y * width + x - 1);
+          // determine difference in pixel color between current and previous
+          // calculation is different depending on number of channels
+          float diff = getDiffFactor(&src_color[icurr],
+                                     &src_color[iprev],
+                                     channel, sigma_range);
+          left_pass_factor[icurrf]  = inv_alpha_f
+                                    + alpha_f * diff * left_pass_factor[iprevf];
+          for (int c = 0; c < channel; c++)
+          {
+            left_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
+                                       + alpha_f * diff * left_pass_color[iprev + c];
+          }
         }
       }
     }
-  }
 
-	///////////////
-  // Right pass
-  {
-    const float* src_color = img_src;
-		float* right_pass_color = m_right_pass_color;
-		float* right_pass_factor = m_right_pass_factor;
+    ///////////////
+    // Right pass
+    if(k == 1)
+    {
+      const float* src_color = img_src;
+      float* right_pass_color = m_right_pass_color;
+      float* right_pass_factor = m_right_pass_factor;
 
-    #ifdef _OPENMP
-    #pragma omp parallel for default(none) \
-        dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
-        firstprivate(right_pass_color, right_pass_factor, height, width) \
-        schedule(static)
-    #endif
-		for (int y = 0; y < height; y++)
-		{
-      // process 1st pixel separately since it has no previous
-      right_pass_factor[y * width + width - 1] = 1.0f;
-      for (int c = 0; c < channel; c++)
-			{
-				right_pass_color[(y * width + width - 1) * channel + c] = img[(y * width  + width - 1) * channel + c];
-			}
-      // handle other pixels
-      for (int x = 1; x < width; x++)
+      for (int y = 0; y < height; y++)
       {
-        unsigned icurr = (y * width + width - x - 1) * channel;
-        unsigned iprev = (y * width + width - x) * channel;
-        unsigned icurrf = (y * width + width - x - 1);
-        unsigned iprevf = (y * width + width - x);
-        // determine difference in pixel color between current and previous
-        // calculation is different depending on number of channels
-        float diff = getDiffFactor(&src_color[icurr],
-                                   &src_color[iprev],
-                                   channel, sigma_range);
-        right_pass_factor[icurrf]  = inv_alpha_f
-                                   + alpha_f * diff * right_pass_factor[iprevf];
+        // process 1st pixel separately since it has no previous
+        right_pass_factor[y * width + width - 1] = 1.0f;
         for (int c = 0; c < channel; c++)
         {
-          right_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
-                                      + alpha_f * diff * right_pass_color[iprev + c];
+          right_pass_color[(y * width + width - 1) * channel + c] = img[(y * width  + width - 1) * channel + c];
+        }
+        // handle other pixels
+        for (int x = 1; x < width; x++)
+        {
+          unsigned icurr = (y * width + width - x - 1) * channel;
+          unsigned iprev = (y * width + width - x) * channel;
+          unsigned icurrf = (y * width + width - x - 1);
+          unsigned iprevf = (y * width + width - x);
+          // determine difference in pixel color between current and previous
+          // calculation is different depending on number of channels
+          float diff = getDiffFactor(&src_color[icurr],
+                                     &src_color[iprev],
+                                     channel, sigma_range);
+          right_pass_factor[icurrf]  = inv_alpha_f
+                                     + alpha_f * diff * right_pass_factor[iprevf];
+          for (int c = 0; c < channel; c++)
+          {
+            right_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
+                                        + alpha_f * diff * right_pass_color[iprev + c];
+          }
+        }
+      }
+    }
+
+    ///////////////
+    // Down pass
+    if(k == 2)
+    {
+      const float* src_color = img_src;
+      float* down_pass_color = m_down_pass_color;
+      float* down_pass_factor = m_down_pass_factor;
+
+      // 1st line done separately because no previous line
+      for (int x = 0; x < width; x++)
+      {
+        down_pass_factor[x] = 1.0f;
+        for (int c = 0; c < channel; c++)
+        {
+          down_pass_color[x * channel + c] = img[x * channel + c];
+        }
+      }
+
+      for (int y = 1; y < height; y++)
+      {
+        for (int x = 0; x < width; x++)
+        {
+          unsigned icurr = (y * width + x) * channel;
+          unsigned iprev = ((y - 1) * width + x) * channel;
+          unsigned icurrf = (y * width + x);
+          unsigned iprevf = ((y - 1) * width + x);
+
+          // determine difference in pixel color between current and previous
+          // calculation is different depending on number of channels
+          float diff = getDiffFactor(&src_color[icurr],
+                                     &src_color[iprev],
+                                     channel, sigma_range);
+          down_pass_factor[icurrf]  = inv_alpha_f
+                                    + alpha_f * diff * down_pass_factor[iprevf];
+          for (int c = 0; c < channel; c++)
+          {
+            down_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
+                                       + alpha_f * diff * down_pass_color[iprev + c];
+          }
+        }
+      }
+    }
+
+    ///////////////
+    // Up pass
+    if(k == 3)
+    {
+      const float* src_color = img_src;
+      float* up_pass_color = m_up_pass_color;
+      float* up_pass_factor = m_up_pass_factor;
+
+      // last line done separately because no previous line
+      for (int x = 0; x < width; x++)
+      {
+        up_pass_factor[height * width - x] = 1.0f;
+        for (int c = 0; c < channel; c++)
+        {
+          up_pass_color[(height * width - x) * channel + c] = img[(height * width - x) * channel + c];
+        }
+      }
+
+      for (int y = 1; y < height; y++)
+      {
+        for (int x = 0; x < width; x++)
+        {
+          unsigned icurr = ((height - y - 1) * width + x) * channel;
+          unsigned iprev = ((height - y) * width + x) * channel;
+          unsigned icurrf = ((height - y - 1) * width + x);
+          unsigned iprevf = ((height - y) * width + x);
+
+          // determine difference in pixel color between current and previous
+          // calculation is different depending on number of channels
+          float diff = getDiffFactor(&src_color[icurr],
+                                     &src_color[iprev],
+                                     channel, sigma_range);
+          up_pass_factor[icurrf]  = inv_alpha_f
+                                    + alpha_f * diff * up_pass_factor[iprevf];
+          for (int c = 0; c < channel; c++)
+          {
+            up_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
+                                       + alpha_f * diff * up_pass_color[iprev + c];
+          }
         }
       }
     }
   }
 
   ///////////////
-  // Down pass
+  // average result of all passes is written to output buffer
   {
-		const float* src_color = img_src;
-		float* down_pass_color = m_down_pass_color;
-		float* down_pass_factor = m_down_pass_factor;
-
-		// 1st line done separately because no previous line
-		for (int x = 0; x < width; x++)
-		{
-			down_pass_factor[x] = 1.0f;
-			for (int c = 0; c < channel; c++)
-			{
-				down_pass_color[x * channel + c] = img[x * channel + c];
-			}
-		}
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
-    firstprivate(down_pass_color, down_pass_factor, height, width) \
-    schedule(static)
-#endif
-  for (int x = 0; x < width; x++)
-  {
-    for (int y = 1; y < height; y++)
-    {
-        unsigned icurr = (y * width + x) * channel;
-        unsigned iprev = ((y - 1) * width + x) * channel;
-        unsigned icurrf = (y * width + x);
-        unsigned iprevf = ((y - 1) * width + x);
-
-        // determine difference in pixel color between current and previous
-        // calculation is different depending on number of channels
-        float diff = getDiffFactor(&src_color[icurr],
-                                   &src_color[iprev],
-                                   channel, sigma_range);
-        down_pass_factor[icurrf]  = inv_alpha_f
-                                  + alpha_f * diff * down_pass_factor[iprevf];
-        for (int c = 0; c < channel; c++)
-        {
-          down_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
-                                     + alpha_f * diff * down_pass_color[iprev + c];
-        }
-      }
-    }
-  }
-
-  ///////////////
-  // Up pass
-  {
-    const float* src_color = img_src;
-    float* up_pass_color = m_up_pass_color;
-    float* up_pass_factor = m_up_pass_factor;
-
-    // last line done separately because no previous line
-    for (int x = 0; x < width; x++)
-    {
-      up_pass_factor[height * width - x] = 1.0f;
-      for (int c = 0; c < channel; c++)
-      {
-        up_pass_color[(height * width - x) * channel + c] = img[(height * width - x) * channel + c];
-      }
-    }
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(img, src_color, alpha_f, inv_alpha_f) \
-    firstprivate(up_pass_color, up_pass_factor, height, width) \
-    schedule(static)
-#endif
-  for (int x = 0; x < width; x++)
-  {
-    for (int y = 1; y < height; y++)
-    {
-        unsigned icurr = ((height - y - 1) * width + x) * channel;
-        unsigned iprev = ((height - y) * width + x) * channel;
-        unsigned icurrf = ((height - y - 1) * width + x);
-        unsigned iprevf = ((height - y) * width + x);
-
-        // determine difference in pixel color between current and previous
-        // calculation is different depending on number of channels
-        float diff = getDiffFactor(&src_color[icurr],
-                                   &src_color[iprev],
-                                   channel, sigma_range);
-        up_pass_factor[icurrf]  = inv_alpha_f
-                                  + alpha_f * diff * up_pass_factor[iprevf];
-        for (int c = 0; c < channel; c++)
-        {
-          up_pass_color[icurr + c] = inv_alpha_f * img[icurr + c]
-                                     + alpha_f * diff * up_pass_color[iprev + c];
-        }
-      }
-    }
-  }
-
-  ///////////////
-	// average result of all passes is written to output buffer
-	{
     const float* left_pass_color = m_left_pass_color;
     const float* left_pass_factor = m_left_pass_factor;
     const float* right_pass_color = m_right_pass_color;
     const float* right_pass_factor = m_right_pass_factor;
-		const float* down_pass_color = m_down_pass_color;
-		const float* down_pass_factor = m_down_pass_factor;
-		const float* up_pass_color = m_up_pass_color;
-		const float* up_pass_factor = m_up_pass_factor;
+    const float* down_pass_color = m_down_pass_color;
+    const float* down_pass_factor = m_down_pass_factor;
+    const float* up_pass_color = m_up_pass_color;
+    const float* up_pass_factor = m_up_pass_factor;
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
     dt_omp_firstprivate(left_pass_color, left_pass_factor, right_pass_color, right_pass_factor) \
@@ -1825,28 +1816,28 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     firstprivate(width_height, img_dst, width, height) \
     schedule(static)
 #endif
-		for (int i = 0; i < width_height; i++)
-		{
-			// average color divided by average factor
+    for (int i = 0; i < width_height; i++)
+    {
+      // average color divided by average factor
       unsigned ih = i % width;
       unsigned iv = i / width;
       float wl = (ih < sigma_spatial) ? 1.0f / (sigma_spatial - ih) : 1.0f;
       float wr = (width - ih < sigma_spatial) ? 1.0f / (sigma_spatial - width + ih) : 1.0f;
       float wd = (iv < sigma_spatial) ? 1.0f / (sigma_spatial - iv) : 1.0f;
       float wu = (height - iv < sigma_spatial) ? 1.0f / (sigma_spatial - height + iv) : 1.0f;
-			float factor = 1.f / (wl * left_pass_factor[i]
+      float factor = 1.f / (wl * left_pass_factor[i]
                           + wr * right_pass_factor[i]
                           + wu * up_pass_factor[i]
                           + wd * down_pass_factor[i]);
-			for (int c = 0; c < channel; c++)
-			{
-				img_dst[i * channel + c] = factor * (wl * left_pass_color[i * channel + c]
+      for (int c = 0; c < channel; c++)
+      {
+        img_dst[i * channel + c] = factor * (wl * left_pass_color[i * channel + c]
                                             + wr * right_pass_color[i * channel + c]
                                             + wu * up_pass_color[i * channel + c]
                                             + wd * down_pass_color[i * channel + c]);
-			}
-		}
-	}
+      }
+    }
+  }
 
   free(m_left_pass_color);
   free(m_left_pass_factor);
