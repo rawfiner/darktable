@@ -1529,6 +1529,82 @@ static inline float getDiffFactor(const float* color1, const float* color2, cons
   return fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 2.0f));
 }
 
+static void average(const float* in, float* out, unsigned width, unsigned height, unsigned radius)
+{
+  float* line_average = malloc(4 * width * height * sizeof(float));
+
+  // first pass. Average on lines
+  for(int i = 0; i < height; i++)
+  {
+    float average[4];
+    for(int c = 0; c < 4; c++)
+      average[c] = in[(i * width * 4) + c];
+    for(int k = 1; k <= radius; k++)
+    {
+      // 2.0 factor because we considered an image extended by symetry
+      // when we are close to borders
+      for(int c = 0; c < 4; c++)
+        average[c] += 2.0f * in[(i * width + k) * 4 + c];
+    }
+    for(int c = 0; c < 4; c++)
+      line_average[i * width * 4] = average[c]  / (2.0f * radius + 1.0f);
+    for(int j = 1; j < width; j++)
+    {
+      int j_to_remove = j - radius - 1;
+      int j_to_add = j + radius;
+      if(j_to_remove < 0)
+        j_to_remove = abs(j_to_remove);
+      if(j_to_add >= width)
+        j_to_add = width - (j_to_add - width) - 1;
+      // slide window
+      for(int c = 0; c < 4; c++)
+      {
+        average[c] -= in[(i * width + j_to_remove) * 4 + c];
+        average[c] += in[(i * width + j_to_add) * 4 + c];
+        line_average[(i * width + j) * 4 + c] = average[c]  / (2.0f * radius + 1.0f);
+      }
+    }
+  }
+
+  // second pass. Average on columns and normalize the result.
+  float* moving_average = malloc(4 * width * sizeof(float));
+  for(int j = 0; j < width; j++)
+  {
+    for(int c = 0; c < 4; c++)
+      moving_average[j * 4 + c] = line_average[j * 4 + c];
+    for(int k = 1; k <= radius; k++)
+    {
+      // 2.0 factor because we considered an image extended by symetry
+      // when we are close to borders
+      for(int c = 0; c < 4; c++)
+        moving_average[j * 4 + c] += 2.0f * line_average[(k * width + j) * 4 + c];
+    }
+    for(int c = 0; c < 4; c++)
+      out[j * 4 + c] = moving_average[j * 4 + c] / (2.0f * radius + 1.0f);
+  }
+  for(int i = 1; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      int i_to_remove = i - radius - 1;
+      int i_to_add = i + radius;
+      if(i_to_remove < 0)
+        i_to_remove = abs(i_to_remove);
+      if(i_to_add >= height)
+        i_to_add = height - (i_to_add - height) - 1;
+      // slide window
+      for(int c = 0; c < 4; c++)
+      {
+        moving_average[j * 4 + c] -= line_average[(i_to_remove * width + j) * 4 + c];
+        moving_average[j * 4 + c] += line_average[(i_to_add * width + j) * 4 + c];
+        out[(i * width + j) * 4 + c] = moving_average[j * 4 + c] / (2.0f * radius + 1.0f);
+      }
+    }
+  }
+  free(moving_average);
+  free(line_average);
+}
+
 // recursive bilateral filter
 // implementation modified from https://github.com/Fig1024/OP_RBF
 static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
@@ -1537,11 +1613,14 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 {
   const dt_iop_denoiseprofile_data_t *const d = piece->data;
   const float sigma_range = 5.0f;
-  const float sigma_spatial = 100.0f;
+  const float sigma_spatial = 50.0f;
 
   const int channel = 4;//piece->colors;
   const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
   float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+  float *in_m = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+
+  average(ivoid, in_m, roi_in->width, roi_in->height, 5);
 
   const float wb_mean = (piece->pipe->dsc.temperature.coeffs[0] + piece->pipe->dsc.temperature.coeffs[1]
                          + piece->pipe->dsc.temperature.coeffs[2])
@@ -1580,11 +1659,11 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
   if(!d->use_new_vst)
   {
-    precondition((float *)ivoid, in, roi_in->width, roi_in->height, aa, bb);
+    precondition(in_m, in, roi_in->width, roi_in->height, aa, bb);
   }
   else
   {
-    precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
+    precondition_v2(in_m, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
   }
 
   const float* img = ivoid;
@@ -1847,6 +1926,8 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   free(m_down_pass_factor);
   free(m_up_pass_color);
   free(m_up_pass_factor);
+  free(in);
+  free(in_m);
 }
 
 
