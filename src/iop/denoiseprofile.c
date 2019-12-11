@@ -1518,17 +1518,6 @@ static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
 #undef MAX_MAX_SCALE
 }
 
-static inline float getDiffFactor(const float* color1, const float* color2, const unsigned channels, const float sigma_range)
-{
-  float totaldiff = 0.0f;
-  for (int i = 0; i < MIN(channels, 3); i++)
-  {
-    float diff = color1[i] - color2[i];
-    totaldiff += fabs(diff);
-  }
-  return fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 2.0f));
-}
-
 static void average(const float* in, float* out, unsigned width, unsigned height, unsigned radius)
 {
   float* line_average = malloc(4 * width * height * sizeof(float));
@@ -1605,6 +1594,79 @@ static void average(const float* in, float* out, unsigned width, unsigned height
   free(line_average);
 }
 
+#if 0
+static inline float getDiffFactor(const float* color1, const float* color2, const unsigned channels, const float sigma_range)
+{
+  float totaldiff = 0.0f;
+  for (int i = 0; i < MIN(channels, 3); i++)
+  {
+    float diff = color1[i] - color2[i];
+    totaldiff += fabs(diff);
+  }
+  return fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 2.0f));
+}
+#endif
+
+
+//FIXME
+static float wgt[8] =
+{0.3,0.3,0.3,0.3,0.4,0.5,0.5,0.5};
+//{0.5,0.2,0.1,0.1,0.1,0.2,0.4,0.6};
+//{1,2,1,2,1,1,1,1};
+//{0.2f,0.4f,0.4f,0.8f,0.6f,0.3f,0.1f,0.3f};
+
+// x0 MUST be smaller than x1
+static inline float getDiffFactorHoriz(float* scales[8], const int y, const int x0, const int x1,
+                           const unsigned width, const unsigned height, const unsigned channel, const float sigma_range)
+{
+  if(x0 > x1) printf("x0 > x1\n");
+  float totaldiff = 0.0f;
+  float res = 0.0f;
+  for(int s = 0; s < 8; s++)
+  {
+    int radius = 0;
+    if(s >= 1)
+    {
+      radius = 1 << (s-1);
+    }
+    unsigned index_left = (y * width + MAX(x0 - radius, 0)) * channel;
+    unsigned index_right = (y * width + MIN(x1 + radius, width - 1)) * channel;
+    for (int i = 0; i < MIN(channel, 3); i++)
+    {
+      float diff = scales[s][index_left] - scales[s][index_right];
+      totaldiff += wgt[s] * fabs(diff);
+    }
+    res += fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 1));
+  }
+  return res / 8.0f;
+}
+
+// y0 MUST be smaller than y1
+static inline float getDiffFactorVert(float* scales[8], const int x, const int y0, const int y1,
+                           const unsigned width, const unsigned height, const unsigned channel, const float sigma_range)
+{
+  if(y0 > y1) printf("y0 > y1\n");
+  float totaldiff = 0.0f;
+  float res = 0.0f;
+  for(int s = 0; s < 8; s++)
+  {
+    int radius = 0;
+    if(s >= 1)
+    {
+      radius = 1 << (s-1);
+    }
+    unsigned index_up = (MAX(y0 - radius, 0) * width + x) * channel;
+    unsigned index_down = (MIN(y1 + radius, height - 1) * width + x) * channel;
+    for (int i = 0; i < MIN(channel, 3); i++)
+    {
+      float diff = scales[s][index_up] - scales[s][index_down];
+      totaldiff += wgt[s] * fabs(diff);
+    }
+    res += fast_mexp2f(fmaxf(0.0f, totaldiff / sigma_range - 1));
+  }
+  return res / 8.0f;
+}
+
 // recursive bilateral filter
 // implementation modified from https://github.com/Fig1024/OP_RBF
 static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
@@ -1613,14 +1675,35 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 {
   const dt_iop_denoiseprofile_data_t *const d = piece->data;
   const float sigma_range = 5.0f;
-  const float sigma_spatial = 50.0f;
+  const float sigma_spatial = 30.0f;
 
   const int channel = 4;//piece->colors;
   const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
-  float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
-  float *in_m = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+  // float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+  // float *in_m = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
+  size_t img_size = (size_t)4 * sizeof(float) * roi_in->width * roi_in->height;
 
-  average(ivoid, in_m, roi_in->width, roi_in->height, 5);
+  float* scales[8];
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  shared(scales) \
+  dt_omp_firstprivate(ivoid, img_size, roi_in) \
+  schedule(static)
+#endif
+  for(int i = 0; i < 8; i++)
+  {
+    if(i == 0)
+    {
+      scales[i] = dt_alloc_align(64, img_size);
+      memcpy(scales[i], ivoid, img_size);
+    }
+    else
+    {
+      unsigned radius = 1 << (i-1);
+      scales[i] = dt_alloc_align(64, img_size);
+      average(ivoid, scales[i], roi_in->width, roi_in->height, radius);
+    }
+  }
 
   const float wb_mean = (piece->pipe->dsc.temperature.coeffs[0] + piece->pipe->dsc.temperature.coeffs[1]
                          + piece->pipe->dsc.temperature.coeffs[2])
@@ -1654,20 +1737,34 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
   // update the coeffs with strength and scale
   for(int i = 0; i < 3; i++) wb[i] *= d->strength * scale;
-  const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
-  const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
+  // const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
+  // const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
   const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
-  if(!d->use_new_vst)
+  // if(!d->use_new_vst)
+  // {
+  //   precondition(in_m, in, roi_in->width, roi_in->height, aa, bb);
+  // }
+  // else
+  // {
+  //   precondition_v2(in_m, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
+  // }
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  shared(scales) \
+  dt_omp_firstprivate(roi_in, d, compensate_p, p, wb) \
+  schedule(static)
+#endif
+  for(int i = 0; i < 8; i++)
   {
-    precondition(in_m, in, roi_in->width, roi_in->height, aa, bb);
-  }
-  else
-  {
-    precondition_v2(in_m, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
+    // unsigned radius = 0;
+    // if(i >= 1)
+    // {
+    //   radius = 1 << (i-1);
+    // }
+    precondition_v2(scales[i], scales[i], roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
   }
 
   const float* img = ivoid;
-  float* img_src = in;
   float* img_dst = ovoid;
   // alloc memory
   uint32_t m_reserve_width = roi_in->width;
@@ -1703,7 +1800,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(img, img_src, alpha_f, inv_alpha_f) \
+    dt_omp_firstprivate(img, scales, alpha_f, inv_alpha_f) \
     firstprivate(m_left_pass_color, m_left_pass_factor, height, width) \
     firstprivate(m_right_pass_color, m_right_pass_factor) \
     firstprivate(m_down_pass_color, m_down_pass_factor) \
@@ -1716,7 +1813,6 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     // Left pass
     if(k == 0)
     {
-      const float* src_color = img_src;
       float* left_pass_color = m_left_pass_color;
       float* left_pass_factor = m_left_pass_factor;
 
@@ -1737,8 +1833,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
           unsigned iprevf = (y * width + x - 1);
           // determine difference in pixel color between current and previous
           // calculation is different depending on number of channels
-          float diff = getDiffFactor(&src_color[icurr],
-                                     &src_color[iprev],
+          float diff = getDiffFactorHoriz(scales, y, x-1, x, width, height,
                                      channel, sigma_range);
           left_pass_factor[icurrf]  = inv_alpha_f
                                     + alpha_f * diff * left_pass_factor[iprevf];
@@ -1755,7 +1850,6 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     // Right pass
     if(k == 1)
     {
-      const float* src_color = img_src;
       float* right_pass_color = m_right_pass_color;
       float* right_pass_factor = m_right_pass_factor;
 
@@ -1776,8 +1870,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
           unsigned iprevf = (y * width + width - x);
           // determine difference in pixel color between current and previous
           // calculation is different depending on number of channels
-          float diff = getDiffFactor(&src_color[icurr],
-                                     &src_color[iprev],
+          float diff = getDiffFactorHoriz(scales, y, width - x - 1, width - x, width, height,
                                      channel, sigma_range);
           right_pass_factor[icurrf]  = inv_alpha_f
                                      + alpha_f * diff * right_pass_factor[iprevf];
@@ -1794,7 +1887,6 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     // Down pass
     if(k == 2)
     {
-      const float* src_color = img_src;
       float* down_pass_color = m_down_pass_color;
       float* down_pass_factor = m_down_pass_factor;
 
@@ -1819,8 +1911,7 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
           // determine difference in pixel color between current and previous
           // calculation is different depending on number of channels
-          float diff = getDiffFactor(&src_color[icurr],
-                                     &src_color[iprev],
+          float diff = getDiffFactorVert(scales, x, y-1, y, width, height,
                                      channel, sigma_range);
           down_pass_factor[icurrf]  = inv_alpha_f
                                     + alpha_f * diff * down_pass_factor[iprevf];
@@ -1837,7 +1928,6 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
     // Up pass
     if(k == 3)
     {
-      const float* src_color = img_src;
       float* up_pass_color = m_up_pass_color;
       float* up_pass_factor = m_up_pass_factor;
 
@@ -1862,9 +1952,8 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
 
           // determine difference in pixel color between current and previous
           // calculation is different depending on number of channels
-          float diff = getDiffFactor(&src_color[icurr],
-                                     &src_color[iprev],
-                                     channel, sigma_range);
+          float diff = getDiffFactorVert(scales, x, height - y - 1, height - y,
+                                     width, height, channel, sigma_range);
           up_pass_factor[icurrf]  = inv_alpha_f
                                     + alpha_f * diff * up_pass_factor[iprevf];
           for (int c = 0; c < channel; c++)
@@ -1926,8 +2015,12 @@ static void process_rbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *pi
   free(m_down_pass_factor);
   free(m_up_pass_color);
   free(m_up_pass_factor);
-  free(in);
-  free(in_m);
+  for(int i = 0; i < 8; i++)
+  {
+    dt_free_align(scales[i]);
+  }
+  // free(in);
+  // free(in_m);
 }
 
 
