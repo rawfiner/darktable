@@ -36,7 +36,7 @@ typedef enum dt_iop_msca_guiding_channel_t
 
 typedef struct dt_iop_msca_params_t
 {
-  unsigned nb_of_scales;
+  uint32_t nb_of_scales;
   float edge_threshold;
   float correction_margin;
 } dt_iop_msca_params_t;
