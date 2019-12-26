@@ -39,7 +39,7 @@ typedef struct dt_iop_msca_params_t
   dt_iop_msca_guiding_channel_t guiding_channel;
   uint32_t nb_of_scales;
   float edge_threshold;
-  float correction_margin;
+  float strength;
 } dt_iop_msca_params_t;
 
 typedef struct dt_iop_msca_gui_data_t
@@ -47,7 +47,7 @@ typedef struct dt_iop_msca_gui_data_t
   GtkWidget *guiding_channel;
   GtkWidget *nb_of_scales;
   GtkWidget *edge_threshold;
-  GtkWidget *correction_margin;
+  GtkWidget *strength;
 } dt_iop_msca_gui_data_t;
 
 const char *name()
@@ -70,7 +70,7 @@ int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_p
   return iop_cs_rgb;
 }
 
-static void ca_correct(float* inout, unsigned guide, float threshold, unsigned width, unsigned height)
+static void ca_correct(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height)
 {
   const unsigned first_follow = (guide + 1) % 3;
   const unsigned second_follow = (guide + 2) % 3;
@@ -130,6 +130,8 @@ static void ca_correct(float* inout, unsigned guide, float threshold, unsigned w
         if(right_ratio_1_0 < 1.0f) right_ratio_1_0 = 1.0f / right_ratio_1_0;
         float max_ratio_1_0 = MAX(left_ratio_1_0, right_ratio_1_0);
         float inv_max_ratio_1_0 = 1.0f / max_ratio_1_0;
+        float max_ratio_1_0_plus_margin = max_ratio_1_0 + margin;
+        float inv_max_ratio_1_0_plus_margin = 1.0f / max_ratio_1_0_plus_margin;
 
         float left_ratio_2_0 = inout[(i * width + left_bound) * 4 + second_follow] / inout[(i * width + left_bound) * 4 + guide];
         float right_ratio_2_0 = inout[(i * width + right_bound) * 4 + second_follow] / inout[(i * width + right_bound) * 4 + guide];
@@ -137,6 +139,8 @@ static void ca_correct(float* inout, unsigned guide, float threshold, unsigned w
         if(right_ratio_2_0 < 1.0f) right_ratio_2_0 = 1.0f / right_ratio_2_0;
         float max_ratio_2_0 = MAX(left_ratio_2_0, right_ratio_2_0);
         float inv_max_ratio_2_0 = 1.0f / max_ratio_2_0;
+        float max_ratio_2_0_plus_margin = max_ratio_2_0 + margin;
+        float inv_max_ratio_2_0_plus_margin = 1.0f / max_ratio_2_0_plus_margin;
 
         for (int k = left_bound; k <= right_bound; ++k)
         {
@@ -149,11 +153,11 @@ static void ca_correct(float* inout, unsigned guide, float threshold, unsigned w
 
           // fix the following channels values if the ratios between
           // them and the leading channel are too big
-          if(ratio_1_0 > max_ratio_1_0)
+          if(ratio_1_0 > max_ratio_1_0_plus_margin)
           {
             inout[(i * width + k) * 4 + first_follow] = max_ratio_1_0 * lead;
           }
-          else if(ratio_1_0 < inv_max_ratio_1_0)
+          else if(ratio_1_0 < inv_max_ratio_1_0_plus_margin)
           {
             inout[(i * width + k) * 4 + first_follow] = inv_max_ratio_1_0 * lead;
           }
@@ -162,11 +166,11 @@ static void ca_correct(float* inout, unsigned guide, float threshold, unsigned w
             inout[(i * width + k) * 4 + first_follow] = follow1;
           }
 
-          if(ratio_2_0 > max_ratio_2_0)
+          if(ratio_2_0 > max_ratio_2_0_plus_margin)
           {
             inout[(i * width + k) * 4 + second_follow] = max_ratio_2_0 * lead;
           }
-          else if(ratio_2_0 < inv_max_ratio_2_0)
+          else if(ratio_2_0 < inv_max_ratio_2_0_plus_margin)
           {
             inout[(i * width + k) * 4 + second_follow] = inv_max_ratio_2_0 * lead;
           }
@@ -188,7 +192,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const dt_iop_msca_params_t *const d = piece->data;
   size_t img_size = (size_t)4 * sizeof(float) * roi_in->width * roi_in->height;
   memcpy(ovoid, ivoid, img_size);
-  ca_correct(ovoid, d->guiding_channel, 1.0f + d->edge_threshold / 20.0f, roi_in->width, roi_in->height);
+  ca_correct(ovoid, d->guiding_channel, 1.0f + d->edge_threshold / 20.0f, 1.0f - d->strength, roi_in->width, roi_in->height);
 }
 
 // void reload_defaults(dt_iop_module_t *module)
@@ -203,7 +207,7 @@ void init(dt_iop_module_t *module)
   module->params_size = sizeof(dt_iop_msca_params_t);
   module->gui_data = NULL;
 
-  dt_iop_msca_params_t tmp = (dt_iop_msca_params_t){ 1, 2, 1, 0 };
+  dt_iop_msca_params_t tmp = (dt_iop_msca_params_t){ 1, 2, 1, 0.9 };
 
   memcpy(module->params, &tmp, sizeof(dt_iop_msca_params_t));
   memcpy(module->default_params, &tmp, sizeof(dt_iop_msca_params_t));
@@ -217,7 +221,7 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
   d->guiding_channel = p->guiding_channel;
   d->nb_of_scales = p->nb_of_scales;
   d->edge_threshold = p->edge_threshold;
-  d->correction_margin = p->correction_margin;
+  d->strength = p->strength;
 }
 
 void cleanup(dt_iop_module_t *module)
@@ -266,12 +270,12 @@ static void edge_threshold_callback(GtkWidget *w, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-static void correction_margin_callback(GtkWidget *w, dt_iop_module_t *self)
+static void strength_callback(GtkWidget *w, dt_iop_module_t *self)
 {
   // this is important to avoid cycles!
   if(darktable.gui->reset) return;
   dt_iop_msca_params_t *p = (dt_iop_msca_params_t *)self->params;
-  p->correction_margin = dt_bauhaus_slider_get(w);
+  p->strength = dt_bauhaus_slider_get(w);
   // let core know of the changes
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
@@ -284,7 +288,7 @@ void gui_update(dt_iop_module_t *self)
   dt_bauhaus_combobox_set(g->guiding_channel, p->guiding_channel);
   dt_bauhaus_slider_set(g->nb_of_scales, p->nb_of_scales);
   dt_bauhaus_slider_set(g->edge_threshold, p->edge_threshold);
-  dt_bauhaus_slider_set(g->correction_margin, p->correction_margin);
+  dt_bauhaus_slider_set(g->strength, p->strength);
 }
 
 void gui_init(dt_iop_module_t *self)
@@ -309,14 +313,14 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->edge_threshold, _("threshold to detect edges\n"
                                                   "decrease if chromatic aberations are uncorrected"));
   g_signal_connect(G_OBJECT(g->edge_threshold), "value-changed", G_CALLBACK(edge_threshold_callback), self);
-  g->correction_margin = dt_bauhaus_slider_new_with_range(self, 0.0f, 1.0f, .05, 0.f, 3);
-  dt_bauhaus_widget_set_label(g->correction_margin, NULL, _("correction margin"));
-  gtk_widget_set_tooltip_text(g->correction_margin,  _("amount of correction on detected edges"));
-  g_signal_connect(G_OBJECT(g->correction_margin), "value-changed", G_CALLBACK(correction_margin_callback), self);
+  g->strength = dt_bauhaus_slider_new_with_range(self, 0.0f, 1.0f, .05, 0.9f, 1);
+  dt_bauhaus_widget_set_label(g->strength, NULL, _("strength"));
+  gtk_widget_set_tooltip_text(g->strength,  _("amount of correction on detected edges"));
+  g_signal_connect(G_OBJECT(g->strength), "value-changed", G_CALLBACK(strength_callback), self);
   gtk_box_pack_start(GTK_BOX(widget), GTK_WIDGET(g->guiding_channel), TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(widget), GTK_WIDGET(g->nb_of_scales), TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(widget), GTK_WIDGET(g->edge_threshold), TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(widget), GTK_WIDGET(g->correction_margin), TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(widget), GTK_WIDGET(g->strength), TRUE, TRUE, 0);
   gtk_widget_show_all(widget);
   self->widget = widget;
 }
