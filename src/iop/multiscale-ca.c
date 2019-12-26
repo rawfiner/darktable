@@ -70,16 +70,30 @@ int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_p
   return iop_cs_rgb;
 }
 
-static void ca_correct(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height)
+static void transpose(float* in, float* out, unsigned in_width, unsigned in_height)
+{
+  for(int i = 0; i < in_height; i++)
+  {
+    for(int j = 0; j < in_width; j++)
+    {
+      for(int c = 0; c < 4; c++)
+      {
+        out[(j * in_height + i) * 4 + c] = in[(i * in_width + j) * 4 + c];
+      }
+    }
+  }
+}
+
+static void ca_correct_horiz(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height)
 {
   const unsigned first_follow = (guide + 1) % 3;
   const unsigned second_follow = (guide + 2) % 3;
   // in all this function, variables named with a 0 refer to the guiding channel,
   // variables named with a 1 to the first following channel, and variables named
   // with a 2 to the second following channel.
-  for (int i = 0; i < height; ++i)
+  for (int i = 0; i < height; i++)
   {
-    for (int j = 1; j < width - 2; ++j)
+    for (int j = 1; j < width - 2; j++)
     {
       float edge_ratio = inout[(i * width + j + 1) * 4 + guide] / inout[(i * width + j - 1) * 4 + guide];
       gboolean inverse = FALSE;
@@ -89,8 +103,11 @@ static void ca_correct(float* inout, unsigned guide, float threshold, float marg
         inverse = TRUE;
       }
 
-      if (edge_ratio >= threshold)
+      if (edge_ratio >= 2 * threshold)
       {
+        gboolean inverse1 = (inout[(i * width + j + 1) * 4 + first_follow] > inout[(i * width + j - 1) * 4 + first_follow]);
+        gboolean inverse2 = (inout[(i * width + j + 1) * 4 + second_follow] > inout[(i * width + j - 1) * 4 + second_follow]);
+
         // find edge boundaries
         int left_bound;
         int right_bound;
@@ -99,28 +116,22 @@ static void ca_correct(float* inout, unsigned guide, float threshold, float marg
           float ratio0 = (inout[(i * width + left_bound + 1) * 4 + guide] / inout[(i * width + left_bound - 1) * 4 + guide]);
           float ratio1 = (inout[(i * width + left_bound + 1) * 4 + first_follow] / inout[(i * width + left_bound - 1) * 4 + first_follow]);
           float ratio2 = (inout[(i * width + left_bound + 1) * 4 + second_follow] / inout[(i * width + left_bound - 1) * 4 + second_follow]);
-          if(inverse)
-          {
-            ratio0 = 1.0f / ratio0;
-            ratio1 = 1.0f / ratio1;
-            ratio2 = 1.0f / ratio2;
-          }
+          if(inverse) ratio0 = 1.0f / ratio0;
+          if(inverse1) ratio1 = 1.0f / ratio1;
+          if(inverse2) ratio2 = 1.0f / ratio2;
           if(MAX(MAX(ratio1, ratio0), ratio2) < threshold) break;
-          if(j - left_bound > 100) break;
+          if(j - left_bound > 10) break;
         }
         for (right_bound = j+1; right_bound < width - 2; right_bound++)
         {
           float ratio0 = (inout[(i * width + right_bound + 1) * 4 + guide] / inout[(i * width + right_bound - 1) * 4 + guide]);
           float ratio1 = (inout[(i * width + right_bound + 1) * 4 + first_follow] / inout[(i * width + right_bound - 1) * 4 + first_follow]);
           float ratio2 = (inout[(i * width + right_bound + 1) * 4 + second_follow] / inout[(i * width + right_bound - 1) * 4 + second_follow]);
-          if(inverse)
-          {
-            ratio0 = 1.0f / ratio0;
-            ratio1 = 1.0f / ratio1;
-            ratio2 = 1.0f / ratio2;
-          }
+          if(inverse) ratio0 = 1.0f / ratio0;
+          if(inverse1) ratio1 = 1.0f / ratio1;
+          if(inverse2) ratio2 = 1.0f / ratio2;
           if(MAX(MAX(ratio1, ratio0), ratio2) < threshold) break;
-          if(right_bound - j > 100) break;
+          if(right_bound - j > 10) break;
         }
 
         // find maximum ratio between guiding and following channels at boundaries
@@ -142,7 +153,7 @@ static void ca_correct(float* inout, unsigned guide, float threshold, float marg
         float max_ratio_2_0_plus_margin = max_ratio_2_0 + margin;
         float inv_max_ratio_2_0_plus_margin = 1.0f / max_ratio_2_0_plus_margin;
 
-        for (int k = left_bound; k <= right_bound; ++k)
+        for (int k = left_bound; k <= right_bound; k++)
         {
           float ratio_1_0 = inout[(i * width + k) * 4 + first_follow] / inout[(i * width + k) * 4 + guide];
           float ratio_2_0 = inout[(i * width + k) * 4 + second_follow] / inout[(i * width + k) * 4 + guide];
@@ -183,6 +194,15 @@ static void ca_correct(float* inout, unsigned guide, float threshold, float marg
       }
     }
   }
+}
+
+static void ca_correct(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height)
+{
+  float* tmp = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
+  ca_correct_horiz(inout, guide, threshold, margin, width, height);
+  transpose(inout, tmp, width, height);
+  ca_correct_horiz(tmp, guide, threshold, margin, height, width);
+  transpose(tmp, inout, height, width);
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
