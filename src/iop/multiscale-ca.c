@@ -70,6 +70,59 @@ int default_colorspace(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_p
   return iop_cs_rgb;
 }
 
+
+// decompose image in 2 layers: each pixel of out is a 4 pixels mean, and scaling up 2x out and adding details gives back in
+// out width is (width+1)/2
+// out height is (height+1)/2
+static void decompose(float* in, float* out, float* details, unsigned width, unsigned height)
+{
+  const unsigned widthout = width / 2 + 1;
+  for(unsigned j = 0; j < height; j+=2)
+  {
+    unsigned jout = (j+1)/2;
+    for(unsigned i = 0; i < width; i+=2)
+    {
+      unsigned iout =(i+1)/2;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        float tmp00 = in[(j*width+i)*4+c];
+        float tmp01 = in[(j*width+MIN(i+1,width-1))*4+c];
+        float tmp10 = in[(MIN(j+1,height-1)*width+i)*4+c];
+        float tmp11 = in[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
+        float mean = (tmp00 + tmp01 + tmp10 + tmp11) / 4.0f;
+        out[(jout * widthout + iout) * 4 + c] = mean;
+        details[(j*width+i)*4+c] = tmp00 - mean;
+        details[(j*width+MIN(i+1,width-1))*4+c] = tmp01 - mean;
+        details[(MIN(j+1,height-1)*width+i)*4+c] = tmp10 - mean;
+        details[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c] = tmp11 - mean;
+      }
+    }
+  }
+}
+
+// recompose image from 2 layers
+// width and height are the dimensions of out
+static void recompose(float* in, float* out, float* details, unsigned width, unsigned height)
+{
+  const unsigned widthin = width / 2 + 1;
+  for(unsigned j = 0; j < height; j+=2)
+  {
+    unsigned jin = (j+1)/2;
+    for(unsigned i = 0; i < width; i+=2)
+    {
+      unsigned iin =(i+1)/2;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        float mean = in[(jin * widthin + iin) * 4 + c];
+        out[(j*width+i)*4+c] = mean + details[(j*width+i)*4+c];
+        out[(j*width+MIN(i+1,width-1))*4+c] = mean + details[(j*width+MIN(i+1,width-1))*4+c];
+        out[(MIN(j+1,height-1)*width+i)*4+c] = mean + details[(MIN(j+1,height-1)*width+i)*4+c];
+        out[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c] = mean + details[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
+      }
+    }
+  }
+}
+
 static void transpose(float* in, float* out, unsigned in_width, unsigned in_height)
 {
   for(int i = 0; i < in_height; i++)
@@ -103,7 +156,7 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
         inverse = TRUE;
       }
 
-      if (edge_ratio >= 2 * threshold)
+      if (edge_ratio >= threshold)
       {
         gboolean inverse1 = (inout[(i * width + j + 1) * 4 + first_follow] > inout[(i * width + j - 1) * 4 + first_follow]);
         gboolean inverse2 = (inout[(i * width + j + 1) * 4 + second_follow] > inout[(i * width + j - 1) * 4 + second_follow]);
@@ -119,7 +172,7 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
           if(inverse) ratio0 = 1.0f / ratio0;
           if(inverse1) ratio1 = 1.0f / ratio1;
           if(inverse2) ratio2 = 1.0f / ratio2;
-          if(MAX(MAX(ratio1, ratio0), ratio2) < threshold) break;
+          if(ratio0 < threshold) break;
           if(j - left_bound > 10) break;
         }
         for (right_bound = j+1; right_bound < width - 2; right_bound++)
@@ -130,7 +183,7 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
           if(inverse) ratio0 = 1.0f / ratio0;
           if(inverse1) ratio1 = 1.0f / ratio1;
           if(inverse2) ratio2 = 1.0f / ratio2;
-          if(MAX(MAX(ratio1, ratio0), ratio2) < threshold) break;
+          if(ratio0 < threshold) break;
           if(right_bound - j > 10) break;
         }
 
@@ -196,13 +249,29 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
   }
 }
 
-static void ca_correct(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height)
+static void ca_correct(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height, unsigned nb_scales)
 {
-  float* tmp = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
-  ca_correct_horiz(inout, guide, threshold, margin, width, height);
-  transpose(inout, tmp, width, height);
-  ca_correct_horiz(tmp, guide, threshold, margin, height, width);
-  transpose(tmp, inout, height, width);
+  if(nb_scales == 1)
+  {
+    float* tmp = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
+    ca_correct_horiz(inout, guide, threshold, margin, width, height);
+    transpose(inout, tmp, width, height);
+    ca_correct_horiz(tmp, guide, threshold, margin, height, width);
+    transpose(tmp, inout, height, width);
+    dt_free_align(tmp);
+  }
+  if(nb_scales > 1)
+  {
+    unsigned small_width = width / 2 + 1;
+    unsigned small_height = height / 2 + 1;
+    float* details = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
+    float* small = dt_alloc_align(64, (size_t)4 * sizeof(float) * small_width * small_height * 2);
+    decompose(inout, small, details, width, height);
+    ca_correct(small, guide, threshold, margin, small_width, small_height, nb_scales - 1);
+    recompose(small, inout, details, width, height);
+    dt_free_align(details);
+    dt_free_align(small);
+  }
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
@@ -212,7 +281,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const dt_iop_msca_params_t *const d = piece->data;
   size_t img_size = (size_t)4 * sizeof(float) * roi_in->width * roi_in->height;
   memcpy(ovoid, ivoid, img_size);
-  ca_correct(ovoid, d->guiding_channel, 1.0f + d->edge_threshold / 20.0f, 1.0f - d->strength, roi_in->width, roi_in->height);
+  ca_correct(ovoid, d->guiding_channel, 1.0f + d->edge_threshold / 20.0f, 1.0f - d->strength, roi_in->width, roi_in->height, d->nb_of_scales);
 }
 
 // void reload_defaults(dt_iop_module_t *module)
