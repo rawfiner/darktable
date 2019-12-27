@@ -137,7 +137,7 @@ static void transpose(float* in, float* out, unsigned in_width, unsigned in_heig
   }
 }
 
-static void ca_correct_horiz(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height)
+static void ca_correct_horiz(float* inout, unsigned guide, float threshold, float max_edge, float margin, unsigned width, unsigned height)
 {
   const unsigned first_follow = (guide + 1) % 3;
   const unsigned second_follow = (guide + 2) % 3;
@@ -156,7 +156,7 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
         inverse = TRUE;
       }
 
-      if (edge_ratio >= threshold)
+      if (edge_ratio >= threshold && edge_ratio < max_edge)
       {
         gboolean inverse1 = (inout[(i * width + j + 1) * 4 + first_follow] > inout[(i * width + j - 1) * 4 + first_follow]);
         gboolean inverse2 = (inout[(i * width + j + 1) * 4 + second_follow] > inout[(i * width + j - 1) * 4 + second_follow]);
@@ -172,8 +172,9 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
           if(inverse) ratio0 = 1.0f / ratio0;
           if(inverse1) ratio1 = 1.0f / ratio1;
           if(inverse2) ratio2 = 1.0f / ratio2;
-          if(ratio0 < threshold) break;
-          if(j - left_bound > 10) break;
+          if(ratio0 < 1.0f + (threshold - 1.0f) / 4.0f) break;
+          if(ratio0 > max_edge) break;
+          if(j - left_bound > 100) break;
         }
         for (right_bound = j+1; right_bound < width - 2; right_bound++)
         {
@@ -183,64 +184,41 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
           if(inverse) ratio0 = 1.0f / ratio0;
           if(inverse1) ratio1 = 1.0f / ratio1;
           if(inverse2) ratio2 = 1.0f / ratio2;
-          if(ratio0 < threshold) break;
-          if(right_bound - j > 10) break;
+          if(ratio0 < 1.0f + (threshold - 1.0f) / 4.0f) break;
+          if(ratio0 > max_edge) break;
+          if(right_bound - j > 100) break;
         }
 
-        // find maximum ratio between guiding and following channels at boundaries
-        float left_ratio_1_0 = inout[(i * width + left_bound) * 4 + first_follow] / inout[(i * width + left_bound) * 4 + guide];
-        float right_ratio_1_0 = inout[(i * width + right_bound) * 4 + first_follow] / inout[(i * width + right_bound) * 4 + guide];
-        if(left_ratio_1_0 < 1.0f) left_ratio_1_0 = 1.0f / left_ratio_1_0;
-        if(right_ratio_1_0 < 1.0f) right_ratio_1_0 = 1.0f / right_ratio_1_0;
-        float max_ratio_1_0 = MAX(left_ratio_1_0, right_ratio_1_0);
-        float inv_max_ratio_1_0 = 1.0f / max_ratio_1_0;
-        float max_ratio_1_0_plus_margin = max_ratio_1_0 + margin;
-        float inv_max_ratio_1_0_plus_margin = 1.0f / max_ratio_1_0_plus_margin;
-
-        float left_ratio_2_0 = inout[(i * width + left_bound) * 4 + second_follow] / inout[(i * width + left_bound) * 4 + guide];
-        float right_ratio_2_0 = inout[(i * width + right_bound) * 4 + second_follow] / inout[(i * width + right_bound) * 4 + guide];
-        if(left_ratio_2_0 < 1.0f) left_ratio_2_0 = 1.0f / left_ratio_2_0;
-        if(right_ratio_2_0 < 1.0f) right_ratio_2_0 = 1.0f / right_ratio_2_0;
-        float max_ratio_2_0 = MAX(left_ratio_2_0, right_ratio_2_0);
-        float inv_max_ratio_2_0 = 1.0f / max_ratio_2_0;
-        float max_ratio_2_0_plus_margin = max_ratio_2_0 + margin;
-        float inv_max_ratio_2_0_plus_margin = 1.0f / max_ratio_2_0_plus_margin;
+        float lead_left = inout[(i * width + left_bound) * 4 + guide];
+        float follow1_left = inout[(i * width + left_bound) * 4 + first_follow];
+        float follow2_left = inout[(i * width + left_bound) * 4 + second_follow];
+        float lead_right = inout[(i * width + right_bound) * 4 + guide];
+        float follow1_right = inout[(i * width + right_bound) * 4 + first_follow];
+        float follow2_right = inout[(i * width + right_bound) * 4 + second_follow];
 
         for (int k = left_bound; k <= right_bound; k++)
         {
-          float ratio_1_0 = inout[(i * width + k) * 4 + first_follow] / inout[(i * width + k) * 4 + guide];
-          float ratio_2_0 = inout[(i * width + k) * 4 + second_follow] / inout[(i * width + k) * 4 + guide];
-
           float lead = inout[(i * width + k) * 4 + guide];
-          float follow1 = inout[(i * width + k) * 4 + first_follow];
-          float follow2 = inout[(i * width + k) * 4 + second_follow];
-
-          // fix the following channels values if the ratios between
-          // them and the leading channel are too big
-          if(ratio_1_0 > max_ratio_1_0_plus_margin)
+          float a = (lead - lead_right) / (lead_left - lead_right);
+          if(fabs(a) <= 1.0f)
           {
-            inout[(i * width + k) * 4 + first_follow] = max_ratio_1_0 * lead;
-          }
-          else if(ratio_1_0 < inv_max_ratio_1_0_plus_margin)
-          {
-            inout[(i * width + k) * 4 + first_follow] = inv_max_ratio_1_0 * lead;
+            inout[(i * width + k) * 4 + first_follow] = a * follow1_left + (1.0f - a) * follow1_right;
+            inout[(i * width + k) * 4 + second_follow] = a * follow2_left + (1.0f - a) * follow2_right;
           }
           else
           {
-            inout[(i * width + k) * 4 + first_follow] = follow1;
-          }
-
-          if(ratio_2_0 > max_ratio_2_0_plus_margin)
-          {
-            inout[(i * width + k) * 4 + second_follow] = max_ratio_2_0 * lead;
-          }
-          else if(ratio_2_0 < inv_max_ratio_2_0_plus_margin)
-          {
-            inout[(i * width + k) * 4 + second_follow] = inv_max_ratio_2_0 * lead;
-          }
-          else
-          {
-            inout[(i * width + k) * 4 + second_follow] = follow2;
+            if(fabs(lead - lead_right) > fabs(lead - lead_left))
+            {
+              a = lead / lead_left;
+              inout[(i * width + k) * 4 + first_follow] = a * follow1_left;
+              inout[(i * width + k) * 4 + second_follow] = a * follow2_left;
+            }
+            else
+            {
+              a = lead / lead_right;
+              inout[(i * width + k) * 4 + first_follow] = a * follow1_right;
+              inout[(i * width + k) * 4 + second_follow] = a * follow2_right;
+            }
           }
         }
         j = right_bound;
@@ -249,29 +227,31 @@ static void ca_correct_horiz(float* inout, unsigned guide, float threshold, floa
   }
 }
 
-static void ca_correct(float* inout, unsigned guide, float threshold, float margin, unsigned width, unsigned height, unsigned nb_scales)
+static void ca_correct(float* inout, unsigned guide, float threshold, float max_edge, float margin, unsigned width, unsigned height, unsigned nb_scales)
 {
-  if(nb_scales == 1)
-  {
-    float* tmp = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
-    ca_correct_horiz(inout, guide, threshold, margin, width, height);
-    transpose(inout, tmp, width, height);
-    ca_correct_horiz(tmp, guide, threshold, margin, height, width);
-    transpose(tmp, inout, height, width);
-    dt_free_align(tmp);
-  }
+  unsigned small_width = width / 2 + 1;
+  unsigned small_height = height / 2 + 1;
+  float* details = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
+  float* small = dt_alloc_align(64, (size_t)4 * sizeof(float) * small_width * small_height * 2);
   if(nb_scales > 1)
   {
-    unsigned small_width = width / 2 + 1;
-    unsigned small_height = height / 2 + 1;
-    float* details = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
-    float* small = dt_alloc_align(64, (size_t)4 * sizeof(float) * small_width * small_height * 2);
     decompose(inout, small, details, width, height);
-    ca_correct(small, guide, threshold, margin, small_width, small_height, nb_scales - 1);
+    ca_correct(small, guide, 1.0f + (1.0f - threshold) / 2.0f, threshold, margin, small_width, small_height, nb_scales - 1);
     recompose(small, inout, details, width, height);
-    dt_free_align(details);
-    dt_free_align(small);
   }
+  float* details2 = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
+  float* tmp = dt_alloc_align(64, (size_t)4 * sizeof(float) * width * height);
+  decompose(inout, small, details, width, height);
+  ca_correct_horiz(inout, guide, threshold, max_edge, margin, width, height);
+  transpose(inout, tmp, width, height);
+  ca_correct_horiz(tmp, guide, threshold, max_edge, margin, height, width);
+  transpose(tmp, inout, height, width);
+  decompose(inout, small, details2, width, height);
+  recompose(small, inout, details, width, height);
+  dt_free_align(tmp);
+  dt_free_align(details2);
+  dt_free_align(details);
+  dt_free_align(small);
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
@@ -281,7 +261,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const dt_iop_msca_params_t *const d = piece->data;
   size_t img_size = (size_t)4 * sizeof(float) * roi_in->width * roi_in->height;
   memcpy(ovoid, ivoid, img_size);
-  ca_correct(ovoid, d->guiding_channel, 1.0f + d->edge_threshold / 20.0f, 1.0f - d->strength, roi_in->width, roi_in->height, d->nb_of_scales);
+  ca_correct(ovoid, d->guiding_channel, 1.0f + d->edge_threshold / 20.0f, 1000.0f, 1.0f - d->strength, roi_in->width, roi_in->height, d->nb_of_scales);
 }
 
 // void reload_defaults(dt_iop_module_t *module)
