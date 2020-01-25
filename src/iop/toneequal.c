@@ -101,6 +101,7 @@
 #include "iop/choleski.h"
 #include "libs/colorpicker.h"
 #include "common/iop_group.h"
+#include "common/guided_filter.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -698,6 +699,50 @@ static inline float pixel_correction(const float exposure,
   return fast_clamp(result, 0.25f, 4.0f);
 }
 
+static inline void blend_surface_blurs(const size_t width, const size_t height, float *const restrict luminance,
+                                       float *const restrict luminance0, float *const restrict luminance1,
+                                       float *const restrict luminance2, float *const restrict luminance3)
+{
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      float current = luminance[i * width + j];
+      if(current >= 1.0f)
+      {
+        luminance[i * width + j] = luminance0[i * width + j];
+        continue;
+      }
+      if(current >= 1.0f/4.0f)
+      {
+        float w = (1.0f - current) / 3.0f * 4.0f;
+        luminance[i * width + j] = (1.0f - w) * luminance0[i * width + j]
+                                 + w * luminance1[i * width + j];
+        continue;
+      }
+      if(current >= 1.0f/16.0f)
+      {
+        float w = (1.0f - 4.0f * current) / 3.0f * 4.0f;
+        luminance[i * width + j] = (1.0f - w) * luminance1[i * width + j]
+                                 + w * luminance2[i * width + j];
+        continue;
+      }
+      if(current >= 1.0f/64.0f)
+      {
+        float w = (1.0f - 16.0f * current) / 3.0f * 4.0f;
+        luminance[i * width + j] = (1.0f - w) * luminance2[i * width + j]
+                                 + w * luminance3[i * width + j];
+        continue;
+      }
+      if(current < 1.0f/64.0f)
+      {
+        luminance[i * width + j] = luminance3[i * width + j];
+        continue;
+      }
+    }
+  }
+}
+
 
 __DT_CLONE_TARGETS__
 static inline void compute_luminance_mask(const float *const restrict in, float *const restrict luminance,
@@ -733,8 +778,27 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
-      fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
+      float* luminance0 = dt_alloc_align(64, sizeof(float) * width * height);
+      float* luminance1 = dt_alloc_align(64, sizeof(float) * width * height);
+      float* luminance2 = dt_alloc_align(64, sizeof(float) * width * height);
+      float* luminance3 = dt_alloc_align(64, sizeof(float) * width * height);
+      memcpy(luminance0, luminance, sizeof(float) * width * height);
+      memcpy(luminance1, luminance, sizeof(float) * width * height);
+      memcpy(luminance2, luminance, sizeof(float) * width * height);
+      memcpy(luminance3, luminance, sizeof(float) * width * height);
+      fast_surface_blur(luminance0, width, height, d->radius, d->feathering * 4.0f, d->iterations,
                     DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      fast_surface_blur(luminance1, width, height, d->radius, d->feathering, d->iterations,
+                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      fast_surface_blur(luminance2, width, height, d->radius, d->feathering / 4.0f, d->iterations,
+                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      fast_surface_blur(luminance3, width, height, d->radius, d->feathering / 16.0f, d->iterations,
+                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      blend_surface_blurs(width, height, luminance, luminance0, luminance1, luminance2, luminance3);
+      dt_free_align(luminance0);
+      dt_free_align(luminance1);
+      dt_free_align(luminance2);
+      dt_free_align(luminance3);
       break;
     }
 
