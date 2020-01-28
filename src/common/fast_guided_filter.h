@@ -605,7 +605,7 @@ static inline void fast_surface_blur(float *const restrict image,
     box_average(ds_ab_blurred, ds_width, ds_height, 2, ds_radius);
     for(int j = 0; j < num_elem_ds * 2; j+=2)
     {
-      float weight_blur = 0.5f;
+      float weight_blur = 0.3f;
       ds_ab[j] = 1.0f - powf(1.0f - ds_ab_blurred[j], weight_blur) * powf(1.0f - ds_ab[j], 1.0f - weight_blur);
       weight_blur = 0.7f;
       ds_ab[j+1] = weight_blur * ds_ab_blurred[j+1] + (1.0f - weight_blur) * ds_ab[j+1];
