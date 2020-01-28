@@ -266,8 +266,8 @@ static inline void variance_analyse(const float *const restrict guide, // I
 
       const size_t index = (i * width + j) * 2;
       const size_t idx = (i * width + j);
-      //const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + mask[idx] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
-      const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + tmp[0] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
+      //const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + tmp[0] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
+      const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + mask[idx] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
       const float a = (tmp[3] - tmp[0] * tmp[1]) / d;
       // const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + feathering, 1e-15f); // avoid division by 0.
       // const float a = (tmp[3] - tmp[0] * tmp[1]) / d;
@@ -600,7 +600,17 @@ static inline void fast_surface_blur(float *const restrict image,
     variance_analyse(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_radius, feathering);
 
     // Compute the patch-wise average of parameters a and b
-    // box_average(ds_ab, ds_width, ds_height, 2, ds_radius);
+    float *const restrict ds_ab_blurred = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
+    memcpy(ds_ab_blurred, ds_ab, num_elem_ds * 2 * sizeof(float));
+    box_average(ds_ab_blurred, ds_width, ds_height, 2, ds_radius);
+    for(int j = 0; j < num_elem_ds * 2; j+=2)
+    {
+      float weight_blur = 0.5f;
+      ds_ab[j] = 1.0f - powf(1.0f - ds_ab_blurred[j], weight_blur) * powf(1.0f - ds_ab[j], 1.0f - weight_blur);
+      weight_blur = 0.7f;
+      ds_ab[j+1] = weight_blur * ds_ab_blurred[j+1] + (1.0f - weight_blur) * ds_ab[j+1];
+    }
+    dt_free_align(ds_ab_blurred);
 
     if(i != iterations - 1)
     {
