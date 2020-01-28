@@ -205,7 +205,7 @@ static inline void variance_analyse(const float *const restrict guide, // I
       size_t end_convol = i + radius;
       end_convol = (end_convol < height) ? end_convol : height - 1;
       const float num_elem = 1.0f / ((float)end_convol - (float)begin_convol + 1.0f);
-      float tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
+      double tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
 
 #ifdef _OPENMP
 #pragma omp simd reduction(+:tmp) aligned(tmp:16) aligned(guide, mask, guide_x_mask, guide_x_guide:64)
@@ -235,7 +235,7 @@ static inline void variance_analyse(const float *const restrict guide, // I
   // Convolve box average along rows and output result
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ab, temp, width, height, radius, feathering) \
+  dt_omp_firstprivate(ab, temp, width, height, radius, feathering, mask) \
   schedule(simd:static) collapse(2)
 #endif
   for(size_t i = 0; i < height; i++)
@@ -265,8 +265,12 @@ static inline void variance_analyse(const float *const restrict guide, // I
         tmp[c] *= num_elem;
 
       const size_t index = (i * width + j) * 2;
-      const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + feathering, 1e-15f); // avoid division by 0.
+      const size_t idx = (i * width + j);
+      //const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + mask[idx] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
+      const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + tmp[0] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
       const float a = (tmp[3] - tmp[0] * tmp[1]) / d;
+      // const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + feathering, 1e-15f); // avoid division by 0.
+      // const float a = (tmp[3] - tmp[0] * tmp[1]) / d;
       const float b = tmp[1] - a * tmp[0];
       const float ab_temp[2] DT_ALIGNED_PIXEL = { a, b };
 
@@ -376,7 +380,6 @@ static inline void box_average(float *const restrict in,
   if(temp != NULL) dt_free_align(temp);
 }
 
-
 __DT_CLONE_TARGETS__
 static inline void apply_linear_blending(float *const restrict image,
                                          const float *const restrict ab,
@@ -457,6 +460,100 @@ schedule(simd:static) aligned(image, out:64)
   }
 }
 
+static void interpolate_with_affinity(float *const restrict ds_ab, float *const restrict ds_image,
+                              const size_t ds_width, const size_t ds_height, float *const restrict ab,
+                              float *const restrict image, const size_t width, const size_t height)
+{
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+dt_omp_firstprivate(ds_ab, ds_image, ds_width, ds_height, ab, image, width, height) \
+schedule(static)
+#endif
+  for(int j = 0; j < height; j++)
+  {
+    for(int i = 0; i < width; i++)
+    {
+      // find affinity using ds_image and image
+      float current = image[j * width + i];
+      int j_ds0 = MIN(j >> 2, ds_height - 1);
+      int i_ds0 = MIN(i >> 2, ds_width - 1);
+      int j_ds1, i_ds1, j_ds2, i_ds2, j_ds3, i_ds3;
+      if(((j & 1) == 0) && ((i & 1) == 0))
+      {
+        // top left corner
+        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds1 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
+        j_ds2 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
+        i_ds2 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
+        j_ds3 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
+        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+      }
+      if(((j & 1) == 0) && ((i & 1) == 1))
+      {
+        // top right corner
+        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds1 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
+        j_ds2 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
+        i_ds2 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
+        j_ds3 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
+        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+      }
+      if(((j & 1) == 1) && ((i & 1) == 0))
+      {
+        // bottom left corner
+        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds1 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
+        j_ds2 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
+        i_ds2 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
+        j_ds3 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
+        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+      }
+      if(((j & 1) == 1) && ((i & 1) == 1))
+      {
+        // bottom right corner
+        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds1 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
+        j_ds2 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
+        i_ds2 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
+        j_ds3 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
+        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+      }
+      float value_ds0 = ds_image[j_ds0 * ds_width + i_ds0];
+      float value_ds1 = ds_image[j_ds1 * ds_width + i_ds1];
+      float value_ds2 = ds_image[j_ds2 * ds_width + i_ds2];
+      float value_ds3 = ds_image[j_ds3 * ds_width + i_ds3];
+      // find affinity
+      float min_diff = fabs(current - value_ds0);
+      int j_chosen = j_ds0;
+      int i_chosen = i_ds0;
+      float diff_ds1 = fabs(current - value_ds1);
+      if(diff_ds1 < min_diff)
+      {
+        min_diff = diff_ds1;
+        j_chosen = j_ds1;
+        i_chosen = i_ds1;
+      }
+      float diff_ds2 = fabs(current - value_ds2);
+      if(diff_ds2 < min_diff)
+      {
+        min_diff = diff_ds2;
+        j_chosen = j_ds2;
+        i_chosen = i_ds2;
+      }
+      float diff_ds3 = fabs(current - value_ds3);
+      if(diff_ds3 < min_diff)
+      {
+        min_diff = diff_ds3;
+        j_chosen = j_ds3;
+        i_chosen = i_ds3;
+      }
+      ab[(j * width + i) * 2] = ds_ab[(j_chosen * ds_width + i_chosen) * 2];
+      ab[(j * width + i) * 2 + 1] = ds_ab[(j_chosen * ds_width + i_chosen) * 2 + 1];
+    }
+  }
+}
+
+
 
 __DT_CLONE_TARGETS__
 static inline void fast_surface_blur(float *const restrict image,
@@ -503,7 +600,7 @@ static inline void fast_surface_blur(float *const restrict image,
     variance_analyse(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_radius, feathering);
 
     // Compute the patch-wise average of parameters a and b
-    box_average(ds_ab, ds_width, ds_height, 2, ds_radius);
+    // box_average(ds_ab, ds_width, ds_height, 2, ds_radius);
 
     if(i != iterations - 1)
     {
@@ -513,7 +610,8 @@ static inline void fast_surface_blur(float *const restrict image,
   }
 
   // Upsample the blending parameters a and b
-  interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
+  //interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
+  interpolate_with_affinity(ds_ab, ds_image, ds_width, ds_height, ab, image, width, height);
 
   // Finally, blend the guided image
   if(filter == DT_GF_BLENDING_LINEAR)
