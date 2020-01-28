@@ -24,6 +24,7 @@
 #include <time.h>
 
 #include "common/darktable.h"
+#include "common/bilateral.h"
 
 /** Note :
  * we use finite-math-only and fast-math because divisions by zero are manually avoided in the code
@@ -159,6 +160,118 @@ static inline void interpolate_bilinear(const float *const restrict in, const si
   }
 }
 
+static inline void box_average(float *const restrict in,
+                               const size_t width, const size_t height, const size_t ch,
+                               const int radius);
+
+__DT_CLONE_TARGETS__
+static inline void variance_and_avg(const float *const restrict in,
+                                   float *const restrict avg,
+                                   float *const restrict var,
+                                   const size_t width, const size_t height,
+                                   const int radius)
+{
+ const size_t Ndim = width * height;
+ const size_t Ndimch = width * height * 4;
+
+ float *const restrict temp = dt_alloc_sse_ps(Ndimch); // array of structs { { mean_I, mean_p, corr_I, corr_Ip } }
+ float *const restrict guide_x_mask = dt_alloc_sse_ps(Ndim);
+ float *const restrict guide_x_guide = dt_alloc_sse_ps(Ndim);
+
+ // Pre-multiply in with itself
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+ dt_omp_firstprivate(in, guide_x_mask, guide_x_guide, Ndim, radius) \
+ schedule(simd:static) aligned(in, guide_x_mask, guide_x_guide:64)
+#endif
+ for(size_t k = 0; k < Ndim; k++)
+ {
+   guide_x_mask[k] = in[k] * in[k];
+   guide_x_guide[k] = in[k] * in[k];
+ }
+
+ // Convolve box average along columns
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+ dt_omp_firstprivate(in, temp, guide_x_mask, guide_x_guide, width, height, radius) \
+ schedule(simd:static) collapse(2)
+#endif
+ for(size_t i = 0; i < height; i++)
+ {
+   for(size_t j = 0; j < width; j++)
+   {
+     const size_t begin_convol = (i < radius) ? 0 : i - radius;
+     size_t end_convol = i + radius;
+     end_convol = (end_convol < height) ? end_convol : height - 1;
+     const float num_elem = 1.0f / ((float)end_convol - (float)begin_convol + 1.0f);
+     double tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
+
+#ifdef _OPENMP
+#pragma omp simd reduction(+:tmp) aligned(tmp:16) aligned(in, guide_x_mask, guide_x_guide:64)
+#endif
+     for(size_t c = begin_convol; c <= end_convol; c++)
+     {
+       const size_t index = c * width + j;
+       tmp[0] += in[index];
+       tmp[1] += in[index];
+       tmp[2] += guide_x_guide[index];
+       tmp[3] += guide_x_mask[index];
+     }
+
+     const size_t index = (i * width + j) * 4;
+
+#ifdef _OPENMP
+#pragma omp simd aligned(tmp:16) aligned(temp:64)
+#endif
+     for(size_t c = 0; c < 4; c++)
+       temp[index + c] = tmp[c] * num_elem;
+   }
+ }
+
+ if(guide_x_guide != NULL) dt_free_align(guide_x_guide);
+ if(guide_x_mask != NULL) dt_free_align(guide_x_mask);
+
+ // Convolve box average along rows and output result
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+ dt_omp_firstprivate(var, avg, temp, width, height, radius) \
+ schedule(simd:static) collapse(2)
+#endif
+ for(size_t i = 0; i < height; i++)
+ {
+   for(size_t j = 0; j < width; j++)
+   {
+     const size_t begin_convol = (j < radius) ? 0 : j - radius;
+     size_t end_convol = j + radius;
+     end_convol = (end_convol < width) ? end_convol : width - 1;
+     const float num_elem = 1.0f / ((float)end_convol - (float)begin_convol + 1.0f);
+     float tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
+
+     for(size_t c = begin_convol; c <= end_convol; c++)
+     {
+       const size_t index = (i * width + c) * 4;
+#ifdef _OPENMP
+#pragma omp simd aligned(temp:64) aligned(tmp:16) reduction(+:tmp)
+#endif
+       for(size_t k = 0; k < 4; ++k)
+         tmp[k] += temp[index + k];
+     }
+
+#ifdef _OPENMP
+#pragma omp simd aligned(tmp:16) reduction(*:tmp)
+#endif
+     for(size_t c = 0; c < 4; c++)
+       tmp[c] *= num_elem;
+
+     const size_t idx = (i * width + j);
+     avg[idx] = tmp[0];
+     var[idx] = (tmp[2] - tmp[0] * tmp[0]);
+   }
+ }
+
+ if(temp != NULL) dt_free_align(temp);
+}
+
 
 __DT_CLONE_TARGETS__
 static inline void variance_analyse(const float *const restrict guide, // I
@@ -171,6 +284,20 @@ static inline void variance_analyse(const float *const restrict guide, // I
   // then get the variance of the guide and covariance with its mask
   // output a and b, the linear blending params
   // p, the mask is the quantised guide I
+  float *const restrict avg0 = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
+  memcpy(avg0, guide, width * height * sizeof(float));
+  box_average(avg0, width, height, 1, 1);
+  float *const restrict avg1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
+  memcpy(avg1, guide, width * height * sizeof(float));
+  box_average(avg1, width, height, 1, 3);
+  float *const restrict avg2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
+  memcpy(avg2, guide, width * height * sizeof(float));
+  box_average(avg2, width, height, 1, 8);
+
+  //
+  // float *const restrict local_avg = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
+  // float *const restrict local_var = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
+  // variance_and_avg(guide_blurred, local_avg, local_var, width, height, 3);
 
   const size_t Ndim = width * height;
   const size_t Ndimch = width * height * 4;
@@ -235,7 +362,7 @@ static inline void variance_analyse(const float *const restrict guide, // I
   // Convolve box average along rows and output result
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ab, temp, width, height, radius, feathering, mask) \
+  dt_omp_firstprivate(ab, temp, width, height, radius, feathering, mask, avg0, avg1, avg2) \
   schedule(simd:static) collapse(2)
 #endif
   for(size_t i = 0; i < height; i++)
@@ -266,11 +393,12 @@ static inline void variance_analyse(const float *const restrict guide, // I
 
       const size_t index = (i * width + j) * 2;
       const size_t idx = (i * width + j);
-      //const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + tmp[0] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
-      const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + mask[idx] * mask[idx] * feathering, 1e-15f); // avoid division by 0.
+      float var = (tmp[2] - tmp[0] * tmp[0]);
+      // construct mean as the average of several means of different radius
+      float mean = 0.20f * (mask[idx] + avg0[idx] + avg1[idx] + avg2[idx] + tmp[0]);
+      const float d = fmaxf(var + mean * mean * feathering, 1e-15f); // avoid division by 0.
+      //const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + (0.9f * mask[idx] * mask[idx] + 0.1f * tmp[0] * tmp[0]) * feathering, 1e-15f); // avoid division by 0.
       const float a = (tmp[3] - tmp[0] * tmp[1]) / d;
-      // const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + feathering, 1e-15f); // avoid division by 0.
-      // const float a = (tmp[3] - tmp[0] * tmp[1]) / d;
       const float b = tmp[1] - a * tmp[0];
       const float ab_temp[2] DT_ALIGNED_PIXEL = { a, b };
 
@@ -281,6 +409,10 @@ static inline void variance_analyse(const float *const restrict guide, // I
         ab[index + c] = ab_temp[c];
     }
   }
+
+  dt_free_align(avg0);
+  dt_free_align(avg1);
+  dt_free_align(avg2);
 
   if(temp != NULL) dt_free_align(temp);
 }
@@ -602,14 +734,14 @@ static inline void fast_surface_blur(float *const restrict image,
     // Compute the patch-wise average of parameters a and b
     float *const restrict ds_ab_blurred = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
     memcpy(ds_ab_blurred, ds_ab, num_elem_ds * 2 * sizeof(float));
-    box_average(ds_ab_blurred, ds_width, ds_height, 2, ds_radius);
-    for(int j = 0; j < num_elem_ds * 2; j+=2)
-    {
-      float weight_blur = 0.3f;
-      ds_ab[j] = 1.0f - powf(1.0f - ds_ab_blurred[j], weight_blur) * powf(1.0f - ds_ab[j], 1.0f - weight_blur);
-      weight_blur = 0.7f;
-      ds_ab[j+1] = weight_blur * ds_ab_blurred[j+1] + (1.0f - weight_blur) * ds_ab[j+1];
-    }
+    // box_average(ds_ab_blurred, ds_width, ds_height, 2, 4);
+    // for(int j = 0; j < num_elem_ds * 2; j+=2)
+    // {
+    //   float weight_blur = 0.3f;
+    //   ds_ab[j] = 1.0f - powf(1.0f - ds_ab_blurred[j], weight_blur) * powf(1.0f - ds_ab[j], 1.0f - weight_blur);
+    //   weight_blur = 0.7f;
+    //   ds_ab[j+1] = weight_blur * ds_ab_blurred[j+1] + (1.0f - weight_blur) * ds_ab[j+1];
+    // }
     dt_free_align(ds_ab_blurred);
 
     if(i != iterations - 1)
