@@ -607,8 +607,8 @@ schedule(static)
     {
       // find affinity using ds_image and image
       float current = image[j * width + i];
-      int j_ds0 = MIN(j >> 2, ds_height - 1);
-      int i_ds0 = MIN(i >> 2, ds_width - 1);
+      int j_ds0 = MIN(j >> 1, ds_height - 1);
+      int i_ds0 = MIN(i >> 1, ds_width - 1);
       int j_ds1, i_ds1, j_ds2, i_ds2, j_ds3, i_ds3;
       if(((j & 1) == 0) && ((i & 1) == 0))
       {
@@ -655,32 +655,31 @@ schedule(static)
       float value_ds2 = ds_image[j_ds2 * ds_width + i_ds2];
       float value_ds3 = ds_image[j_ds3 * ds_width + i_ds3];
       // find affinity
-      float min_diff = fabs(current - value_ds0);
-      int j_chosen = j_ds0;
-      int i_chosen = i_ds0;
-      float diff_ds1 = fabs(current - value_ds1);
-      if(diff_ds1 < min_diff)
-      {
-        min_diff = diff_ds1;
-        j_chosen = j_ds1;
-        i_chosen = i_ds1;
-      }
-      float diff_ds2 = fabs(current - value_ds2);
-      if(diff_ds2 < min_diff)
-      {
-        min_diff = diff_ds2;
-        j_chosen = j_ds2;
-        i_chosen = i_ds2;
-      }
-      float diff_ds3 = fabs(current - value_ds3);
-      if(diff_ds3 < min_diff)
-      {
-        min_diff = diff_ds3;
-        j_chosen = j_ds3;
-        i_chosen = i_ds3;
-      }
-      ab[(j * width + i) * 2] = ds_ab[(j_chosen * ds_width + i_chosen) * 2];
-      ab[(j * width + i) * 2 + 1] = ds_ab[(j_chosen * ds_width + i_chosen) * 2 + 1];
+      float diff_ds0 = current / value_ds0;
+      float diff_ds1 = current / value_ds1;
+      float diff_ds2 = current / value_ds2;
+      float diff_ds3 = current / value_ds3;
+      if(diff_ds0 < 1.0f) diff_ds0 = 1.0f / diff_ds0;
+      if(diff_ds1 < 1.0f) diff_ds1 = 1.0f / diff_ds1;
+      if(diff_ds2 < 1.0f) diff_ds2 = 1.0f / diff_ds2;
+      if(diff_ds3 < 1.0f) diff_ds3 = 1.0f / diff_ds3;
+      float weight_ds0 = 1.0f / (diff_ds0 - 0.9999999f);
+      float weight_ds1 = 1.0f / (diff_ds1 - 0.9999999f);
+      float weight_ds2 = 1.0f / (diff_ds2 - 0.9999999f);
+      float weight_ds3 = 1.0f / (diff_ds3 - 0.9999999f);
+      float sum_weights = weight_ds0 + weight_ds1 + weight_ds2 + weight_ds3;
+      float a_ds0 = ds_ab[(j_ds0 * ds_width + i_ds0) * 2];
+      float a_ds1 = ds_ab[(j_ds1 * ds_width + i_ds1) * 2];
+      float a_ds2 = ds_ab[(j_ds2 * ds_width + i_ds2) * 2];
+      float a_ds3 = ds_ab[(j_ds3 * ds_width + i_ds3) * 2];
+      float b_ds0 = ds_ab[(j_ds0 * ds_width + i_ds0) * 2 + 1];
+      float b_ds1 = ds_ab[(j_ds1 * ds_width + i_ds1) * 2 + 1];
+      float b_ds2 = ds_ab[(j_ds2 * ds_width + i_ds2) * 2 + 1];
+      float b_ds3 = ds_ab[(j_ds3 * ds_width + i_ds3) * 2 + 1];
+      ab[(j * width + i) * 2] = (weight_ds0 * a_ds0 + weight_ds1 * a_ds1
+                                + weight_ds2 * a_ds2 + weight_ds3 * a_ds3) / sum_weights;
+      ab[(j * width + i) * 2 + 1] = (weight_ds0 * b_ds0 + weight_ds1 * b_ds1
+                                    + weight_ds2 * b_ds2 + weight_ds3 * b_ds3) / sum_weights;
     }
   }
 }
@@ -701,18 +700,24 @@ static inline void fast_surface_blur(float *const restrict image,
   const float scaling = 4.0f;
   int ds_radius = (radius < 4) ? 1 : radius / scaling;
 
-  const size_t ds_height = height / scaling;
-  const size_t ds_width = width / scaling;
+  const size_t ds_height = height / scaling * 2.0f;//FIXME ugly hack
+  const size_t ds_width = width / scaling * 2.0f;
+  const size_t ds_ds_height = height / scaling;
+  const size_t ds_ds_width = width / scaling;
 
   const size_t num_elem_ds = ds_width * ds_height;
+  const size_t num_elem_ds_ds = ds_ds_width * ds_ds_height;
   const size_t num_elem = width * height;
 
   float *const restrict ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
+  float *const restrict ds_ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds_ds));
+  float *const restrict ds_ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds_ds));
+  float *const restrict ds_ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds_ds * 2));
   float *const restrict ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem * 2));
 
-  if(!ds_image || !ds_mask || !ds_ab || !ab)
+  if(!ds_image || !ds_mask || !ds_ab || !ab || !ds_ds_image || !ds_ds_mask || !ds_ds_ab)
   {
     dt_control_log(_("fast guided filter failed to allocate memory, check your RAM settings"));
     goto clean;
@@ -720,39 +725,41 @@ static inline void fast_surface_blur(float *const restrict image,
 
   // Downsample the image for speed-up
   interpolate_bilinear(image, width, height, ds_image, ds_width, ds_height, 1);
+  interpolate_bilinear(ds_image, ds_width, ds_height, ds_ds_image, ds_ds_width, ds_ds_height, 1);
 
   // Iterations of filter models the diffusion, sort of
   for(int i = 0; i < iterations; ++i)
   {
     // (Re)build the mask from the quantized image to help guiding
-    quantize(ds_image, ds_mask, ds_width * ds_height, quantization, quantize_min, quantize_max);
+    quantize(ds_ds_image, ds_ds_mask, ds_ds_width * ds_ds_height, quantization, quantize_min, quantize_max);
 
     // Perform the patch-wise variance analyse to get
     // the a and b parameters for the linear blending s.t. mask = a * I + b
-    variance_analyse(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_radius, feathering);
+    variance_analyse(ds_ds_mask, ds_ds_image, ds_ds_ab, ds_ds_width, ds_ds_height, ds_radius, feathering);
 
     // Compute the patch-wise average of parameters a and b
-    float *const restrict ds_ab_blurred = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
-    memcpy(ds_ab_blurred, ds_ab, num_elem_ds * 2 * sizeof(float));
-    // box_average(ds_ab_blurred, ds_width, ds_height, 2, 4);
-    // for(int j = 0; j < num_elem_ds * 2; j+=2)
+    float *const restrict ds_ds_ab_blurred = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds_ds * 2));
+    memcpy(ds_ds_ab_blurred, ds_ds_ab, num_elem_ds_ds * 2 * sizeof(float));
+    // box_average(ds_ds_ab_blurred, ds_ds_width, ds_ds_height, 2, 4);
+    // for(int j = 0; j < num_elem_ds_ds * 2; j+=2)
     // {
     //   float weight_blur = 0.3f;
-    //   ds_ab[j] = 1.0f - powf(1.0f - ds_ab_blurred[j], weight_blur) * powf(1.0f - ds_ab[j], 1.0f - weight_blur);
+    //   ds_ds_ab[j] = 1.0f - powf(1.0f - ds_ds_ab_blurred[j], weight_blur) * powf(1.0f - ds_ds_ab[j], 1.0f - weight_blur);
     //   weight_blur = 0.7f;
-    //   ds_ab[j+1] = weight_blur * ds_ab_blurred[j+1] + (1.0f - weight_blur) * ds_ab[j+1];
+    //   ds_ds_ab[j+1] = weight_blur * ds_ds_ab_blurred[j+1] + (1.0f - weight_blur) * ds_ds_ab[j+1];
     // }
-    dt_free_align(ds_ab_blurred);
+    dt_free_align(ds_ds_ab_blurred);
 
     if(i != iterations - 1)
     {
       // Process the intermediate filtered image
-      apply_linear_blending(ds_image, ds_ab, num_elem_ds);
+      apply_linear_blending(ds_ds_image, ds_ds_ab, num_elem_ds_ds);
     }
   }
 
   // Upsample the blending parameters a and b
   //interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
+  interpolate_with_affinity(ds_ds_ab, ds_ds_image, ds_ds_width, ds_ds_height, ds_ab, ds_image, ds_width, ds_height);
   interpolate_with_affinity(ds_ab, ds_image, ds_width, ds_height, ab, image, width, height);
 
   // Finally, blend the guided image
@@ -766,4 +773,7 @@ clean:
   if(ds_ab) dt_free_align(ds_ab);
   if(ds_mask) dt_free_align(ds_mask);
   if(ds_image) dt_free_align(ds_image);
+  if(ds_ds_ab) dt_free_align(ds_ds_ab);
+  if(ds_ds_mask) dt_free_align(ds_ds_mask);
+  if(ds_ds_image) dt_free_align(ds_ds_image);
 }
