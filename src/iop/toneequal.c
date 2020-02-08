@@ -702,9 +702,9 @@ static inline float pixel_correction(const float exposure,
 __DT_CLONE_TARGETS__
 static inline void compute_luminance_mask(const float *const restrict in, float *const restrict luminance,
                                           const size_t width, const size_t height, const size_t ch,
-                                          const dt_iop_toneequalizer_data_t *const d)
+                                          const dt_iop_toneequalizer_data_t *const d, const float scale)
 {
-  const float sigma = powf(2.0, d->gaussian_sigma * 5.0f) * 8.0f;
+  const float sigma = scale * powf(2.0, d->gaussian_sigma * 5.0f) * 8.0f;
   switch(d->details)
   {
     case(DT_TONEEQ_NONE):
@@ -843,6 +843,7 @@ void toneeq_process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const dt_iop_toneequalizer_data_t *const d = (const dt_iop_toneequalizer_data_t *const)piece->data;
   dt_iop_toneequalizer_gui_data_t *const g = (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
 
+  const float scale = fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f);
   const float *const restrict in = dt_check_sse_aligned((float *const)ivoid);
   float *const restrict out = dt_check_sse_aligned((float *const)ovoid);
   float *restrict luminance = NULL;
@@ -970,7 +971,7 @@ void toneeq_process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
       if(hash != saved_hash || !luminance_valid)
       {
         /* compute only if upstream pipe state has changed */
-        compute_luminance_mask(in, luminance, width, height, ch, d);
+        compute_luminance_mask(in, luminance, width, height, ch, d, scale);
         hash_set_get(&hash, &g->ui_preview_hash, &g->lock);
       }
     }
@@ -990,7 +991,7 @@ void toneeq_process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
         dt_pthread_mutex_lock(&g->lock);
         g->thumb_preview_hash = hash;
         g->histogram_valid = FALSE;
-        compute_luminance_mask(in, luminance, width, height, ch, d);
+        compute_luminance_mask(in, luminance, width, height, ch, d, scale);
         g->luminance_valid = TRUE;
         dt_pthread_mutex_unlock(&g->lock);
       }
@@ -998,13 +999,13 @@ void toneeq_process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
 
     else // make it dummy-proof
     {
-      compute_luminance_mask(in, luminance, width, height, ch, d);
+      compute_luminance_mask(in, luminance, width, height, ch, d, scale);
     }
   }
   else
   {
     // no caching path : compute no matter what
-    compute_luminance_mask(in, luminance, width, height, ch, d);
+    compute_luminance_mask(in, luminance, width, height, ch, d, scale);
   }
 
   // Display output
