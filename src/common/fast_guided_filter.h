@@ -598,7 +598,8 @@ schedule(static)
       float current = image[j * width + i];
       int j_ds0 = MIN(j >> 1, ds_height - 1);
       int i_ds0 = MIN(i >> 1, ds_width - 1);
-      int j_ds1, i_ds1, j_ds2, i_ds2, j_ds3, i_ds3;
+      int j_ds1, i_ds1, j_ds2, i_ds2, j_ds3, i_ds3, j_ds4, i_ds4,
+          j_ds5, i_ds5, j_ds6, i_ds6, j_ds7, i_ds7, j_ds8, i_ds8;
       if(((j & 1) == 0) && ((i & 1) == 0))
       {
         // top left corner
@@ -608,8 +609,18 @@ schedule(static)
         i_ds2 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
         j_ds3 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
         i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds4 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
+        j_ds5 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
+        i_ds5 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
+        j_ds6 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
+        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds7 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
+        i_ds7 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
+        j_ds8 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
+        i_ds8 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
       }
-      if(((j & 1) == 0) && ((i & 1) == 1))
+      else if(((j & 1) == 0) && ((i & 1) == 1))
       {
         // top right corner
         j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
@@ -618,8 +629,18 @@ schedule(static)
         i_ds2 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
         j_ds3 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
         i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds4 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
+        j_ds5 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
+        i_ds5 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
+        j_ds6 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
+        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds7 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
+        i_ds7 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
+        j_ds8 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
+        i_ds8 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
       }
-      if(((j & 1) == 1) && ((i & 1) == 0))
+      else if(((j & 1) == 1) && ((i & 1) == 0))
       {
         // bottom left corner
         j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
@@ -628,8 +649,18 @@ schedule(static)
         i_ds2 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
         j_ds3 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
         i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds4 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
+        j_ds5 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
+        i_ds5 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
+        j_ds6 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
+        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds7 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
+        i_ds7 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
+        j_ds8 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
+        i_ds8 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
       }
-      if(((j & 1) == 1) && ((i & 1) == 1))
+      else //((j & 1) == 1) && ((i & 1) == 1)
       {
         // bottom right corner
         j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
@@ -638,37 +669,85 @@ schedule(static)
         i_ds2 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
         j_ds3 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
         i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
+        i_ds4 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
+        j_ds5 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
+        i_ds5 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
+        j_ds6 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
+        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
+        j_ds7 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
+        i_ds7 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
+        j_ds8 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
+        i_ds8 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
       }
       float value_ds0 = ds_image[j_ds0 * ds_width + i_ds0];
       float value_ds1 = ds_image[j_ds1 * ds_width + i_ds1];
       float value_ds2 = ds_image[j_ds2 * ds_width + i_ds2];
       float value_ds3 = ds_image[j_ds3 * ds_width + i_ds3];
+      float value_ds4 = ds_image[j_ds4 * ds_width + i_ds4];
+      float value_ds5 = ds_image[j_ds5 * ds_width + i_ds5];
+      float value_ds6 = ds_image[j_ds6 * ds_width + i_ds6];
+      float value_ds7 = ds_image[j_ds7 * ds_width + i_ds7];
+      float value_ds8 = ds_image[j_ds8 * ds_width + i_ds8];
       // find affinity
       float diff_ds0 = current / value_ds0;
       float diff_ds1 = current / value_ds1;
       float diff_ds2 = current / value_ds2;
       float diff_ds3 = current / value_ds3;
+      float diff_ds4 = current / value_ds4;
+      float diff_ds5 = current / value_ds5;
+      float diff_ds6 = current / value_ds6;
+      float diff_ds7 = current / value_ds7;
+      float diff_ds8 = current / value_ds8;
       if(diff_ds0 < 1.0f) diff_ds0 = 1.0f / diff_ds0;
       if(diff_ds1 < 1.0f) diff_ds1 = 1.0f / diff_ds1;
       if(diff_ds2 < 1.0f) diff_ds2 = 1.0f / diff_ds2;
       if(diff_ds3 < 1.0f) diff_ds3 = 1.0f / diff_ds3;
+      if(diff_ds4 < 1.0f) diff_ds4 = 1.0f / diff_ds4;
+      if(diff_ds5 < 1.0f) diff_ds5 = 1.0f / diff_ds5;
+      if(diff_ds6 < 1.0f) diff_ds6 = 1.0f / diff_ds6;
+      if(diff_ds7 < 1.0f) diff_ds7 = 1.0f / diff_ds7;
+      if(diff_ds8 < 1.0f) diff_ds8 = 1.0f / diff_ds8;
       float weight_ds0 = 1.0f / (diff_ds0 - 0.9999999f);
       float weight_ds1 = 1.0f / (diff_ds1 - 0.9999999f);
       float weight_ds2 = 1.0f / (diff_ds2 - 0.9999999f);
       float weight_ds3 = 1.0f / (diff_ds3 - 0.9999999f);
-      float sum_weights = weight_ds0 + weight_ds1 + weight_ds2 + weight_ds3;
+      float weight_ds4 = 1.0f / (diff_ds4 - 0.9999999f);
+      float weight_ds5 = 1.0f / (diff_ds5 - 0.9999999f);
+      float weight_ds6 = 1.0f / (diff_ds6 - 0.9999999f);
+      float weight_ds7 = 1.0f / (diff_ds7 - 0.9999999f);
+      float weight_ds8 = 1.0f / (diff_ds8 - 0.9999999f);
+      float sum_weights = weight_ds0 + weight_ds1 + weight_ds2 + weight_ds3
+                        + weight_ds4 + weight_ds5 + weight_ds6 + weight_ds7
+                        + weight_ds8;
       float a_ds0 = ds_ab[(j_ds0 * ds_width + i_ds0) * 2];
       float a_ds1 = ds_ab[(j_ds1 * ds_width + i_ds1) * 2];
       float a_ds2 = ds_ab[(j_ds2 * ds_width + i_ds2) * 2];
       float a_ds3 = ds_ab[(j_ds3 * ds_width + i_ds3) * 2];
+      float a_ds4 = ds_ab[(j_ds4 * ds_width + i_ds4) * 2];
+      float a_ds5 = ds_ab[(j_ds5 * ds_width + i_ds5) * 2];
+      float a_ds6 = ds_ab[(j_ds6 * ds_width + i_ds6) * 2];
+      float a_ds7 = ds_ab[(j_ds7 * ds_width + i_ds7) * 2];
+      float a_ds8 = ds_ab[(j_ds8 * ds_width + i_ds8) * 2];
       float b_ds0 = ds_ab[(j_ds0 * ds_width + i_ds0) * 2 + 1];
       float b_ds1 = ds_ab[(j_ds1 * ds_width + i_ds1) * 2 + 1];
       float b_ds2 = ds_ab[(j_ds2 * ds_width + i_ds2) * 2 + 1];
       float b_ds3 = ds_ab[(j_ds3 * ds_width + i_ds3) * 2 + 1];
+      float b_ds4 = ds_ab[(j_ds4 * ds_width + i_ds4) * 2 + 1];
+      float b_ds5 = ds_ab[(j_ds5 * ds_width + i_ds5) * 2 + 1];
+      float b_ds6 = ds_ab[(j_ds6 * ds_width + i_ds6) * 2 + 1];
+      float b_ds7 = ds_ab[(j_ds7 * ds_width + i_ds7) * 2 + 1];
+      float b_ds8 = ds_ab[(j_ds8 * ds_width + i_ds8) * 2 + 1];
       ab[(j * width + i) * 2] = (weight_ds0 * a_ds0 + weight_ds1 * a_ds1
-                                + weight_ds2 * a_ds2 + weight_ds3 * a_ds3) / sum_weights;
+                                + weight_ds2 * a_ds2 + weight_ds3 * a_ds3
+                                + weight_ds4 * a_ds4 + weight_ds5 * a_ds5
+                                + weight_ds6 * a_ds6 + weight_ds7 * a_ds7
+                                + weight_ds8 * a_ds8) / sum_weights;
       ab[(j * width + i) * 2 + 1] = (weight_ds0 * b_ds0 + weight_ds1 * b_ds1
-                                    + weight_ds2 * b_ds2 + weight_ds3 * b_ds3) / sum_weights;
+                                    + weight_ds2 * b_ds2 + weight_ds3 * b_ds3
+                                    + weight_ds4 * b_ds4 + weight_ds5 * b_ds5
+                                    + weight_ds6 * b_ds6 + weight_ds7 * b_ds7
+                                    + weight_ds8 * b_ds8) / sum_weights;
     }
   }
 }
