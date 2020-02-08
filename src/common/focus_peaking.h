@@ -111,7 +111,7 @@ schedule(static) collapse(2) aligned(image, luma:64)
     }
 
   // Prefilter noise
-  fast_surface_blur(luma, buf_width, buf_height, 12, 0.00001f, 4, DT_GF_BLENDING_LINEAR, 1, 0.0f, exp2f(-8.0f), 1.0f);
+  fast_surface_blur(luma, buf_width, buf_height, 12, 0.00001f, 4, DT_GF_BLENDING_LINEAR, 1, 0.0f, exp2f(-8.0f), 1.0f, 1.0f);
 
   // Compute the gradients magnitudes
   float *const restrict luma_ds =  dt_alloc_sse_ps(buf_width * buf_height);
@@ -176,7 +176,7 @@ schedule(static) collapse(2) aligned(focus_peaking, luma_ds:64) reduction(+:sigm
   const float two_sigma = TV_sum + 2.5f * sigma;
 
   // Postfilter to connect isolated dots and draw lines
-  fast_surface_blur(luma_ds, buf_width, buf_height, 12, 0.00001f, 4, DT_GF_BLENDING_LINEAR, 1, 0.0f, exp2f(-8.0f), 1.0f);
+  fast_surface_blur(luma_ds, buf_width, buf_height, 12, 0.00001f, 4, DT_GF_BLENDING_LINEAR, 1, 0.0f, exp2f(-8.0f), 1.0f, 1.0f);
 
   // Prepare the focus-peaking image overlay
 #ifdef _OPENMP

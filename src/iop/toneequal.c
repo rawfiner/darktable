@@ -164,7 +164,7 @@ typedef enum dt_iop_toneequalizer_filter_t
 typedef struct dt_iop_toneequalizer_params_t
 {
   float noise, ultra_deep_blacks, deep_blacks, blacks, shadows, midtones, highlights, whites, speculars;
-  float blending, smoothing, feathering, quantization, contrast_boost, exposure_boost;
+  float blending, smoothing, feathering, gaussian_sigma, quantization, contrast_boost, exposure_boost;
   dt_iop_toneequalizer_filter_t details;
   dt_iop_luminance_mask_method_t method;
   int iterations;
@@ -174,7 +174,7 @@ typedef struct dt_iop_toneequalizer_params_t
 typedef struct dt_iop_toneequalizer_data_t
 {
   float factors[PIXEL_CHAN] DT_ALIGNED_ARRAY;
-  float blending, feathering, contrast_boost, exposure_boost, quantization, smoothing;
+  float blending, feathering, contrast_boost, gaussian_sigma, exposure_boost, quantization, smoothing;
   float scale;
   int radius;
   int iterations;
@@ -234,7 +234,7 @@ typedef struct dt_iop_toneequalizer_gui_data_t
   dt_iop_color_picker_t color_picker;
   GtkWidget *blending, *smoothing, *quantization;
   GtkWidget *method;
-  GtkWidget *details, *feathering, *contrast_boost, *iterations, *exposure_boost;
+  GtkWidget *details, *feathering, *gaussian_sigma, *contrast_boost, *iterations, *exposure_boost;
   GtkNotebook *notebook;
   GtkWidget *show_luminance_mask;
 
@@ -704,6 +704,7 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
                                           const size_t width, const size_t height, const size_t ch,
                                           const dt_iop_toneequalizer_data_t *const d)
 {
+  const float sigma = powf(2.0, d->gaussian_sigma * 5.0f) * 8.0f;
   switch(d->details)
   {
     case(DT_TONEEQ_NONE):
@@ -718,7 +719,7 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // Still no contrast boost
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost, 0.0f, 1.0f);
       fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
-                    DT_GF_BLENDING_GEOMEAN, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+                    DT_GF_BLENDING_GEOMEAN, d->scale, d->quantization, exp2f(-14.0f), 4.0f, sigma);
       break;
     }
 
@@ -734,7 +735,7 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
       fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
-                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f, sigma);
       break;
     }
 
@@ -1447,6 +1448,8 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pix
   // but the actual regularization params applied in guided filter behaves the other way
   d->feathering = 1.f / (p->feathering);
 
+  d->gaussian_sigma = p->gaussian_sigma;
+
   // UI params are in log2 offsets (EV) : convert to linear factors
   d->contrast_boost = exp2f(p->contrast_boost);
   d->exposure_boost = exp2f(p->exposure_boost);
@@ -1519,6 +1522,7 @@ void init(dt_iop_module_t *module)
                                                                       .details = DT_TONEEQ_GUIDED,
                                                                       .blending = 25.0f,
                                                                       .feathering = 10.0f,
+                                                                      .gaussian_sigma = 0.0f,
                                                                       .contrast_boost = 0.0f,
                                                                       .exposure_boost = 0.0f };
   memcpy(module->params, &tmp, sizeof(dt_iop_toneequalizer_params_t));
@@ -1600,6 +1604,7 @@ void gui_update(struct dt_iop_module_t *self)
   dt_bauhaus_combobox_set(g->details, p->details);
   dt_bauhaus_slider_set_soft(g->blending, p->blending);
   dt_bauhaus_slider_set_soft(g->feathering, p->feathering);
+  dt_bauhaus_slider_set_soft(g->gaussian_sigma, p->gaussian_sigma);
   dt_bauhaus_slider_set_soft(g->smoothing, logf(p->smoothing) / logf(sqrtf(2.0f)) - 1.0f);
   dt_bauhaus_slider_set_soft(g->iterations, p->iterations);
   dt_bauhaus_slider_set_soft(g->quantization, p->quantization);
@@ -1782,6 +1787,20 @@ static void feathering_callback(GtkWidget *slider, gpointer user_data)
   dt_iop_toneequalizer_params_t *p = (dt_iop_toneequalizer_params_t *)self->params;
 
   p->feathering = dt_bauhaus_slider_get(slider);
+  invalidate_luminance_cache(self);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+
+  // Unlock the colour picker so we can display our own custom cursor
+  dt_iop_color_picker_reset(self, TRUE);
+}
+
+static void gaussian_sigma_callback(GtkWidget *slider, gpointer user_data)
+{
+  dt_iop_module_t *self = (dt_iop_module_t *)user_data;
+  if(self->dt->gui->reset) return;
+  dt_iop_toneequalizer_params_t *p = (dt_iop_toneequalizer_params_t *)self->params;
+
+  p->gaussian_sigma = dt_bauhaus_slider_get(slider);
   invalidate_luminance_cache(self);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 
@@ -3363,6 +3382,12 @@ void gui_init(struct dt_iop_module_t *self)
                                                           "but may lead to inaccurate edges taping and halos"), (char *)NULL);
   gtk_box_pack_start(GTK_BOX(page3), g->feathering, FALSE, FALSE, 0);
   g_signal_connect(G_OBJECT(g->feathering), "value-changed", G_CALLBACK(feathering_callback), self);
+
+  g->gaussian_sigma = dt_bauhaus_slider_new_with_range(self, -1., 1., 0.1, 0.0, 2);
+  dt_bauhaus_slider_enable_soft_boundaries(g->gaussian_sigma, -10., 10.);
+  dt_bauhaus_widget_set_label(g->gaussian_sigma, NULL, _("gaussian sigma"));
+  gtk_box_pack_start(GTK_BOX(page3), g->gaussian_sigma, FALSE, FALSE, 0);
+  g_signal_connect(G_OBJECT(g->gaussian_sigma), "value-changed", G_CALLBACK(gaussian_sigma_callback), self);
 
   gtk_box_pack_start(GTK_BOX(page3), dt_ui_section_label_new(_("mask post-processing")), FALSE, FALSE, 0);
 

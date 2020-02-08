@@ -24,7 +24,7 @@
 #include <time.h>
 
 #include "common/darktable.h"
-#include "common/bilateral.h"
+#include "common/gaussian.h"
 
 /** Note :
  * we use finite-math-only and fast-math because divisions by zero are manually avoided in the code
@@ -278,21 +278,14 @@ static inline void variance_analyse(const float *const restrict guide, // I
                                     const float *const restrict mask, //p
                                     float *const restrict ab,
                                     const size_t width, const size_t height,
-                                    const int radius, const float feathering)
+                                    const int radius, const float feathering,
+                                    const float *const restrict exp_blur)
 {
   // Compute a box average (filter) on a grey image over a window of size 2*radius + 1
   // then get the variance of the guide and covariance with its mask
   // output a and b, the linear blending params
   // p, the mask is the quantised guide I
-  float *const restrict avg0 = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
-  memcpy(avg0, guide, width * height * sizeof(float));
-  box_average(avg0, width, height, 1, 1);
-  float *const restrict avg1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
-  memcpy(avg1, guide, width * height * sizeof(float));
-  box_average(avg1, width, height, 1, 3);
-  float *const restrict avg2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
-  memcpy(avg2, guide, width * height * sizeof(float));
-  box_average(avg2, width, height, 1, 8);
+
 
   //
   // float *const restrict local_avg = dt_alloc_sse_ps(dt_round_size_sse(width * height * sizeof(float)));
@@ -362,7 +355,7 @@ static inline void variance_analyse(const float *const restrict guide, // I
   // Convolve box average along rows and output result
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ab, temp, width, height, radius, feathering, mask, avg0, avg1, avg2) \
+  dt_omp_firstprivate(ab, temp, width, height, radius, feathering, mask, exp_blur) \
   schedule(simd:static) collapse(2)
 #endif
   for(size_t i = 0; i < height; i++)
@@ -395,7 +388,7 @@ static inline void variance_analyse(const float *const restrict guide, // I
       const size_t idx = (i * width + j);
       float var = (tmp[2] - tmp[0] * tmp[0]);
       // construct mean as the average of several means of different radius
-      float mean = 0.20f * (mask[idx] + avg0[idx] + avg1[idx] + avg2[idx] + tmp[0]);
+      float mean = exp_blur[idx];
       const float d = fmaxf(var + mean * mean * feathering, 1e-15f); // avoid division by 0.
       //const float d = fmaxf((tmp[2] - tmp[0] * tmp[0]) + (0.9f * mask[idx] * mask[idx] + 0.1f * tmp[0] * tmp[0]) * feathering, 1e-15f); // avoid division by 0.
       const float a = (tmp[3] - tmp[0] * tmp[1]) / d;
@@ -409,10 +402,6 @@ static inline void variance_analyse(const float *const restrict guide, // I
         ab[index + c] = ab_temp[c];
     }
   }
-
-  dt_free_align(avg0);
-  dt_free_align(avg1);
-  dt_free_align(avg2);
 
   if(temp != NULL) dt_free_align(temp);
 }
@@ -691,7 +680,8 @@ static inline void fast_surface_blur(float *const restrict image,
                                       const size_t width, const size_t height,
                                       const int radius, float feathering, const int iterations,
                                       const dt_iop_guided_filter_blending_t filter, const float scale,
-                                      const float quantization, const float quantize_min, const float quantize_max)
+                                      const float quantization, const float quantize_min, const float quantize_max,
+                                      const float sigma)
 {
   // Works in-place on a grey image
 
@@ -709,6 +699,8 @@ static inline void fast_surface_blur(float *const restrict image,
   const size_t num_elem_ds_ds = ds_ds_width * ds_ds_height;
   const size_t num_elem = width * height;
 
+  float *const restrict exp_blur = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict ds_ds_exp_blur = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds_ds));
   float *const restrict ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
@@ -717,15 +709,24 @@ static inline void fast_surface_blur(float *const restrict image,
   float *const restrict ds_ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds_ds * 2));
   float *const restrict ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem * 2));
 
-  if(!ds_image || !ds_mask || !ds_ab || !ab || !ds_ds_image || !ds_ds_mask || !ds_ds_ab)
+  if(!ds_image || !ds_mask || !ds_ab || !ab || !ds_ds_image || !ds_ds_mask || !ds_ds_ab || !exp_blur || !ds_ds_exp_blur)
   {
     dt_control_log(_("fast guided filter failed to allocate memory, check your RAM settings"));
     goto clean;
   }
 
+  //const float sigma = 1.0f;
+  const float min[] = {0.0f};
+  const float max[] = {1.0f};
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, max, min, MAX(sigma, 0.00001f), 0);
+  if(!g) return;
+  dt_gaussian_blur(g, image, exp_blur);
+  dt_gaussian_free(g);
+
   // Downsample the image for speed-up
   interpolate_bilinear(image, width, height, ds_image, ds_width, ds_height, 1);
   interpolate_bilinear(ds_image, ds_width, ds_height, ds_ds_image, ds_ds_width, ds_ds_height, 1);
+  interpolate_bilinear(exp_blur, width, height, ds_ds_exp_blur, ds_ds_width, ds_ds_height, 1);
 
   // Iterations of filter models the diffusion, sort of
   for(int i = 0; i < iterations; ++i)
@@ -735,7 +736,7 @@ static inline void fast_surface_blur(float *const restrict image,
 
     // Perform the patch-wise variance analyse to get
     // the a and b parameters for the linear blending s.t. mask = a * I + b
-    variance_analyse(ds_ds_mask, ds_ds_image, ds_ds_ab, ds_ds_width, ds_ds_height, ds_radius, feathering);
+    variance_analyse(ds_ds_mask, ds_ds_image, ds_ds_ab, ds_ds_width, ds_ds_height, ds_radius, feathering, ds_ds_exp_blur);
 
     // Compute the patch-wise average of parameters a and b
     float *const restrict ds_ds_ab_blurred = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds_ds * 2));
@@ -761,6 +762,7 @@ static inline void fast_surface_blur(float *const restrict image,
   //interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
   interpolate_with_affinity(ds_ds_ab, ds_ds_image, ds_ds_width, ds_ds_height, ds_ab, ds_image, ds_width, ds_height);
   interpolate_with_affinity(ds_ab, ds_image, ds_width, ds_height, ab, image, width, height);
+  //interpolate_bilinear(ds_ds_ab, ds_ds_width, ds_ds_height, ab, width, height, 2);
 
   // Finally, blend the guided image
   if(filter == DT_GF_BLENDING_LINEAR)
@@ -776,4 +778,6 @@ clean:
   if(ds_ds_ab) dt_free_align(ds_ds_ab);
   if(ds_ds_mask) dt_free_align(ds_ds_mask);
   if(ds_ds_image) dt_free_align(ds_ds_image);
+  if(exp_blur) dt_free_align(exp_blur);
+  if(ds_ds_exp_blur) dt_free_align(ds_ds_exp_blur);
 }
