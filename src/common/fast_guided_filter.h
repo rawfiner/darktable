@@ -594,174 +594,124 @@ schedule(static)
   {
     for(int i = 0; i < width; i++)
     {
-      // find affinity using ds_image and image
+      // image and ds_image are used as guides to the interpolation of ab
+      // for each pixel of destination image, we consider the pixel relative
+      // position within the downscaled image:
+      // each pixel of the high res image is one of 4 the pixels of the
+      // high res image that melt into one pixel P of the downscaled image.
+      // one pixel corresponds to the top left of P, one to the top right,
+      // one to the bottom left, and one to the bottom right.
+      // for the interpolation, we look for the pixels of the downscaled image
+      // that are the most similar to the pixel of the high res image.
+      // we only consider the pixels in a neighborhood which is approximately
+      // centered at the position of the high res pixel within the downscaled
+      // image.
+
+      // if this is a pixel from the downscaled image:
+      // _____
+      // |    |
+      // |____|
+      // and this would be the same area of the image, but high res:
+      // _____
+      // |_|_|
+      // |_|_|
+      //
+      // let's say we want to find the value of this pixel:
+      // _____
+      // |X|_|
+      // |_|_|
+      //
+      // as this pixel is at top left of the low resolution pixel, we consider
+      // the following search zone (ie a square slightly at the top and left
+      // of the considered point) within the downscaled image:
+      // _____________________
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |    |X   |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      //
+      // if the pixel is instead at the top right, we consider this one:
+      // _____________________
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |   X|    |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      //
+      // if the pixel is instead at the bottom left:
+      // _____________________
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|____|X___|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      //
+      // if the pixel is instead at the bottom right:
+      // _____________________
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|___X|____|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      // |    |    |    |    |
+      // |____|____|____|____|
+      //
+      // Now that we have the search area, the principle is to find a weight
+      // for each pixel of this area, and to do a weighted mean of their values
+      // to find the interpolated value.
+      //
+      // To find the weight, we exploit the knowledge of image and ds_image.
+      // We compare the value of the pixel in image (which is high res)
+      // with each of the pixels of ds_image that are within the search zone.
+      // We weight the pixels in a way that pixels that are very similar to
+      // the high res pixel get a higher weight that pixels that are not
+      // similar to the high res pixel.
+      //
+      // Once we have the weights, we do the weighted average of ds_ab
+      // values to find the ab values
       float current = image[j * width + i];
       int j_ds0 = MIN(j >> 1, ds_height - 1);
       int i_ds0 = MIN(i >> 1, ds_width - 1);
-      int j_ds1, i_ds1, j_ds2, i_ds2, j_ds3, i_ds3, j_ds4, i_ds4,
-          j_ds5, i_ds5, j_ds6, i_ds6, j_ds7, i_ds7, j_ds8, i_ds8;
-      // if(((j & 1) == 0) && ((i & 1) == 0))
-      // {
-      //   // top left corner
-        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds1 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
-        j_ds2 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
-        i_ds2 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
-        j_ds3 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
-        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds4 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-        j_ds5 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds5 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-        j_ds6 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds7 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
-        i_ds7 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-        j_ds8 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds8 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
-        #if 0
-      }
-      else if(((j & 1) == 0) && ((i & 1) == 1))
+      int i_offset = i & 1;
+      int j_offset = j & 1;
+      int i_min = MIN(MAX(i_ds0 - 2 + i_offset, 0), ds_width - 1);
+      int i_max = MIN(MAX(i_ds0 + 1 + i_offset, 0), ds_width - 1);
+      int j_min = MIN(MAX(j_ds0 - 2 + j_offset, 0), ds_height - 1);
+      int j_max = MIN(MAX(j_ds0 + 1 + j_offset, 0), ds_height - 1);
+      float w = 0.0f;
+      float a = 0.0f;
+      float b = 0.0f;
+      for(int jds = j_min; jds <= j_max; jds++)
       {
-        // top right corner
-        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds1 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-        j_ds2 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
-        i_ds2 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-        j_ds3 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
-        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds4 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
-        j_ds5 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
-        i_ds5 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
-        j_ds6 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
-        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds7 = MIN(MAX(j_ds0 - 1, 0), ds_height - 1);
-        i_ds7 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
-        j_ds8 = MIN(MAX(j_ds0 - 2, 0), ds_height - 1);
-        i_ds8 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
+        for(int ids = i_min; ids <= i_max; ids++)
+        {
+          float value_ds = ds_image[jds * ds_width + ids];
+          // we use the ratio as a measure of difference to get
+          // a difference in exposure
+          float diff_ds = current / value_ds;
+          if(diff_ds < 1.0f) diff_ds = 1.0f / diff_ds;
+          float weight_ds = 1.0f / (diff_ds - 0.9999999f);
+          // square the weight to increase the weight difference
+          // between similar and dissimilar pixels
+          weight_ds *= weight_ds;
+          w += weight_ds;
+          a += ds_ab[(jds * ds_width + ids) * 2] * weight_ds;
+          b += ds_ab[(jds * ds_width + ids) * 2 + 1] * weight_ds;
+        }
       }
-      else if(((j & 1) == 1) && ((i & 1) == 0))
-      {
-        // bottom left corner
-        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds1 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
-        j_ds2 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds2 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
-        j_ds3 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds4 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
-        j_ds5 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
-        i_ds5 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
-        j_ds6 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
-        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds7 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds7 = MIN(MAX(i_ds0 - 2, 0), ds_width - 1);
-        j_ds8 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
-        i_ds8 = MIN(MAX(i_ds0 - 1, 0), ds_width - 1);
-      }
-      else //((j & 1) == 1) && ((i & 1) == 1)
-      {
-        // bottom right corner
-        j_ds1 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds1 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-        j_ds2 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds2 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-        j_ds3 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds3 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds4 = MIN(MAX(j_ds0, 0), ds_height - 1);
-        i_ds4 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
-        j_ds5 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
-        i_ds5 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
-        j_ds6 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
-        i_ds6 = MIN(MAX(i_ds0, 0), ds_width - 1);
-        j_ds7 = MIN(MAX(j_ds0 + 1, 0), ds_height - 1);
-        i_ds7 = MIN(MAX(i_ds0 + 2, 0), ds_width - 1);
-        j_ds8 = MIN(MAX(j_ds0 + 2, 0), ds_height - 1);
-        i_ds8 = MIN(MAX(i_ds0 + 1, 0), ds_width - 1);
-      }
-      #endif
-      float value_ds0 = ds_image[j_ds0 * ds_width + i_ds0];
-      float value_ds1 = ds_image[j_ds1 * ds_width + i_ds1];
-      float value_ds2 = ds_image[j_ds2 * ds_width + i_ds2];
-      float value_ds3 = ds_image[j_ds3 * ds_width + i_ds3];
-      float value_ds4 = ds_image[j_ds4 * ds_width + i_ds4];
-      float value_ds5 = ds_image[j_ds5 * ds_width + i_ds5];
-      float value_ds6 = ds_image[j_ds6 * ds_width + i_ds6];
-      float value_ds7 = ds_image[j_ds7 * ds_width + i_ds7];
-      float value_ds8 = ds_image[j_ds8 * ds_width + i_ds8];
-      // find affinity
-      float diff_ds0 = current / value_ds0;
-      float diff_ds1 = current / value_ds1;
-      float diff_ds2 = current / value_ds2;
-      float diff_ds3 = current / value_ds3;
-      float diff_ds4 = current / value_ds4;
-      float diff_ds5 = current / value_ds5;
-      float diff_ds6 = current / value_ds6;
-      float diff_ds7 = current / value_ds7;
-      float diff_ds8 = current / value_ds8;
-      if(diff_ds0 < 1.0f) diff_ds0 = 1.0f / diff_ds0;
-      if(diff_ds1 < 1.0f) diff_ds1 = 1.0f / diff_ds1;
-      if(diff_ds2 < 1.0f) diff_ds2 = 1.0f / diff_ds2;
-      if(diff_ds3 < 1.0f) diff_ds3 = 1.0f / diff_ds3;
-      if(diff_ds4 < 1.0f) diff_ds4 = 1.0f / diff_ds4;
-      if(diff_ds5 < 1.0f) diff_ds5 = 1.0f / diff_ds5;
-      if(diff_ds6 < 1.0f) diff_ds6 = 1.0f / diff_ds6;
-      if(diff_ds7 < 1.0f) diff_ds7 = 1.0f / diff_ds7;
-      if(diff_ds8 < 1.0f) diff_ds8 = 1.0f / diff_ds8;
-      float weight_ds0 = 1.0f / (diff_ds0 - 0.9999999f);
-      float weight_ds1 = 1.0f / (diff_ds1 - 0.9999999f);
-      float weight_ds2 = 1.0f / (diff_ds2 - 0.9999999f);
-      float weight_ds3 = 1.0f / (diff_ds3 - 0.9999999f);
-      float weight_ds4 = 1.0f / (diff_ds4 - 0.9999999f);
-      float weight_ds5 = 1.0f / (diff_ds5 - 0.9999999f);
-      float weight_ds6 = 1.0f / (diff_ds6 - 0.9999999f);
-      float weight_ds7 = 1.0f / (diff_ds7 - 0.9999999f);
-      float weight_ds8 = 1.0f / (diff_ds8 - 0.9999999f);
-      float sum_weights = weight_ds0 + weight_ds1 + weight_ds2 + weight_ds3
-                        + weight_ds4 + weight_ds5 + weight_ds6 + weight_ds7
-                        + weight_ds8;
-      float a_ds0 = ds_ab[(j_ds0 * ds_width + i_ds0) * 2];
-      float a_ds1 = ds_ab[(j_ds1 * ds_width + i_ds1) * 2];
-      float a_ds2 = ds_ab[(j_ds2 * ds_width + i_ds2) * 2];
-      float a_ds3 = ds_ab[(j_ds3 * ds_width + i_ds3) * 2];
-      float a_ds4 = ds_ab[(j_ds4 * ds_width + i_ds4) * 2];
-      float a_ds5 = ds_ab[(j_ds5 * ds_width + i_ds5) * 2];
-      float a_ds6 = ds_ab[(j_ds6 * ds_width + i_ds6) * 2];
-      float a_ds7 = ds_ab[(j_ds7 * ds_width + i_ds7) * 2];
-      float a_ds8 = ds_ab[(j_ds8 * ds_width + i_ds8) * 2];
-      float b_ds0 = ds_ab[(j_ds0 * ds_width + i_ds0) * 2 + 1];
-      float b_ds1 = ds_ab[(j_ds1 * ds_width + i_ds1) * 2 + 1];
-      float b_ds2 = ds_ab[(j_ds2 * ds_width + i_ds2) * 2 + 1];
-      float b_ds3 = ds_ab[(j_ds3 * ds_width + i_ds3) * 2 + 1];
-      float b_ds4 = ds_ab[(j_ds4 * ds_width + i_ds4) * 2 + 1];
-      float b_ds5 = ds_ab[(j_ds5 * ds_width + i_ds5) * 2 + 1];
-      float b_ds6 = ds_ab[(j_ds6 * ds_width + i_ds6) * 2 + 1];
-      float b_ds7 = ds_ab[(j_ds7 * ds_width + i_ds7) * 2 + 1];
-      float b_ds8 = ds_ab[(j_ds8 * ds_width + i_ds8) * 2 + 1];
-      weight_ds0 *= weight_ds0;
-      weight_ds1 *= weight_ds1;
-      weight_ds2 *= weight_ds2;
-      weight_ds3 *= weight_ds3;
-      weight_ds4 *= weight_ds4;
-      weight_ds5 *= weight_ds5;
-      weight_ds6 *= weight_ds6;
-      weight_ds7 *= weight_ds7;
-      weight_ds8 *= weight_ds8;
-      sum_weights = weight_ds0 + weight_ds1 + weight_ds2 + weight_ds3
-                        + weight_ds4 + weight_ds5 + weight_ds6 + weight_ds7
-                        + weight_ds8;
-      ab[(j * width + i) * 2] = (weight_ds0 * a_ds0 + weight_ds1 * a_ds1
-                                + weight_ds2 * a_ds2 + weight_ds3 * a_ds3
-                                + weight_ds4 * a_ds4 + weight_ds5 * a_ds5
-                                + weight_ds6 * a_ds6 + weight_ds7 * a_ds7
-                                + weight_ds8 * a_ds8) / sum_weights;
-      ab[(j * width + i) * 2 + 1] = (weight_ds0 * b_ds0 + weight_ds1 * b_ds1
-                                    + weight_ds2 * b_ds2 + weight_ds3 * b_ds3
-                                    + weight_ds4 * b_ds4 + weight_ds5 * b_ds5
-                                    + weight_ds6 * b_ds6 + weight_ds7 * b_ds7
-                                    + weight_ds8 * b_ds8) / sum_weights;
+      ab[(j * width + i) * 2] = a / w;
+      ab[(j * width + i) * 2 + 1] = b / w;
     }
   }
 }
