@@ -83,6 +83,7 @@ const dt_iop_order_entry_t legacy_order[] = {
   { { 8.0f }, "demosaic", 0},
   { { 9.0f }, "mask_manager", 0},
   { {10.0f }, "denoiseprofile", 0},
+  { {10.5f }, "blinddenoise", 0},
   { {11.0f }, "tonemap", 0},
   { {12.0f }, "exposure", 0},
   { {13.0f }, "spots", 0},
@@ -163,6 +164,7 @@ const dt_iop_order_entry_t v30_order[] = {
   { { 7.0f }, "rawdenoise", 0},
   { { 8.0f }, "demosaic", 0},
   { { 9.0f }, "denoiseprofile", 0},
+  { { 9.5f }, "blinddenoise", 0},
   { {10.0f }, "bilateral", 0},
   { {11.0f }, "rotatepixels", 0},
   { {12.0f }, "scalepixels", 0},
@@ -252,7 +254,6 @@ const dt_iop_order_entry_t v30_order[] = {
 static void *_dup_iop_order_entry(const void *src, gpointer data);
 static int _count_entries_operation(GList *e_list, const char *operation);
 
-#if 0
 static GList *_insert_before(GList *iop_order_list, const char *module, const char *new_module)
 {
   gboolean exists = FALSE;
@@ -300,7 +301,6 @@ static GList *_insert_before(GList *iop_order_list, const char *module, const ch
 
   return iop_order_list;
 }
-#endif
 
 dt_iop_order_t dt_ioppr_get_iop_order_version(const int32_t imgid)
 {
@@ -624,9 +624,7 @@ GList *dt_ioppr_get_iop_order_list(int32_t imgid, gboolean sorted)
         {
           // @@_NEW_MOUDLE: For new module it is required to insert the new module name in the iop-order list here.
           //                The insertion can be done depending on the current iop-order list kind.
-#if 0
-          _insert_before(iop_order_list, "<CURRENT_MODULE>", "<NEW_MODULE>");
-#endif
+          _insert_before(iop_order_list, "bilateral", "blinddenoise");
         }
       }
       else if(version == DT_IOP_ORDER_LEGACY)
