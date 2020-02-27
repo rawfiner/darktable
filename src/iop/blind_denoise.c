@@ -92,18 +92,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
-  // const int ch = piece->colors;
+  const int ch = piece->colors;
   float* out = (float*)ovoid;
   const float* in = (float*)ivoid;
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(in, out, roi_out)
+#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(in, out, roi_out, ch)
 #endif
   for(int j = 0; j < roi_out->height; j++)
   {
     for(int i = 0; i < roi_out->width; i++)
     {
-      out[j * roi_out->width + i] = in[j * roi_out->width + i];
+      for(int c = 0; c < ch; c++)
+      {
+        out[(j * roi_out->width + i) * ch + c] = in[(j * roi_out->width + i) * ch + c];
+      }
     }
   }
 }
