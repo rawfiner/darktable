@@ -125,26 +125,66 @@ static void decompose(const float* in, float* out, float* details, unsigned widt
       unsigned i0 = MAX(MIN(i / 2 + (i & 1) - 1, widthout - 1), 0);
       unsigned i1 = MIN(i / 2 + (i & 1), widthout - 1);
       unsigned best = j0 * widthout + i0;
-      float best_diff = fabs(out[(j0 * widthout + i0) * 4 + 1] - in[(j * width + i) * 4 + 1]);
-      float diff = fabs(out[(j1 * widthout + i0) * 4 + 1] - in[(j * width + i) * 4 + 1]);
+      float best_diff = 0.0f;
+      float diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j0 * widthout + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
+      best_diff = diff;
+      diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j1 * widthout + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
       if(diff < best_diff)
       {
         best_diff = diff;
         best = j1 * widthout + i0;
       }
-      diff = fabs(out[(j0 * widthout + i1) * 4 + 1] - in[(j * width + i) * 4 + 1]);
+      diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j0 * widthout + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
       if(diff < best_diff)
       {
         best_diff = diff;
         best = j0 * widthout + i1;
       }
-      diff = fabs(out[(j1 * widthout + i1) * 4 + 1] - in[(j * width + i) * 4 + 1]);
+      diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j1 * widthout + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
       if(diff < best_diff)
       {
         best_diff = diff;
         best = j1 * widthout + i1;
       }
       direction[j * width + i] = &(out[best * 4]);
+    }
+  }
+  // reset memory
+  for(unsigned j = 0; j < heightout * widthout * 4; j++)
+  {
+    out[j] = 0.0f;
+  }
+  // second pass
+  for(unsigned j = 0; j < height * width; j++)
+  {
+    for(unsigned c = 0; c < 3; c++)
+    {
+      direction[j][c] += in[j * 4 + c];
+    }
+    direction[j][3] += 1.0f;
+  }
+  // normalize
+  for(unsigned j = 0; j < heightout * widthout * 4; j+= 4)
+  {
+    for(unsigned c = 0; c < 3; c++)
+    {
+      out[j + c] /= out[j + 3];
     }
   }
 }
