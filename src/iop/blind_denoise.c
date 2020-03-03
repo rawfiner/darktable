@@ -91,15 +91,16 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 // decompose image in 2 layers: each pixel of out is a 4 pixels mean, and scaling up 2x out and adding details gives back in
 // out width is (width+1)/2
 // out height is (height+1)/2
-static void decompose(const float* in, float* out, float* details, unsigned width, unsigned height)
+static void decompose(const float* in, float* out, float* details, unsigned width, unsigned height, float** direction)
 {
   const unsigned widthout = (width + 1) / 2;
+  const unsigned heightout = (height + 1) / 2;
   for(unsigned j = 0; j < height; j+=2)
   {
-    unsigned jout = (j+1)/2;
+    unsigned jout = j / 2;
     for(unsigned i = 0; i < width; i+=2)
     {
-      unsigned iout =(i+1)/2;
+      unsigned iout = i / 2;
       for(unsigned c = 0; c < 3; c++)
       {
         float tmp00 = in[(j*width+i)*4+c];
@@ -115,26 +116,51 @@ static void decompose(const float* in, float* out, float* details, unsigned widt
       }
     }
   }
+  for(unsigned j = 0; j < height; j++)
+  {
+    unsigned j0 = MAX(MIN(j / 2 + (j & 1) - 1, heightout - 1), 0);
+    unsigned j1 = MIN(j / 2 + (j & 1), heightout - 1);
+    for(unsigned i = 0; i < width; i++)
+    {
+      unsigned i0 = MAX(MIN(i / 2 + (i & 1) - 1, widthout - 1), 0);
+      unsigned i1 = MIN(i / 2 + (i & 1), widthout - 1);
+      unsigned best = j0 * widthout + i0;
+      float best_diff = fabs(out[(j0 * widthout + i0) * 4 + 1] - in[(j * width + i) * 4 + 1]);
+      float diff = fabs(out[(j1 * widthout + i0) * 4 + 1] - in[(j * width + i) * 4 + 1]);
+      if(diff < best_diff)
+      {
+        best_diff = diff;
+        best = j1 * widthout + i0;
+      }
+      diff = fabs(out[(j0 * widthout + i1) * 4 + 1] - in[(j * width + i) * 4 + 1]);
+      if(diff < best_diff)
+      {
+        best_diff = diff;
+        best = j0 * widthout + i1;
+      }
+      diff = fabs(out[(j1 * widthout + i1) * 4 + 1] - in[(j * width + i) * 4 + 1]);
+      if(diff < best_diff)
+      {
+        best_diff = diff;
+        best = j1 * widthout + i1;
+      }
+      direction[j * width + i] = &(out[best * 4]);
+    }
+  }
 }
 
 // recompose image from 2 layers
 // width and height are the dimensions of out
-static void recompose(float* in, float* out, float* details, unsigned width, unsigned height)
+static void recompose(float* in, float* out, float* details, unsigned width, unsigned height, float** direction)
 {
-  const unsigned widthin = (width + 1) / 2;
-  for(unsigned j = 0; j < height; j+=2)
+  // const unsigned widthin = (width + 1) / 2;
+  for(unsigned j = 0; j < height; j++)
   {
-    unsigned jin = (j+1)/2;
-    for(unsigned i = 0; i < width; i+=2)
+    for(unsigned i = 0; i < width; i++)
     {
-      unsigned iin =(i+1)/2;
       for(unsigned c = 0; c < 3; c++)
       {
-        float mean = in[(jin * widthin + iin) * 4 + c];
-        out[(j*width+i)*4+c] = mean + details[(j*width+i)*4+c];
-        out[(j*width+MIN(i+1,width-1))*4+c] = mean + details[(j*width+MIN(i+1,width-1))*4+c];
-        out[(MIN(j+1,height-1)*width+i)*4+c] = mean + details[(MIN(j+1,height-1)*width+i)*4+c];
-        out[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c] = mean + details[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
+        out[(j * width + i) * 4 + c] = direction[j * width + i][c];
       }
     }
   }
@@ -148,11 +174,14 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const float* in = (float*)ivoid;
   const unsigned width = roi_out->width;
   const unsigned height = roi_out->height;
-  float* tmp = (float*)malloc(sizeof(float) * 4 * width * height);
+  const unsigned widthout = (width + 1) / 2;
+  const unsigned heightout = (height + 1) / 2;
+  float* tmp = (float*)malloc(sizeof(float) * 4 * widthout * heightout);
   float* tmp1 = (float*)malloc(sizeof(float) * 4 * width * height);
+  float** dir = (float**)malloc(sizeof(float*) * 4 * width * height);
   float* tmp2 = (float*)calloc(sizeof(float), 4 * width * height);
-  decompose(in, tmp, tmp1, width, height);
-  recompose(tmp, out, tmp2, width, height);
+  decompose(in, tmp, tmp1, width, height, dir);
+  recompose(tmp, out, tmp2, width, height, dir);
   free(tmp);
   free(tmp1);
   free(tmp2);
