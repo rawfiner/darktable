@@ -88,27 +88,74 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+// decompose image in 2 layers: each pixel of out is a 4 pixels mean, and scaling up 2x out and adding details gives back in
+// out width is (width+1)/2
+// out height is (height+1)/2
+static void decompose(const float* in, float* out, float* details, unsigned width, unsigned height)
+{
+  const unsigned widthout = (width + 1) / 2;
+  for(unsigned j = 0; j < height; j+=2)
+  {
+    unsigned jout = (j+1)/2;
+    for(unsigned i = 0; i < width; i+=2)
+    {
+      unsigned iout =(i+1)/2;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        float tmp00 = in[(j*width+i)*4+c];
+        float tmp01 = in[(j*width+MIN(i+1,width-1))*4+c];
+        float tmp10 = in[(MIN(j+1,height-1)*width+i)*4+c];
+        float tmp11 = in[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
+        float mean = (tmp00 + tmp01 + tmp10 + tmp11) / 4.0f;
+        out[(jout * widthout + iout) * 4 + c] = mean;
+        details[(j*width+i)*4+c] = tmp00 - mean;
+        details[(j*width+MIN(i+1,width-1))*4+c] = tmp01 - mean;
+        details[(MIN(j+1,height-1)*width+i)*4+c] = tmp10 - mean;
+        details[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c] = tmp11 - mean;
+      }
+    }
+  }
+}
+
+// recompose image from 2 layers
+// width and height are the dimensions of out
+static void recompose(float* in, float* out, float* details, unsigned width, unsigned height)
+{
+  const unsigned widthin = (width + 1) / 2;
+  for(unsigned j = 0; j < height; j+=2)
+  {
+    unsigned jin = (j+1)/2;
+    for(unsigned i = 0; i < width; i+=2)
+    {
+      unsigned iin =(i+1)/2;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        float mean = in[(jin * widthin + iin) * 4 + c];
+        out[(j*width+i)*4+c] = mean + details[(j*width+i)*4+c];
+        out[(j*width+MIN(i+1,width-1))*4+c] = mean + details[(j*width+MIN(i+1,width-1))*4+c];
+        out[(MIN(j+1,height-1)*width+i)*4+c] = mean + details[(MIN(j+1,height-1)*width+i)*4+c];
+        out[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c] = mean + details[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
+      }
+    }
+  }
+}
+
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
-  const int ch = piece->colors;
   float* out = (float*)ovoid;
   const float* in = (float*)ivoid;
-
-#ifdef _OPENMP
-#pragma omp parallel for default(none) schedule(static) dt_omp_firstprivate(in, out, roi_out, ch)
-#endif
-  for(int j = 0; j < roi_out->height; j++)
-  {
-    for(int i = 0; i < roi_out->width; i++)
-    {
-      for(int c = 0; c < ch; c++)
-      {
-        out[(j * roi_out->width + i) * ch + c] = in[(j * roi_out->width + i) * ch + c];
-      }
-    }
-  }
+  const unsigned width = roi_out->width;
+  const unsigned height = roi_out->height;
+  float* tmp = (float*)malloc(sizeof(float) * 4 * width * height);
+  float* tmp1 = (float*)malloc(sizeof(float) * 4 * width * height);
+  float* tmp2 = (float*)calloc(sizeof(float), 4 * width * height);
+  decompose(in, tmp, tmp1, width, height);
+  recompose(tmp, out, tmp2, width, height);
+  free(tmp);
+  free(tmp1);
+  free(tmp2);
 }
 
 void reload_defaults(dt_iop_module_t *module)
