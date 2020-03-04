@@ -110,7 +110,7 @@ static void var(float* details, float* variance, unsigned width, unsigned height
         float sum = 0.0f;
         for(unsigned c = 0; c < 3; c++)
         {
-          float value = details[(s * width + j) * 4 + c];// / wb[c];
+          float value = details[(s * width + j) * 4 + c] / wb[c];
           sum += value;
           tmp[(s * width + j) * 4 + c] += value * value;
         }
@@ -144,7 +144,7 @@ static void var(float* details, float* variance, unsigned width, unsigned height
       float beta = variance[(i * width + j) * 4 + 3];
       for(unsigned c = 0; c < 4; c++)
       {
-        variance[(i * width + j) * 4 + c] = 1.5f * (alpha - beta);// * wb[c] * wb[c];
+        variance[(i * width + j) * 4 + c] = 1.5f * (alpha - beta) * wb[c] * wb[c];
       }
     }
   }
@@ -235,14 +235,12 @@ static int sign(float a)
   return (a >= 0.0f) - (a < 0.0f);
 }
 
-static void thresholding(float* details, unsigned width, unsigned height, float** direction, float threshold, float* wb, float* var)
+static void thresholding(float* details, unsigned width, unsigned height, float** direction, float threshold, float* wb, float* var, float max)
 {
-#if 0
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(details, direction, width, height, threshold, wb, var) \
+    dt_omp_firstprivate(details, direction, width, height, threshold, wb, var, max) \
     schedule(static)
-#endif
 #endif
   for(unsigned j = 0; j < height; j++)
   {
@@ -253,7 +251,9 @@ static void thresholding(float* details, unsigned width, unsigned height, float*
         float det = details[(j * width + i) * 4 + c];
         // float thrs = threshold * sqrt((0.75f * direction[(j * width + i) * 4][c]
         //                           + 0.25f * direction[(j * width + i) * 4 + 1][c]) + 0.05f) * wb[c];
-        float thrs = threshold * sqrt(var[(j * width + i) * 4 + c]);
+        float thrs = threshold;// * sqrt(var[(j * width + i) * 4 + c]);
+        // details[(j * width + i) * 4 + c] = sign(det) * MAX(fabs(det) - thrs, 0.0f);
+        det = det / MIN(MAX(sqrt(var[(j * width + i) * 4 + c]) * 500.0f, 1.0f), max);
         details[(j * width + i) * 4 + c] = sign(det) * MAX(fabs(det) - thrs, 0.0f);
       }
     }
@@ -297,7 +297,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float* vars[NB_SCALES];
   float* details[NB_SCALES];
   float** direction[NB_SCALES];
-  float threshold[NB_SCALES] = {0.7, 1.0, 0.9, 0.6, 0.3, 0.1, 0.05, 0.01};
+  float threshold[NB_SCALES] = {0.7, 1.0, 0.9, 0.6, 0.4, 0.2, 0.1, 0.05};
+//  float threshold[NB_SCALES] = {1.0, 1.0, 1.0, 0.2, 0.05, 0.01, 0.005, 0.001};
 //  float threshold[NB_SCALES] = {0.20, 0.20, 0.20, 0.15, 0.10, 0.05, 0.01, 0.007};
   unsigned width[NB_SCALES];
   unsigned height[NB_SCALES];
@@ -326,7 +327,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // threshold[2] *= d->checker_scale;
   for(int k = 0; k < NB_SCALES; k++)
   {
-    threshold[k] *= d->factor;
+    threshold[k] *= 0.01f * d->factor;
   }
 
   for(int i = 0; i < NB_SCALES-1; i++)
@@ -337,12 +338,12 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   {
     get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb);
     var(details[i-1], vars[i-1], width[i-1], height[i-1], NB_SCALES - i, wb, d->checker_scale);
-    thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1]);
+    thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], powf(2.0f, NB_SCALES - i) / 10.0f);
     recompose(means[i], means[i-1], details[i-1], width[i-1], height[i-1], direction[i-1]);
   }
   get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0], wb);
   var(details[0], vars[0], width[0], height[0], NB_SCALES, wb, d->checker_scale);
-  thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb, vars[0]);
+  thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb, vars[0], powf(2.0f, NB_SCALES) / 10.0f);
   recompose(means[1], out, details[0], width[0], height[0], direction[0]);
 
   // cleanup
