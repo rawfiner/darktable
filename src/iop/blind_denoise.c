@@ -88,6 +88,92 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+#if 0
+static void set_direction(const float* in, float* out, float* details, unsigned width, unsigned height, float** direction)
+{
+  const unsigned widthout = (width + 1) / 2;
+  const unsigned heightout = (height + 1) / 2;
+  for(unsigned j = 0; j < height; j++)
+  {
+    unsigned j0 = MAX(MIN(j / 2 + (j & 1) - 1, heightout - 1), 0);
+    unsigned j1 = MIN(j / 2 + (j & 1), heightout - 1);
+    for(unsigned i = 0; i < width; i++)
+    {
+      unsigned i0 = MAX(MIN(i / 2 + (i & 1) - 1, widthout - 1), 0);
+      unsigned i1 = MIN(i / 2 + (i & 1), widthout - 1);
+      unsigned best = j0 * widthout + i0;
+      float best_diff = 0.0f;
+      float diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j0 * widthout + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
+      best_diff = diff;
+      diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j1 * widthout + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
+      if(diff < best_diff)
+      {
+        best_diff = diff;
+        best = j1 * widthout + i0;
+      }
+      diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j0 * widthout + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
+      if(diff < best_diff)
+      {
+        best_diff = diff;
+        best = j0 * widthout + i1;
+      }
+      diff = 0.0f;
+      for(unsigned c = 0; c < 3; c++)
+      {
+        diff += fabs(out[(j1 * widthout + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
+      }
+      if(diff < best_diff)
+      {
+        best_diff = diff;
+        best = j1 * widthout + i1;
+      }
+      direction[j * width + i] = &(out[best * 4]);
+    }
+  }
+  // // reset memory
+  // for(unsigned j = 0; j < heightout * widthout * 4; j++)
+  // {
+  //   out[j] = 0.0f;
+  // }
+  // // second pass
+  // for(unsigned j = 0; j < height * width; j++)
+  // {
+  //   for(unsigned c = 0; c < 3; c++)
+  //   {
+  //     direction[j][c] += in[j * 4 + c];
+  //   }
+  //   direction[j][3] += 1.0f;
+  // }
+  // // normalize
+  // for(unsigned j = 0; j < heightout * widthout * 4; j+= 4)
+  // {
+  //   for(unsigned c = 0; c < 3; c++)
+  //   {
+  //     out[j + c] /= out[j + 3];
+  //   }
+  // }
+  for(unsigned j = 0; j < height * width; j++)
+  {
+    for(unsigned c = 0; c < 3; c++)
+    {
+      details[j * 4 + c] = in[j * 4 + c] - direction[j][c];
+    }
+  }
+}
+#endif
+
 // decompose image in 2 layers: each pixel of out is a 4 pixels mean, and scaling up 2x out and adding details gives back in
 // out width is (width+1)/2
 // out height is (height+1)/2
@@ -109,10 +195,6 @@ static void decompose(const float* in, float* out, float* details, unsigned widt
         float tmp11 = in[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
         float mean = (tmp00 + tmp01 + tmp10 + tmp11) / 4.0f;
         out[(jout * widthout + iout) * 4 + c] = mean;
-        details[(j*width+i)*4+c] = tmp00 - mean;
-        details[(j*width+MIN(i+1,width-1))*4+c] = tmp01 - mean;
-        details[(MIN(j+1,height-1)*width+i)*4+c] = tmp10 - mean;
-        details[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c] = tmp11 - mean;
       }
     }
   }
@@ -165,26 +247,33 @@ static void decompose(const float* in, float* out, float* details, unsigned widt
       direction[j * width + i] = &(out[best * 4]);
     }
   }
-  // reset memory
-  for(unsigned j = 0; j < heightout * widthout * 4; j++)
-  {
-    out[j] = 0.0f;
-  }
-  // second pass
+  // // reset memory
+  // for(unsigned j = 0; j < heightout * widthout * 4; j++)
+  // {
+  //   out[j] = 0.0f;
+  // }
+  // // second pass
+  // for(unsigned j = 0; j < height * width; j++)
+  // {
+  //   for(unsigned c = 0; c < 3; c++)
+  //   {
+  //     direction[j][c] += in[j * 4 + c];
+  //   }
+  //   direction[j][3] += 1.0f;
+  // }
+  // // normalize
+  // for(unsigned j = 0; j < heightout * widthout * 4; j+= 4)
+  // {
+  //   for(unsigned c = 0; c < 3; c++)
+  //   {
+  //     out[j + c] /= out[j + 3];
+  //   }
+  // }
   for(unsigned j = 0; j < height * width; j++)
   {
     for(unsigned c = 0; c < 3; c++)
     {
-      direction[j][c] += in[j * 4 + c];
-    }
-    direction[j][3] += 1.0f;
-  }
-  // normalize
-  for(unsigned j = 0; j < heightout * widthout * 4; j+= 4)
-  {
-    for(unsigned c = 0; c < 3; c++)
-    {
-      out[j + c] /= out[j + 3];
+      details[j * 4 + c] = in[j * 4 + c] - direction[j][c];
     }
   }
 }
@@ -206,25 +295,54 @@ static void recompose(float* in, float* out, float* details, unsigned width, uns
   }
 }
 
+#define NB_SCALES 8
+
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
   float* out = (float*)ovoid;
-  const float* in = (float*)ivoid;
-  const unsigned width = roi_out->width;
-  const unsigned height = roi_out->height;
-  const unsigned widthout = (width + 1) / 2;
-  const unsigned heightout = (height + 1) / 2;
-  float* tmp = (float*)malloc(sizeof(float) * 4 * widthout * heightout);
-  float* tmp1 = (float*)malloc(sizeof(float) * 4 * width * height);
-  float** dir = (float**)malloc(sizeof(float*) * 4 * width * height);
-  float* tmp2 = (float*)calloc(sizeof(float), 4 * width * height);
-  decompose(in, tmp, tmp1, width, height, dir);
-  recompose(tmp, out, tmp2, width, height, dir);
-  free(tmp);
-  free(tmp1);
-  free(tmp2);
+  float* in = (float*)ivoid;
+  float* means[NB_SCALES];
+  float* details[NB_SCALES];
+  float** direction[NB_SCALES];
+  unsigned width[NB_SCALES];
+  unsigned height[NB_SCALES];
+
+  // init
+  means[0] = in;
+  width[0] = roi_out->width;
+  height[0] = roi_out->height;
+  details[0] = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
+  direction[0] = (float**)malloc(sizeof(float) * 4 * width[0] * height[0]);
+  for(int i = 1; i < NB_SCALES; i++)
+  {
+    width[i] = (width[i-1] + 1) / 2;
+    height[i] = (height[i-1] + 1) / 2;
+    means[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
+    details[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
+    direction[i] = (float**)malloc(sizeof(float) * 4 * width[i] * height[i]);
+  }
+
+  for(int i = 0; i < NB_SCALES-1; i++)
+  {
+    decompose(means[i], means[i+1], details[i], width[i], height[i], direction[i]);
+  }
+  means[0] = out;
+  for(int i = NB_SCALES-1; i > 0; i--)
+  {
+    recompose(means[i], means[i-1], details[i-1], width[i-1], height[i-1], direction[i-1]);
+  }
+
+  // cleanup
+  for(int i = 1; i < NB_SCALES; i++)
+  {
+    free(means[i]);
+    free(details[i]);
+    free(direction[i]);
+  }
+  free(details[0]);
+  free(direction[0]);
 }
 
 void reload_defaults(dt_iop_module_t *module)
