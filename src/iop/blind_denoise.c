@@ -91,7 +91,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; float* tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
 // for each pixel, direction[0] is the best direction, direction[1] the second best, etc
-static void get_details_and_direction(const float* in, float* mean, float* details, unsigned width, unsigned height, float** direction)
+static void get_details_and_direction(const float* in, float* mean, float* details, unsigned width, unsigned height, float** direction, float* wb)
 {
   const unsigned widthmean = (width + 1) / 2;
   const unsigned heightmean = (height + 1) / 2;
@@ -107,10 +107,10 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
       float** dir = &(direction[(j * width + i) * 4]);
       for(unsigned c = 0; c < 3; c++)
       {
-        diff[0] += fabs(mean[(j0 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
-        diff[1] += fabs(mean[(j1 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
-        diff[2] += fabs(mean[(j0 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
-        diff[3] += fabs(mean[(j1 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
+        diff[0] += fabs(mean[(j0 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+        diff[1] += fabs(mean[(j1 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+        diff[2] += fabs(mean[(j0 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+        diff[3] += fabs(mean[(j1 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
       }
       dir[0] = &(mean[(j0 * widthmean + i0) * 4]);
       dir[1] = &(mean[(j1 * widthmean + i0) * 4]);
@@ -129,7 +129,7 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
   {
     for(unsigned c = 0; c < 3; c++)
     {
-      details[j * 4 + c] = in[j * 4 + c] - direction[j * 4][c];
+      details[j * 4 + c] = in[j * 4 + c] - 0.75f * direction[j * 4][c] - 0.25f * direction[j * 4 + 1][c];
     }
   }
 }
@@ -190,8 +190,8 @@ static void recompose(float* in, float* out, float* details, unsigned width, uns
     {
       for(unsigned c = 0; c < 3; c++)
       {
-        out[(j * width + i) * 4 + c] = 1.0f * direction[(j * width + i) * 4][c];
-        // out[(j * width + i) * 4 + c] += 0.25f * direction[(j * width + i) * 4 + 1][c];
+        out[(j * width + i) * 4 + c] = 0.75f * direction[(j * width + i) * 4][c];
+        out[(j * width + i) * 4 + c] += 0.25f * direction[(j * width + i) * 4 + 1][c];
         out[(j * width + i) * 4 + c] += details[(j * width + i) * 4 + c];
       }
     }
@@ -241,11 +241,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   for(int i = NB_SCALES-1; i > 1; i--)
   {
-    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1]);
+    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb);
     thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb);
     recompose(means[i], means[i-1], details[i-1], width[i-1], height[i-1], direction[i-1]);
   }
-  get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0]);
+  get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0], wb);
   thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb);
   recompose(means[1], out, details[0], width[0], height[0], direction[0]);
 
