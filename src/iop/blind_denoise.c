@@ -88,6 +88,9 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+#define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; float* tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
+
+// for each pixel, direction[0] is the best direction, direction[1] the second best, etc
 static void get_details_and_direction(const float* in, float* mean, float* details, unsigned width, unsigned height, float** direction)
 {
   const unsigned widthmean = (width + 1) / 2;
@@ -100,45 +103,26 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
     {
       unsigned i0 = MAX(MIN(i / 2 + (i & 1) - 1, widthmean - 1), 0);
       unsigned i1 = MIN(i / 2 + (i & 1), widthmean - 1);
-      unsigned best = j0 * widthmean + i0;
-      float best_diff = 0.0f;
-      float diff = 0.0f;
+      float diff[4] = {0.0f};
+      float** dir = &(direction[(j * width + i) * 4]);
       for(unsigned c = 0; c < 3; c++)
       {
-        diff += fabs(mean[(j0 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
+        diff[0] += fabs(mean[(j0 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
+        diff[1] += fabs(mean[(j1 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
+        diff[2] += fabs(mean[(j0 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
+        diff[3] += fabs(mean[(j1 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
       }
-      best_diff = diff;
-      diff = 0.0f;
-      for(unsigned c = 0; c < 3; c++)
-      {
-        diff += fabs(mean[(j1 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]);
-      }
-      if(diff < best_diff)
-      {
-        best_diff = diff;
-        best = j1 * widthmean + i0;
-      }
-      diff = 0.0f;
-      for(unsigned c = 0; c < 3; c++)
-      {
-        diff += fabs(mean[(j0 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
-      }
-      if(diff < best_diff)
-      {
-        best_diff = diff;
-        best = j0 * widthmean + i1;
-      }
-      diff = 0.0f;
-      for(unsigned c = 0; c < 3; c++)
-      {
-        diff += fabs(mean[(j1 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]);
-      }
-      if(diff < best_diff)
-      {
-        best_diff = diff;
-        best = j1 * widthmean + i1;
-      }
-      direction[j * width + i] = &(mean[best * 4]);
+      dir[0] = &(mean[(j0 * widthmean + i0) * 4]);
+      dir[1] = &(mean[(j1 * widthmean + i0) * 4]);
+      dir[2] = &(mean[(j0 * widthmean + i1) * 4]);
+      dir[3] = &(mean[(j1 * widthmean + i1) * 4]);
+
+      // sort diff and dir jointly
+      SWAP(0, 1);
+      SWAP(2, 3);
+      SWAP(0, 2);
+      SWAP(1, 3);
+      SWAP(1, 2);
     }
   }
   for(unsigned j = 0; j < height * width; j++)
@@ -186,7 +170,7 @@ static void recompose(float* in, float* out, float* details, unsigned width, uns
     {
       for(unsigned c = 0; c < 3; c++)
       {
-        out[(j * width + i) * 4 + c] = direction[j * width + i][c];
+        out[(j * width + i) * 4 + c] = direction[(j * width + i) * 4][c];
       }
     }
   }
@@ -211,14 +195,14 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   width[0] = roi_out->width;
   height[0] = roi_out->height;
   details[0] = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
-  direction[0] = (float**)malloc(sizeof(float) * 4 * width[0] * height[0]);
+  direction[0] = (float**)malloc(sizeof(float*) * 4 * width[0] * height[0]);
   for(int i = 1; i < NB_SCALES; i++)
   {
     width[i] = (width[i-1] + 1) / 2;
     height[i] = (height[i-1] + 1) / 2;
     means[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
     details[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
-    direction[i] = (float**)malloc(sizeof(float) * 4 * width[i] * height[i]);
+    direction[i] = (float**)malloc(sizeof(float*) * 4 * width[i] * height[i]);
   }
 
   for(int i = 0; i < NB_SCALES-1; i++)
