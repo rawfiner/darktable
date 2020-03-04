@@ -129,7 +129,7 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
   {
     for(unsigned c = 0; c < 3; c++)
     {
-      details[j * 4 + c] = in[j * 4 + c] - direction[j][c];
+      details[j * 4 + c] = in[j * 4 + c] - direction[j * 4][c];
     }
   }
 }
@@ -159,6 +159,26 @@ static void decompose(const float* in, float* out, unsigned width, unsigned heig
   }
 }
 
+static int sign(float a)
+{
+  return (a >= 0.0f) - (a < 0.0f);
+}
+
+static void thresholding(float* details, unsigned width, unsigned height, float** direction, float threshold, float* wb)
+{
+  for(unsigned j = 0; j < height; j++)
+  {
+    for(unsigned i = 0; i < width; i++)
+    {
+      for(unsigned c = 0; c < 3; c++)
+      {
+        float det = details[(j * width + i) * 4 + c];
+        details[(j * width + i) * 4 + c] = sign(det) * MAX(fabs(det) - threshold * wb[c], 0.0f);
+      }
+    }
+  }
+}
+
 // recompose image from 2 layers
 // width and height are the dimensions of out
 static void recompose(float* in, float* out, float* details, unsigned width, unsigned height, float** direction)
@@ -170,25 +190,30 @@ static void recompose(float* in, float* out, float* details, unsigned width, uns
     {
       for(unsigned c = 0; c < 3; c++)
       {
-        out[(j * width + i) * 4 + c] = direction[(j * width + i) * 4][c];
+        out[(j * width + i) * 4 + c] = 1.0f * direction[(j * width + i) * 4][c];
+        // out[(j * width + i) * 4 + c] += 0.25f * direction[(j * width + i) * 4 + 1][c];
+        out[(j * width + i) * 4 + c] += details[(j * width + i) * 4 + c];
       }
     }
   }
 }
 
-#define NB_SCALES 6
+#define NB_SCALES 8
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
+  dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
   float* out = (float*)ovoid;
   float* in = (float*)ivoid;
   float* means[NB_SCALES];
   float* details[NB_SCALES];
   float** direction[NB_SCALES];
+  float threshold[NB_SCALES] = {0.10, 0.10, 0.07, 0.03, 0.01, 0.005, 0.003, 0.001};
   unsigned width[NB_SCALES];
   unsigned height[NB_SCALES];
+  float wb[3];
+  for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.temperature.coeffs[i];
 
   // init
   means[0] = in;
@@ -205,6 +230,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (float**)malloc(sizeof(float*) * 4 * width[i] * height[i]);
   }
 
+  for(int k = 0; k < NB_SCALES; k++)
+  {
+    threshold[k] *= 0.1f * d->factor;
+  }
+
   for(int i = 0; i < NB_SCALES-1; i++)
   {
     decompose(means[i], means[i+1], width[i], height[i]);
@@ -212,9 +242,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   for(int i = NB_SCALES-1; i > 1; i--)
   {
     get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1]);
+    thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb);
     recompose(means[i], means[i-1], details[i-1], width[i-1], height[i-1], direction[i-1]);
   }
   get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0]);
+  thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb);
   recompose(means[1], out, details[0], width[0], height[0], direction[0]);
 
   // cleanup
@@ -304,7 +336,7 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->scale), TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->scale), "value-changed", G_CALLBACK(scale_callback), self);
 
-  g->factor = dt_bauhaus_slider_new_with_range(self, 0.0, 1.0, 0.1, 0.5, 2);
+  g->factor = dt_bauhaus_slider_new_with_range(self, 0.0, 100.0, 0.1, 0.5, 2);
   dt_bauhaus_widget_set_label(g->factor, NULL, _("factor"));
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->factor), TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->factor), "value-changed", G_CALLBACK(factor_callback), self);
