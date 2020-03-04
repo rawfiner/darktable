@@ -95,6 +95,11 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
 {
   const unsigned widthmean = (width + 1) / 2;
   const unsigned heightmean = (height + 1) / 2;
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(in, mean, details, direction, width, height, widthmean, heightmean, wb) \
+    schedule(static)
+#endif
   for(unsigned j = 0; j < height; j++)
   {
     unsigned j0 = MAX(MIN(j / 2 + (j & 1) - 1, heightmean - 1), 0);
@@ -123,13 +128,11 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
       SWAP(0, 2);
       SWAP(1, 3);
       SWAP(1, 2);
-    }
-  }
-  for(unsigned j = 0; j < height * width; j++)
-  {
-    for(unsigned c = 0; c < 3; c++)
-    {
-      details[j * 4 + c] = in[j * 4 + c] - 0.75f * direction[j * 4][c] - 0.25f * direction[j * 4 + 1][c];
+
+      for(unsigned c = 0; c < 3; c++)
+      {
+        details[(j * width + i) * 4 + c] = in[(j * width + i) * 4 + c] - 0.75f * dir[0][c] - 0.25f * dir[1][c];
+      }
     }
   }
 }
@@ -140,6 +143,11 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
 static void decompose(const float* in, float* out, unsigned width, unsigned height)
 {
   const unsigned widthout = (width + 1) / 2;
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(in, out, width, widthout, height) \
+    schedule(static)
+#endif
   for(unsigned j = 0; j < height; j+=2)
   {
     unsigned jout = j / 2;
@@ -166,6 +174,11 @@ static int sign(float a)
 
 static void thresholding(float* details, unsigned width, unsigned height, float** direction, float threshold, float* wb)
 {
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(details, direction, width, height, threshold, wb) \
+    schedule(static)
+#endif
   for(unsigned j = 0; j < height; j++)
   {
     for(unsigned i = 0; i < width; i++)
@@ -173,7 +186,9 @@ static void thresholding(float* details, unsigned width, unsigned height, float*
       for(unsigned c = 0; c < 3; c++)
       {
         float det = details[(j * width + i) * 4 + c];
-        details[(j * width + i) * 4 + c] = sign(det) * MAX(fabs(det) - threshold * wb[c], 0.0f);
+        float thrs = threshold * ((0.75f * direction[(j * width + i) * 4][c]
+                                 + 0.25f * direction[(j * width + i) * 4 + 1][c]) / wb[c] + 0.05f);
+        details[(j * width + i) * 4 + c] = sign(det) * MAX(fabs(det) - thrs * wb[c], 0.0f);
       }
     }
   }
@@ -184,6 +199,11 @@ static void thresholding(float* details, unsigned width, unsigned height, float*
 static void recompose(float* in, float* out, float* details, unsigned width, unsigned height, float** direction)
 {
   // const unsigned widthin = (width + 1) / 2;
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(in, out, details, direction, width, height) \
+    schedule(static)
+#endif
   for(unsigned j = 0; j < height; j++)
   {
     for(unsigned i = 0; i < width; i++)
