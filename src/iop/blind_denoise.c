@@ -340,7 +340,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     float sum_coefs = 0.0f;
     for(int c = 0; c < 4; c++)
     {
-      coefs[k][c] = expf(-c / (k * k + 0.4f));
+      coefs[k][c] = expf(-c / (k * k / 4.0f + 0.5f));
       sum_coefs += coefs[k][c];
     }
     for(int c = 0; c < 4; c++)
