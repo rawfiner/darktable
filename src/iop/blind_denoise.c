@@ -240,27 +240,138 @@ static int sign(float a)
   return (a >= 0.0f) - (a < 0.0f);
 }
 
-static void thresholding(float* details, unsigned width, unsigned height, float** direction, float threshold, float* wb, float* var, float max)
+
+static gboolean invert_matrix(const float in[9], float out[9])
+{
+  // use same notation as https://en.wikipedia.org/wiki/Invertible_matrix#Inversion_of_3_%C3%97_3_matrices
+  const float biga = in[4] * in[8] - in[5] * in[7];
+  const float bigb = -in[3] * in[8] + in[5] * in[6];
+  const float bigc = in[3] * in[7] - in[4] * in[6];
+  const float bigd = -in[1] * in[8] + in[2] * in[7];
+  const float bige = in[0] * in[8] - in[2] * in[6];
+  const float bigf = -in[0] * in[7] + in[1] * in[6];
+  const float bigg = in[1] * in[5] - in[2] * in[4];
+  const float bigh = -in[0] * in[5] + in[2] * in[3];
+  const float bigi = in[0] * in[4] - in[1] * in[3];
+
+  const float det = in[0] * biga + in[1] * bigb + in[2] * bigc;
+  if(det == 0.0f)
+  {
+    return FALSE;
+  }
+
+  out[0] = 1.0f / det * biga;
+  out[1] = 1.0f / det * bigd;
+  out[2] = 1.0f / det * bigg;
+  out[3] = 1.0f / det * bigb;
+  out[4] = 1.0f / det * bige;
+  out[5] = 1.0f / det * bigh;
+  out[6] = 1.0f / det * bigc;
+  out[7] = 1.0f / det * bigf;
+  out[8] = 1.0f / det * bigi;
+  return TRUE;
+}
+
+// create the white balance adaptative conversion matrices
+// supposes toY0U0V0 already contains the "normal" conversion matrix
+static void set_up_conversion_matrices(float toY0U0V0[9], float toRGB[9], float wb[3], float* mean)
+{
+  // for an explanation of the spirit of the choice of the coefficients of the
+  // Y0U0V0 conversion matrix, see part 12.3.3 page 190 of
+  // "From Theory to Practice, a Tour of Image Denoising"
+  // https://hal.archives-ouvertes.fr/tel-01114299
+  // we adapt a bit the coefficients, in a way that follows the same spirit.
+
+  float sum_invwb = 1.0f/wb[0] + 1.0f/wb[1] + 1.0f/wb[2];
+  // we change the coefs to Y0, but keeping the goal of making SNR higher:
+  // these were all equal to 1/3 to get the Y0 the least noisy possible, assuming
+  // that all channels have equal noise variance.
+  // as white balance influences noise variance, we do a weighted mean depending
+  // on white balance. Note that it is equivalent to keeping the 1/3 coefficients
+  // if we divide by the white balance coefficients beforehand.
+  // we then normalize the line so that variance becomes equal to 1:
+  // var(Y0) = 1/9 * (var(R) + var(G) + var(B)) = 1/3
+  // var(sqrt(3)Y0) = 1
+  sum_invwb *= sqrt(3);
+  toY0U0V0[0] = sum_invwb / wb[0];
+  toY0U0V0[1] = sum_invwb / wb[1];
+  toY0U0V0[2] = sum_invwb / wb[2];
+  // we also normalize the other line in a way that should give a variance of 1
+  // if var(B/wb[B]) == 1, then var(B) = wb[B]^2
+  // note that we don't change the coefs of U0 and V0 depending on white balance,
+  // apart of the normalization: these coefficients do differences of RGB channels
+  // to try to reduce or cancel the signal. If we change these depending on white
+  // balance, we will not reduce/cancel the signal anymore.
+  // const float stddevU0 = sqrt(0.5f * 0.5f * wb[0] * wb[0] + 0.5f * 0.5f * wb[2] * wb[2]);
+  // const float stddevV0 = sqrt(0.25f * 0.25f * wb[0] * wb[0] + 0.5f * 0.5f * wb[1] * wb[1] + 0.25f * 0.25f * wb[2] * wb[2]);
+  // toY0U0V0[3] /= stddevU0;
+  // toY0U0V0[4] /= stddevU0;
+  // toY0U0V0[5] /= stddevU0;
+  // toY0U0V0[6] /= stddevV0;
+  // toY0U0V0[7] /= stddevV0;
+  // toY0U0V0[8] /= stddevV0;
+  float RB_ratio = mean[0] / (mean[2] + 0.001f);
+  toY0U0V0[3] = 1.0f / (1.0f + RB_ratio);
+  toY0U0V0[4] = 0.0f;
+  toY0U0V0[5] = -RB_ratio / (1.0f + RB_ratio);
+  float GR_ratio = mean[1] / (mean[0] + 0.001f);
+  float GB_ratio = mean[1] / (mean[2] + 0.001f);
+  toY0U0V0[6] = -0.5f * GR_ratio / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
+  toY0U0V0[7] = 1.0f / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
+  toY0U0V0[8] = -0.5f * GB_ratio / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
+
+  const gboolean is_invertible = invert_matrix(toY0U0V0, toRGB);
+  if(!is_invertible)
+  {
+    // use standard form if whitebalance adapted matrix is not invertible
+    float stddevY0 = sqrt(1.0f / 9.0f * (wb[0] * wb[0] + wb[1] * wb[1] + wb[2] * wb[2]));
+    toY0U0V0[0] = 1.0f / (3.0f * stddevY0);
+    toY0U0V0[1] = 1.0f / (3.0f * stddevY0);
+    toY0U0V0[2] = 1.0f / (3.0f * stddevY0);
+    invert_matrix(toY0U0V0, toRGB);
+  }
+}
+
+static inline void matrix_mul(float* matrix, float* in, float* out)
+{
+  for(int c = 0; c < 3; c++)
+  {
+    out[c] = 0.0f;
+    for(int k = 0; k < 3; k++)
+    {
+      out[c] += matrix[3 * c + k] * in[k];
+    }
+  }
+}
+
+static void thresholding(float* details, unsigned width, unsigned height, float** direction, float threshold, float* wb, float* var, const float weight[3])
 {
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(details, direction, width, height, threshold, wb, var, max) \
+    dt_omp_firstprivate(details, direction, width, height, threshold, wb, var, weight) \
     schedule(static)
 #endif
   for(unsigned j = 0; j < height; j++)
   {
     for(unsigned i = 0; i < width; i++)
     {
+      float toY0U0V0[9] = {1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f,
+                           0.5f,      0.0f,      -0.5f,
+                           0.25f,     -0.5f,     0.25f};
+     float toRGB[9] = {0.0f, 0.0f, 0.0f,
+                      0.0f, 0.0f, 0.0f,
+                      0.0f, 0.0f, 0.0f};
+      //TODO take var into account to setup the conversion matrices
+      set_up_conversion_matrices(toY0U0V0, toRGB, wb, direction[(j * width + i) * 4]);
+      float tmp[3];
+      matrix_mul(toY0U0V0, &(details[(j * width + i) * 4]), tmp);
+      //const float mean_mean = sqrt(MAX(0.01f, direction[(j * width + i) * 4][0] + direction[(j * width + i) * 4][1] + direction[(j * width + i) * 4][2]));
       for(unsigned c = 0; c < 3; c++)
       {
-        float det = details[(j * width + i) * 4 + c];
-        // float thrs = threshold * sqrt((0.75f * direction[(j * width + i) * 4][c]
-        //                           + 0.25f * direction[(j * width + i) * 4 + 1][c]) + 0.05f) * wb[c];
-        float thrs = threshold * sqrt(var[(j * width + i) * 4 + c]);
-        details[(j * width + i) * 4 + c] = sign(det) * MAX(fabs(det) - thrs, 0.0f);
-        //det = det / MIN(MAX(sqrt(var[(j * width + i) * 4 + c]) * 500.0f, 1.0f), max);
-        //details[(j * width + i) * 4 + c] = sign(det) * MAX(fabs(det) - thrs, 0.0f);
+        float thrs = threshold * weight[c];// * mean_mean;
+        tmp[c] = sign(tmp[c]) * MAX(fabs(tmp[c]) - thrs, 0.0f);
       }
+      matrix_mul(toRGB, tmp, &(details[(j * width + i) * 4]));
     }
   }
 }
@@ -306,8 +417,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float* details[NB_SCALES];
   float** direction[NB_SCALES];
   //float threshold[NB_SCALES] = {0.7, 1.0, 0.9, 0.6, 0.4, 0.2, 0.1, 0.05};
-  float threshold[NB_SCALES] = {1.5, 2.0, 1.0, 0.5, 0.2, 0.05, 0.01, 0.001};
+//  float threshold[NB_SCALES] = {1.5, 2.0, 1.0, 0.5, 0.2, 0.05, 0.01, 0.001};
 //  float threshold[NB_SCALES] = {0.20, 0.20, 0.20, 0.15, 0.10, 0.05, 0.01, 0.007};
+  float threshold[NB_SCALES] = {4.0f, 1.8f, 0.70, 0.3, 0.1, 0.05, 0.01, 0.007};
   unsigned width[NB_SCALES];
   unsigned height[NB_SCALES];
   float coefs[NB_SCALES][4];
@@ -331,9 +443,12 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (float**)malloc(sizeof(float*) * 4 * width[i] * height[i]);
   }
 
-  // threshold[0] *= d->checker_scale;
-  // threshold[1] *= d->checker_scale;
-  // threshold[2] *= d->checker_scale;
+  threshold[2] *= 0.1f * d->checker_scale;
+  threshold[3] *= 0.1f * d->checker_scale;
+  threshold[4] *= 0.1f * d->checker_scale;
+  threshold[5] *= 0.1f * d->checker_scale;
+  threshold[6] *= 0.1f * d->checker_scale;
+  threshold[7] *= 0.1f * d->checker_scale;
   for(int k = 0; k < NB_SCALES; k++)
   {
     threshold[k] *= 1.0f * d->factor;
@@ -355,14 +470,16 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   for(int i = NB_SCALES-1; i > 1; i--)
   {
+    const float weight[3] = {1.0f, 1.0f - i / (float)NB_SCALES, 1.0f - i / (float)NB_SCALES};
     get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb, coefs[i-1]);
     var(details[i-1], vars[i-1], width[i-1], height[i-1], NB_SCALES - i, wb, d->checker_scale);
-    thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], powf(2.0f, NB_SCALES - i) / 10.0f);
+    thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], weight /*powf(2.0f, NB_SCALES - i) / 10.0f*/);
     recompose(means[i], means[i-1], details[i-1], width[i-1], height[i-1], direction[i-1], coefs[i-1]);
   }
+  const float weight[3] = {1.0f, 1.0f - 0 / (float)NB_SCALES, 1.0f - 0 / (float)NB_SCALES};
   get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0], wb, coefs[0]);
   var(details[0], vars[0], width[0], height[0], NB_SCALES, wb, d->checker_scale);
-  thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb, vars[0], powf(2.0f, NB_SCALES) / 10.0f);
+  thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb, vars[0], weight /*powf(2.0f, NB_SCALES) / 10.0f*/);
   recompose(means[1], out, details[0], width[0], height[0], direction[0], coefs[0]);
 
   // cleanup
