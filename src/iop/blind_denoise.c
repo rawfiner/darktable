@@ -22,6 +22,7 @@
 #include "develop/imageop.h"
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
+#include "common/fast_guided_filter.h"
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
@@ -52,6 +53,14 @@ typedef struct dt_iop_blind_denoise_self_and_index_t
   dt_iop_module_t *self;
   uint32_t n;
 } dt_iop_blind_denoise_self_and_index_t;
+
+typedef struct dt_iop_blind_denoise_dir_t
+{
+  // offset in width. Can be -1, 0, or 1
+  int8_t w;
+  // offset in height. Can be -1, 0, or 1
+  int8_t h;
+} dt_iop_blind_denoise_dir_t;
 
 typedef struct dt_iop_blind_denoise_gui_data_t
 {
@@ -161,70 +170,115 @@ static void var(float* details, float* variance, unsigned width, unsigned height
 }
 #endif
 
-#define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; float* tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
+#define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
 // for each pixel, direction[0] is the best direction, direction[1] the second best, etc
-static void get_details_and_direction(const float* in, float* mean, float* details, unsigned width, unsigned height, float** direction, float* wb, float* coefs)
+static void get_details_and_direction(const float* in, float* mean, float* details, unsigned width, unsigned height, unsigned widthmean, unsigned heightmean, dt_iop_blind_denoise_dir_t* direction, float* wb, float* coefs)
 {
-  const unsigned widthmean = (width + 1) / 2;
-  const unsigned heightmean = (height + 1) / 2;
+  float* upscaled_mean = malloc(sizeof(float) * 4 * width * height);
+  interpolate_bilinear(mean, widthmean, heightmean, upscaled_mean, width, height, 4);
+
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(in, mean, details, direction, width, height, widthmean, heightmean, wb, coefs) \
+    dt_omp_firstprivate(in, upscaled_mean, details, direction, width, height, widthmean, heightmean, wb, coefs) \
     schedule(static)
 #endif
-  for(unsigned j = 0; j < height; j++)
+  for(int j = 0; j < height; j++)
   {
-    unsigned j0 = MAX(MIN(j / 2 + (j & 1) - 1, heightmean - 1), 0);
-    unsigned j1 = MIN(j / 2 + (j & 1), heightmean - 1);
-    for(unsigned i = 0; i < width; i++)
+    for(int i = 0; i < width; i++)
     {
-      unsigned i0 = MAX(MIN(i / 2 + (i & 1) - 1, widthmean - 1), 0);
-      unsigned i1 = MIN(i / 2 + (i & 1), widthmean - 1);
-      float diff[4] = {0.0f};
-      float** dir = &(direction[(j * width + i) * 4]);
-      float avg = 0.0f;
-      for(unsigned c = 0; c < 3; c++)
+      float diff[9] = {0.0f};
+      dt_iop_blind_denoise_dir_t dir[9];
+      //dt_iop_blind_denoise_dir_t* dir = &(direction[(j * width + i) * 4]);
+      for(int kj = -1; kj <= 1; kj++)
       {
-        diff[0] += /*fabs(*/mean[(j0 * widthmean + i0) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
-        diff[1] += /*fabs(*/mean[(j1 * widthmean + i0) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
-        diff[2] += /*fabs(*/mean[(j0 * widthmean + i1) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
-        diff[3] += /*fabs(*/mean[(j1 * widthmean + i1) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
-        avg += in[(j * width + i) * 4 + c] / wb[c];
-      }
-      for(int k = 0; k < 4; k++)
-      {
-        diff[k] /= MAX(avg, 0.00001f);
-        if(diff[k] < 1.0f)
+        for(int ki = -1; ki <= 1; ki++)
         {
-          diff[k] = MAX(diff[k], 0.00001f);
-          diff[k] = 1.0f / diff[k];
+          unsigned index = (kj + 1) * 3 + ki + 1;
+          if(j + kj < 0)
+          {
+            kj = 0;
+          }
+          if(i + ki < 0)
+          {
+            ki = 0;
+          }
+          if(j + kj > height - 1)
+          {
+            kj = 0;
+          }
+          if(i + ki > width - 1)
+          {
+            ki = 0;
+          }
+          dir[index].w = ki;
+          dir[index].h = kj;
+          int indexj = j + kj;
+          int indexi = i + ki;
+          for(unsigned c = 0; c < 3; c++)
+          {
+            diff[index] += fabs(upscaled_mean[(indexj * width + indexi) * 4 + c] - in[(indexj * width + indexi) * 4 + c]) / wb[c];
+          }
         }
       }
-
-      dir[0] = &(mean[(j0 * widthmean + i0) * 4]);
-      dir[1] = &(mean[(j1 * widthmean + i0) * 4]);
-      dir[2] = &(mean[(j0 * widthmean + i1) * 4]);
-      dir[3] = &(mean[(j1 * widthmean + i1) * 4]);
+      // for(unsigned c = 0; c < 3; c++)
+      // {
+        // diff[0] += fabs(mean[(j0 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+        // diff[1] += fabs(mean[(j1 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+        // diff[2] += fabs(mean[(j0 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+        // diff[3] += fabs(mean[(j1 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+      //   diff[0] += MAX(mean[(j0 * widthmean + i0) * 4 + c], 0.0f) / wb[c];
+      //   diff[1] += MAX(mean[(j1 * widthmean + i0) * 4 + c], 0.0f) / wb[c];
+      //   diff[2] += MAX(mean[(j0 * widthmean + i1) * 4 + c], 0.0f) / wb[c];
+      //   diff[3] += MAX(mean[(j1 * widthmean + i1) * 4 + c], 0.0f) / wb[c];
+      //   avg += in[(j * width + i) * 4 + c] / wb[c];
+      // }
+      // for(int k = 0; k < 4; k++)
+      // {
+      //   diff[k] /= MAX(avg, 0.00001f);
+      //   if(diff[k] < 1.0f)
+      //   {
+      //     diff[k] = MAX(diff[k], 0.00001f);
+      //     diff[k] = 1.0f / diff[k];
+      //   }
+      // }
 
       // sort diff and dir jointly
-      SWAP(0, 1);
-      SWAP(2, 3);
-      SWAP(0, 2);
-      SWAP(1, 3);
+      SWAP(3, 4);
+      SWAP(6, 7);
       SWAP(1, 2);
+      SWAP(4, 5);
+      SWAP(7, 8);
+      SWAP(0, 1);
+      SWAP(3, 4);
+      SWAP(6, 7);
+      SWAP(0, 3);
+      SWAP(3, 6);
+      SWAP(0, 3);
+      SWAP(1, 4);
+      SWAP(4, 7);
+      SWAP(1, 4);
+      SWAP(2, 5);
+      SWAP(5, 8);
+      SWAP(2, 5);
+      SWAP(1, 3);
+      SWAP(5, 7);
+      SWAP(2, 6);
+      SWAP(4, 6);
+      SWAP(2, 4);
+      SWAP(2, 3);
+      SWAP(5, 6);
 
+      direction[j * width + i] = dir[0];
       for(unsigned c = 0; c < 3; c++)
       {
         float value = in[(j * width + i) * 4 + c];
-        value -= coefs[0] * dir[0][c];
-        value -= coefs[1] * dir[1][c];
-        value -= coefs[2] * dir[2][c];
-        value -= coefs[3] * dir[3][c];
+        value -= upscaled_mean[((j + dir[0].h) * width + i + dir[0].w) * 4 + c];
         details[(j * width + i) * 4 + c] = value;
       }
     }
   }
+  free(upscaled_mean);
 }
 
 #undef SWAP
@@ -289,7 +343,6 @@ static int sign(float a)
 {
   return (a >= 0.0f) - (a < 0.0f);
 }
-
 
 static gboolean invert_matrix(const float in[9], float out[9])
 {
@@ -405,11 +458,14 @@ static inline void matrix_mul(float* matrix, float* in, float* out)
   }
 }
 
-static void thresholding(float* details, unsigned width, unsigned height, float** direction, float threshold, float* wb, float* var, const float weight[3])
+static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned heightmean, float* details, float* out, unsigned width, unsigned height, dt_iop_blind_denoise_dir_t* direction, float threshold, float* wb, float* var, const float weight[3])
 {
+  float* upscaled_mean = malloc(sizeof(float) * 4 * width * height);
+  interpolate_bilinear(mean, widthmean, heightmean, upscaled_mean, width, height, 4);
+
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(details, direction, width, height, threshold, wb, var, weight) \
+    dt_omp_firstprivate(upscaled_mean, out, details, direction, width, height, threshold, wb, var, weight) \
     schedule(static)
 #endif
   for(unsigned j = 0; j < height; j++)
@@ -419,11 +475,12 @@ static void thresholding(float* details, unsigned width, unsigned height, float*
       float toY0U0V0[9] = {1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f,
                            0.5f,      0.0f,      -0.5f,
                            0.25f,     -0.5f,     0.25f};
-     float toRGB[9] = {0.0f, 0.0f, 0.0f,
+      float toRGB[9] = {0.0f, 0.0f, 0.0f,
                       0.0f, 0.0f, 0.0f,
                       0.0f, 0.0f, 0.0f};
       //TODO take var into account to setup the conversion matrices
-      set_up_conversion_matrices(toY0U0V0, toRGB, wb, direction[(j * width + i) * 4]);
+      float* mean_ptr = &upscaled_mean[((j + direction[j * width + i].h) * width + i + direction[j * width + i].w) * 4];
+      set_up_conversion_matrices(toY0U0V0, toRGB, wb, mean_ptr);
       float tmp[3];
 
       matrix_mul(toY0U0V0, &(details[(j * width + i) * 4]), tmp);
@@ -435,35 +492,13 @@ static void thresholding(float* details, unsigned width, unsigned height, float*
         tmp[c] = /*fabs(mean) * */sign(tmp[c]) * MAX(/*MIN(*/fabs(tmp[c] /*/ mean*/)/*, powf(1.0f / thrs, 4.0f))*/ - thrs, 0.0f);
       }
       matrix_mul(toRGB, tmp, &(details[(j * width + i) * 4]));
-    }
-  }
-}
-
-// recompose image from 2 layers
-// width and height are the dimensions of out
-static void recompose(float* in, float* out, float* details, unsigned width, unsigned height, float** direction, float* coefs)
-{
-  // const unsigned widthin = (width + 1) / 2;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-    dt_omp_firstprivate(in, out, details, direction, width, height, coefs) \
-    schedule(static)
-#endif
-  for(unsigned j = 0; j < height; j++)
-  {
-    for(unsigned i = 0; i < width; i++)
-    {
       for(unsigned c = 0; c < 3; c++)
       {
-        float value = coefs[0] * direction[(j * width + i) * 4][c];
-        value += coefs[1] * direction[(j * width + i) * 4 + 1][c];
-        value += coefs[2] * direction[(j * width + i) * 4 + 2][c];
-        value += coefs[3] * direction[(j * width + i) * 4 + 3][c];
-        value += details[(j * width + i) * 4 + c];
-        out[(j * width + i) * 4 + c] = value;
+        out[(j * width + i) * 4 + c] = mean_ptr[c] + details[(j * width + i) * 4 + c];
       }
     }
   }
+  free(upscaled_mean);
 }
 
 #define RADIUS 5
@@ -477,7 +512,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float* means[NB_SCALES];
   float* vars[NB_SCALES];
   float* details[NB_SCALES];
-  float** direction[NB_SCALES];
+  dt_iop_blind_denoise_dir_t* direction[NB_SCALES];
   //float threshold[NB_SCALES] = {0.7, 1.0, 0.9, 0.6, 0.4, 0.2, 0.1, 0.05};
   float threshold[NB_SCALES] = {5.0, 4.5, 3.0, 1.7, 1.0, 0.6, 0.3, 0.1};
 //  float threshold[NB_SCALES] = {0.20, 0.20, 0.20, 0.15, 0.10, 0.05, 0.01, 0.007};
@@ -494,7 +529,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   height[0] = roi_out->height;
   details[0] = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   vars[0] = (float*)calloc(sizeof(float), 4 * width[0] * height[0]);
-  direction[0] = (float**)malloc(sizeof(float*) * 4 * width[0] * height[0]);
+  direction[0] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[0] * height[0]);
   for(int i = 1; i < NB_SCALES; i++)
   {
     width[i] = (width[i-1] + 1) / 2;
@@ -502,17 +537,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     means[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
     vars[i] = (float*)calloc(sizeof(float), 4 * width[i] * height[i]);
     details[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
-    direction[i] = (float**)malloc(sizeof(float*) * 4 * width[i] * height[i]);
+    direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
   }
 
-  // threshold[0] *= powf(0.03f * d->checker_scale, 4.0f * 2.4f);
-  // threshold[1] *= powf(0.03f * d->checker_scale, 4.0f * 2.2f);
-  // threshold[2] *= powf(0.03f * d->checker_scale, 4.0f * 2.0f);
-  // threshold[3] *= powf(0.03f * d->checker_scale, 4.0f * 1.8f);
-  // threshold[4] *= powf(0.03f * d->checker_scale, 4.0f * 1.6f);
-  // threshold[5] *= powf(0.03f * d->checker_scale, 4.0f * 1.4f);
-  // threshold[6] *= powf(0.03f * d->checker_scale, 4.0f * 1.2f);
-  // threshold[7] *= powf(0.03f * d->checker_scale, 4.0f * 1.0f);
   for(int k = 0; k < NB_SCALES; k++)
   {
     threshold[k] = threshold[k] * 0.1f * d->factor[k];
@@ -534,24 +561,16 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
   for(int i = NB_SCALES-1; i > 0; i--)
   {
-    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb, coefs[i-1]);
+    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
   }
   for(int i = NB_SCALES-1; i > 1; i--)
   {
     // const float weight[3] = {1.0f, powf(1.0f - i / (float)NB_SCALES, 4.0f), powf(1.0f - i / (float)NB_SCALES, 4.0f)};
     const float weight[3] = {1.0f, d->checker_scale / 2.0f, d->checker_scale / 2.0f};
-    //get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb, coefs[i-1]);
-    //var(details[i-1], vars[i-1], width[i-1], height[i-1], NB_SCALES - i, wb, d->checker_scale);
-    thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], weight /*powf(2.0f, NB_SCALES - i) / 10.0f*/);
-    //if(i <= 2) memset(details[i-1], 0, sizeof(float) * width[i-1] * height[i-1] * 4);
-    recompose(means[i], means[i-1], details[i-1], width[i-1], height[i-1], direction[i-1], coefs[i-1]);
+    thresholding_and_recompose(means[i], width[i], height[i], details[i-1], means[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], weight);
   }
   const float weight[3] = {1.0f, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES};
-  //get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0], wb, coefs[0]);
-  //memset(details[0], 0, sizeof(float) * width[0] * height[0] * 4);
-  //var(details[0], vars[0], width[0], height[0], NB_SCALES, wb, d->checker_scale);
-  thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb, vars[0], weight /*powf(2.0f, NB_SCALES) / 10.0f*/);
-  recompose(means[1], out, details[0], width[0], height[0], direction[0], coefs[0]);
+  thresholding_and_recompose(means[1], width[1], height[1], details[0], out, width[0], height[0], direction[0], threshold[0], wb, vars[0], weight);
 
   // cleanup
   for(int i = 1; i < NB_SCALES; i++)
