@@ -25,6 +25,7 @@
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
+#define NB_SCALES 8
 
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
@@ -43,14 +44,21 @@ typedef struct dt_iop_blind_denoise_params_t
   // users data bases, and you should increment the version
   // of DT_MODULE(VERSION) above!
   int checker_scale;
-  float factor;
+  float factor[NB_SCALES];
 } dt_iop_blind_denoise_params_t;
+
+typedef struct dt_iop_blind_denoise_self_and_index_t
+{
+  dt_iop_module_t *self;
+  uint32_t n;
+} dt_iop_blind_denoise_self_and_index_t;
 
 typedef struct dt_iop_blind_denoise_gui_data_t
 {
   // whatever you need to make your gui happy.
   // stored in self->gui_data
-  GtkWidget *scale, *factor; // this is needed by gui_update
+  dt_iop_blind_denoise_self_and_index_t s[NB_SCALES];
+  GtkWidget *scale, *factor[NB_SCALES]; // this is needed by gui_update
 } dt_iop_blind_denoise_gui_data_t;
 
 typedef struct dt_iop_blind_denoise_global_data_t
@@ -88,6 +96,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+#if 0
 static void var(float* details, float* variance, unsigned width, unsigned height, unsigned radius, float* wb, unsigned max_var)
 {
   float* tmp = calloc(sizeof(float), width * height * 4);
@@ -150,6 +159,7 @@ static void var(float* details, float* variance, unsigned width, unsigned height
   }
   free(tmp);
 }
+#endif
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; float* tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
@@ -173,13 +183,25 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
       unsigned i1 = MIN(i / 2 + (i & 1), widthmean - 1);
       float diff[4] = {0.0f};
       float** dir = &(direction[(j * width + i) * 4]);
+      float avg = 0.0f;
       for(unsigned c = 0; c < 3; c++)
       {
-        diff[0] += fabs(mean[(j0 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
-        diff[1] += fabs(mean[(j1 * widthmean + i0) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
-        diff[2] += fabs(mean[(j0 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
-        diff[3] += fabs(mean[(j1 * widthmean + i1) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
+        diff[0] += /*fabs(*/mean[(j0 * widthmean + i0) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
+        diff[1] += /*fabs(*/mean[(j1 * widthmean + i0) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
+        diff[2] += /*fabs(*/mean[(j0 * widthmean + i1) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
+        diff[3] += /*fabs(*/mean[(j1 * widthmean + i1) * 4 + c]/* - in[(j * width + i) * 4 + c])*/ / wb[c];
+        avg += in[(j * width + i) * 4 + c] / wb[c];
       }
+      for(int k = 0; k < 4; k++)
+      {
+        diff[k] /= MAX(avg, 0.00001f);
+        if(diff[k] < 1.0f)
+        {
+          diff[k] = MAX(diff[k], 0.00001f);
+          diff[k] = 1.0f / diff[k];
+        }
+      }
+
       dir[0] = &(mean[(j0 * widthmean + i0) * 4]);
       dir[1] = &(mean[(j1 * widthmean + i0) * 4]);
       dir[2] = &(mean[(j0 * widthmean + i1) * 4]);
@@ -205,6 +227,9 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
   }
 }
 
+#undef SWAP
+#define SWAP(x,y) if (tmpa[y] < tmpa[x]) { float tmp = tmpa[x]; tmpa[x] = tmpa[y]; tmpa[y] = tmp; unsigned tmpindex = index[x]; index[x] = index[y]; index[y] = tmpindex;}
+
 // decompose image in 2 layers: each pixel of out is a 4 pixels mean, and scaling up 2x out and adding details gives back in
 // out width is (width+1)/2
 // out height is (height+1)/2
@@ -222,13 +247,38 @@ static void decompose(const float* in, float* out, unsigned width, unsigned heig
     for(unsigned i = 0; i < width; i+=2)
     {
       unsigned iout = i / 2;
+
+      float tmpa[4] = {0.0f};
+      unsigned index[4];
+      index[0] = (j*width+i)*4;
+      index[1] = (j*width+MIN(i+1,width-1))*4;
+      index[2] = (MIN(j+1,height-1)*width+i)*4;
+      index[3] = (MIN(j+1,height-1)*width+MIN(i+1,width-1))*4;
       for(unsigned c = 0; c < 3; c++)
       {
-        float tmp00 = in[(j*width+i)*4+c];
-        float tmp01 = in[(j*width+MIN(i+1,width-1))*4+c];
-        float tmp10 = in[(MIN(j+1,height-1)*width+i)*4+c];
-        float tmp11 = in[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
-        float mean = (tmp00 + tmp01 + tmp10 + tmp11) / 4.0f;
+        tmpa[0] += in[(j*width+i)*4+c];
+        tmpa[1] += in[(j*width+MIN(i+1,width-1))*4+c];
+        tmpa[2] += in[(MIN(j+1,height-1)*width+i)*4+c];
+        tmpa[3] += in[(MIN(j+1,height-1)*width+MIN(i+1,width-1))*4+c];
+      }
+      SWAP(0, 1);
+      SWAP(2, 3);
+      SWAP(0, 2);
+      SWAP(1, 3);
+      SWAP(1, 2);
+      float mean = (tmpa[2] + tmpa[1]) / 2.0f;
+      float dist3 = fabs(mean - tmpa[3]);
+      float dist0 = fabs(mean - tmpa[0]);
+      for(unsigned c = 0; c < 3; c++)
+      {
+        tmpa[0] = in[index[0] + c];
+        tmpa[1] = in[index[1] + c];
+        tmpa[2] = in[index[2] + c];
+        tmpa[3] = in[index[3] + c];
+        if(dist3 < dist0) mean = (tmpa[3] + tmpa[2] + tmpa[1] + 0.1f * tmpa[0]) / 3.1f;
+        else mean = (tmpa[0] + tmpa[2] + tmpa[1] + 0.1f * tmpa[3]) / 3.1f;
+        //FIXME would be nice to have a better (sparser?) downscaling
+        mean = (tmpa[0] + tmpa[2] + tmpa[1] + tmpa[3]) / 4.0f;
         out[(jout * widthout + iout) * 4 + c] = mean;
       }
     }
@@ -274,13 +324,17 @@ static gboolean invert_matrix(const float in[9], float out[9])
 
 // create the white balance adaptative conversion matrices
 // supposes toY0U0V0 already contains the "normal" conversion matrix
-static void set_up_conversion_matrices(float toY0U0V0[9], float toRGB[9], float wb[3], float* mean)
+static void set_up_conversion_matrices(float toY0U0V0[9], float toRGB[9], float wb[3], float* ref)
 {
   // for an explanation of the spirit of the choice of the coefficients of the
   // Y0U0V0 conversion matrix, see part 12.3.3 page 190 of
   // "From Theory to Practice, a Tour of Image Denoising"
   // https://hal.archives-ouvertes.fr/tel-01114299
   // we adapt a bit the coefficients, in a way that follows the same spirit.
+
+  float mean[3];
+  for(int c = 0; c < 3; c++)
+    mean[c] = MAX(ref[c], 0.0f);
 
   float sum_invwb = 1.0f/wb[0] + 1.0f/wb[1] + 1.0f/wb[2];
   // we change the coefs to Y0, but keeping the goal of making SNR higher:
@@ -319,6 +373,13 @@ static void set_up_conversion_matrices(float toY0U0V0[9], float toRGB[9], float 
   toY0U0V0[6] = -0.5f * GR_ratio / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
   toY0U0V0[7] = 1.0f / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
   toY0U0V0[8] = -0.5f * GB_ratio / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
+  // uncomment for 'classic' Y0U0V0 transform
+  // toY0U0V0[3] = 1.0f;
+  // toY0U0V0[4] = 0.0f;
+  // toY0U0V0[5] = -1.0f;
+  // toY0U0V0[6] = -0.5f;
+  // toY0U0V0[7] = 1.0f;
+  // toY0U0V0[8] = -0.5f;
 
   const gboolean is_invertible = invert_matrix(toY0U0V0, toRGB);
   if(!is_invertible)
@@ -364,12 +425,14 @@ static void thresholding(float* details, unsigned width, unsigned height, float*
       //TODO take var into account to setup the conversion matrices
       set_up_conversion_matrices(toY0U0V0, toRGB, wb, direction[(j * width + i) * 4]);
       float tmp[3];
+
       matrix_mul(toY0U0V0, &(details[(j * width + i) * 4]), tmp);
-      //const float mean_mean = sqrt(MAX(0.01f, direction[(j * width + i) * 4][0] + direction[(j * width + i) * 4][1] + direction[(j * width + i) * 4][2]));
+      // mean = MAX(mean, 0.0f) + 0.05f;
+      // //const float mean_mean = sqrt(MAX(0.01f, direction[(j * width + i) * 4][0] + direction[(j * width + i) * 4][1] + direction[(j * width + i) * 4][2]));
       for(unsigned c = 0; c < 3; c++)
       {
         float thrs = threshold * weight[c];// * mean_mean;
-        tmp[c] = sign(tmp[c]) * MAX(fabs(tmp[c]) - thrs, 0.0f);
+        tmp[c] = /*fabs(mean) * */sign(tmp[c]) * MAX(/*MIN(*/fabs(tmp[c] /*/ mean*/)/*, powf(1.0f / thrs, 4.0f))*/ - thrs, 0.0f);
       }
       matrix_mul(toRGB, tmp, &(details[(j * width + i) * 4]));
     }
@@ -403,7 +466,6 @@ static void recompose(float* in, float* out, float* details, unsigned width, uns
   }
 }
 
-#define NB_SCALES 8
 #define RADIUS 5
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
@@ -417,9 +479,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float* details[NB_SCALES];
   float** direction[NB_SCALES];
   //float threshold[NB_SCALES] = {0.7, 1.0, 0.9, 0.6, 0.4, 0.2, 0.1, 0.05};
-//  float threshold[NB_SCALES] = {1.5, 2.0, 1.0, 0.5, 0.2, 0.05, 0.01, 0.001};
+  float threshold[NB_SCALES] = {5.0, 4.5, 3.0, 1.7, 1.0, 0.6, 0.3, 0.1};
 //  float threshold[NB_SCALES] = {0.20, 0.20, 0.20, 0.15, 0.10, 0.05, 0.01, 0.007};
-  float threshold[NB_SCALES] = {4.0f, 1.8f, 0.70, 0.3, 0.1, 0.05, 0.01, 0.007};
+//  float threshold[NB_SCALES] = {4.0f, 1.8f, 0.70, 0.3, 0.1, 0.05, 0.01, 0.007};
   unsigned width[NB_SCALES];
   unsigned height[NB_SCALES];
   float coefs[NB_SCALES][4];
@@ -443,19 +505,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (float**)malloc(sizeof(float*) * 4 * width[i] * height[i]);
   }
 
-  threshold[2] *= 0.1f * d->checker_scale;
-  threshold[3] *= 0.1f * d->checker_scale;
-  threshold[4] *= 0.1f * d->checker_scale;
-  threshold[5] *= 0.1f * d->checker_scale;
-  threshold[6] *= 0.1f * d->checker_scale;
-  threshold[7] *= 0.1f * d->checker_scale;
+  // threshold[0] *= powf(0.03f * d->checker_scale, 4.0f * 2.4f);
+  // threshold[1] *= powf(0.03f * d->checker_scale, 4.0f * 2.2f);
+  // threshold[2] *= powf(0.03f * d->checker_scale, 4.0f * 2.0f);
+  // threshold[3] *= powf(0.03f * d->checker_scale, 4.0f * 1.8f);
+  // threshold[4] *= powf(0.03f * d->checker_scale, 4.0f * 1.6f);
+  // threshold[5] *= powf(0.03f * d->checker_scale, 4.0f * 1.4f);
+  // threshold[6] *= powf(0.03f * d->checker_scale, 4.0f * 1.2f);
+  // threshold[7] *= powf(0.03f * d->checker_scale, 4.0f * 1.0f);
   for(int k = 0; k < NB_SCALES; k++)
   {
-    threshold[k] *= 1.0f * d->factor;
+    threshold[k] = threshold[k] * 0.1f * d->factor[k];
     float sum_coefs = 0.0f;
     for(int c = 0; c < 4; c++)
     {
-      coefs[k][c] = expf(-c / (k * k / 4.0f + 0.5f));
+      coefs[k][c] = expf(-c / (k * k / 40.0f + 0.5f));
       sum_coefs += coefs[k][c];
     }
     for(int c = 0; c < 4; c++)
@@ -468,17 +532,24 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   {
     decompose(means[i], means[i+1], width[i], height[i]);
   }
+  for(int i = NB_SCALES-1; i > 0; i--)
+  {
+    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb, coefs[i-1]);
+  }
   for(int i = NB_SCALES-1; i > 1; i--)
   {
-    const float weight[3] = {1.0f, 1.0f - i / (float)NB_SCALES, 1.0f - i / (float)NB_SCALES};
-    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb, coefs[i-1]);
-    var(details[i-1], vars[i-1], width[i-1], height[i-1], NB_SCALES - i, wb, d->checker_scale);
+    // const float weight[3] = {1.0f, powf(1.0f - i / (float)NB_SCALES, 4.0f), powf(1.0f - i / (float)NB_SCALES, 4.0f)};
+    const float weight[3] = {1.0f, d->checker_scale / 2.0f, d->checker_scale / 2.0f};
+    //get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], direction[i-1], wb, coefs[i-1]);
+    //var(details[i-1], vars[i-1], width[i-1], height[i-1], NB_SCALES - i, wb, d->checker_scale);
     thresholding(details[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], weight /*powf(2.0f, NB_SCALES - i) / 10.0f*/);
+    //if(i <= 2) memset(details[i-1], 0, sizeof(float) * width[i-1] * height[i-1] * 4);
     recompose(means[i], means[i-1], details[i-1], width[i-1], height[i-1], direction[i-1], coefs[i-1]);
   }
-  const float weight[3] = {1.0f, 1.0f - 0 / (float)NB_SCALES, 1.0f - 0 / (float)NB_SCALES};
-  get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0], wb, coefs[0]);
-  var(details[0], vars[0], width[0], height[0], NB_SCALES, wb, d->checker_scale);
+  const float weight[3] = {1.0f, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES};
+  //get_details_and_direction(means[0], means[1], details[0], width[0], height[0], direction[0], wb, coefs[0]);
+  //memset(details[0], 0, sizeof(float) * width[0] * height[0] * 4);
+  //var(details[0], vars[0], width[0], height[0], NB_SCALES, wb, d->checker_scale);
   thresholding(details[0], width[0], height[0], direction[0], threshold[0], wb, vars[0], weight /*powf(2.0f, NB_SCALES) / 10.0f*/);
   recompose(means[1], out, details[0], width[0], height[0], direction[0], coefs[0]);
 
@@ -510,7 +581,10 @@ void init(dt_iop_module_t *module)
   module->params_size = sizeof(dt_iop_blind_denoise_params_t);
   module->gui_data = NULL;
   // init defaults:
-  dt_iop_blind_denoise_params_t tmp = (dt_iop_blind_denoise_params_t){ .checker_scale = 50, .factor = 0.5 };
+  dt_iop_blind_denoise_params_t tmp;
+  tmp.checker_scale = 10;
+  for(int i = 0; i < NB_SCALES; i++)
+    tmp.factor[i] = 0.1;
 
   memcpy(module->params, &tmp, sizeof(dt_iop_blind_denoise_params_t));
   memcpy(module->default_params, &tmp, sizeof(dt_iop_blind_denoise_params_t));
@@ -543,12 +617,12 @@ static void scale_callback(GtkWidget *w, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
-static void factor_callback(GtkWidget *w, dt_iop_module_t *self)
+static void factor_callback(GtkWidget *w, dt_iop_blind_denoise_self_and_index_t *s)
 {
   if(darktable.gui->reset) return;
-  dt_iop_blind_denoise_params_t *p = (dt_iop_blind_denoise_params_t *)self->params;
-  p->factor = dt_bauhaus_slider_get(w);
-  dt_dev_add_history_item(darktable.develop, self, TRUE);
+  dt_iop_blind_denoise_params_t *p = (dt_iop_blind_denoise_params_t *)s->self->params;
+  p->factor[s->n] = dt_bauhaus_slider_get(w);
+  dt_dev_add_history_item(darktable.develop, s->self, TRUE);
 }
 
 void gui_update(dt_iop_module_t *self)
@@ -556,7 +630,8 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_blind_denoise_gui_data_t *g = (dt_iop_blind_denoise_gui_data_t *)self->gui_data;
   dt_iop_blind_denoise_params_t *p = (dt_iop_blind_denoise_params_t *)self->params;
   dt_bauhaus_slider_set(g->scale, p->checker_scale);
-  dt_bauhaus_slider_set(g->factor, p->factor);
+  for(int i = 0; i < NB_SCALES; i++)
+    dt_bauhaus_slider_set(g->factor[i], p->factor[i]);
 }
 
 void gui_init(dt_iop_module_t *self)
@@ -571,10 +646,15 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->scale), TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->scale), "value-changed", G_CALLBACK(scale_callback), self);
 
-  g->factor = dt_bauhaus_slider_new_with_range(self, 0.0, 100.0, 0.1, 0.5, 2);
-  dt_bauhaus_widget_set_label(g->factor, NULL, _("factor"));
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->factor), TRUE, TRUE, 0);
-  g_signal_connect(G_OBJECT(g->factor), "value-changed", G_CALLBACK(factor_callback), self);
+  for(int i = 0; i < NB_SCALES; i++)
+  {
+    g->s[i].self = self;
+    g->s[i].n = i;
+    g->factor[i] = dt_bauhaus_slider_new_with_range(self, 0.0, 100.0, 0.1, 0.5, 2);
+    dt_bauhaus_widget_set_label(g->factor[i], NULL, _("factor"));
+    gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->factor[i]), TRUE, TRUE, 0);
+    g_signal_connect(G_OBJECT(g->factor[i]), "value-changed", G_CALLBACK(factor_callback), &(g->s[i]));
+  }
 }
 
 void gui_cleanup(dt_iop_module_t *self)
