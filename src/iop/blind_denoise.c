@@ -294,6 +294,7 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
 
 #undef SWAP
 
+#if 0
 #define SWAP(x,y) if (tmpa[y] < tmpa[x]) { float tmp = tmpa[x]; tmpa[x] = tmpa[y]; tmpa[y] = tmp; unsigned tmpindex = index[x]; index[x] = index[y]; index[y] = tmpindex;}
 
 // decompose image in 2 layers: each pixel of out is a 4 pixels mean, and scaling up 2x out and adding details gives back in
@@ -350,6 +351,7 @@ static void decompose(const float* in, float* out, unsigned width, unsigned heig
     }
   }
 }
+#endif
 
 static int sign(float a)
 {
@@ -569,8 +571,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   for(int i = 0; i < NB_SCALES-1; i++)
   {
-    decompose(means[i], means[i+1], width[i], height[i]);
-    //interpolate_bilinear(means[i], width[i], height[i], means[i+1], width[i+1], height[i+1], 4);
+    // decompose(means[i], means[i+1], width[i], height[i]);
+    interpolate_bilinear(means[i], width[i], height[i], means[i+1], width[i+1], height[i+1], 4);
   }
   // for(int i = NB_SCALES-1; i > 0; i--)
   // {
