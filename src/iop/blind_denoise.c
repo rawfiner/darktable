@@ -190,10 +190,12 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
       float diff[9] = {0.0f};
       dt_iop_blind_denoise_dir_t dir[9];
       //dt_iop_blind_denoise_dir_t* dir = &(direction[(j * width + i) * 4]);
-      for(int kj = -1; kj <= 1; kj++)
+      for(int jj = -1; jj <= 1; jj++)
       {
-        for(int ki = -1; ki <= 1; ki++)
+        for(int ii = -1; ii <= 1; ii++)
         {
+          int kj = jj;
+          int ki = ii;
           unsigned index = (kj + 1) * 3 + ki + 1;
           if(j + kj < 0)
           {
@@ -269,6 +271,11 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
       SWAP(2, 3);
       SWAP(5, 6);
 
+      const int last = 1;
+      if(i <= last) dir[0].w = 1;
+      if(j <= last) dir[0].h = 1;
+      if(i >= width-1-last) dir[0].w = -1;
+      if(j >= height-1-last) dir[0].h = -1;
       direction[j * width + i] = dir[0];
       for(unsigned c = 0; c < 3; c++)
       {
@@ -282,6 +289,7 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
 }
 
 #undef SWAP
+
 #define SWAP(x,y) if (tmpa[y] < tmpa[x]) { float tmp = tmpa[x]; tmpa[x] = tmpa[y]; tmpa[y] = tmp; unsigned tmpindex = index[x]; index[x] = index[y]; index[y] = tmpindex;}
 
 // decompose image in 2 layers: each pixel of out is a 4 pixels mean, and scaling up 2x out and adding details gives back in
@@ -332,7 +340,7 @@ static void decompose(const float* in, float* out, unsigned width, unsigned heig
         if(dist3 < dist0) mean = (tmpa[3] + tmpa[2] + tmpa[1] + 0.1f * tmpa[0]) / 3.1f;
         else mean = (tmpa[0] + tmpa[2] + tmpa[1] + 0.1f * tmpa[3]) / 3.1f;
         //FIXME would be nice to have a better (sparser?) downscaling
-        mean = (tmpa[0] + tmpa[2] + tmpa[1] + tmpa[3]) / 4.0f;
+        //mean = (tmpa[0] + tmpa[2] + tmpa[1] + tmpa[3]) / 4.0f;
         out[(jout * widthout + iout) * 4 + c] = mean;
       }
     }
@@ -427,12 +435,12 @@ static void set_up_conversion_matrices(float toY0U0V0[9], float toRGB[9], float 
   toY0U0V0[7] = 1.0f / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
   toY0U0V0[8] = -0.5f * GB_ratio / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
   // uncomment for 'classic' Y0U0V0 transform
-  // toY0U0V0[3] = 1.0f;
-  // toY0U0V0[4] = 0.0f;
-  // toY0U0V0[5] = -1.0f;
-  // toY0U0V0[6] = -0.5f;
-  // toY0U0V0[7] = 1.0f;
-  // toY0U0V0[8] = -0.5f;
+  toY0U0V0[3] = 1.0f;
+  toY0U0V0[4] = 0.0f;
+  toY0U0V0[5] = -1.0f;
+  toY0U0V0[6] = -0.5f;
+  toY0U0V0[7] = 1.0f;
+  toY0U0V0[8] = -0.5f;
 
   const gboolean is_invertible = invert_matrix(toY0U0V0, toRGB);
   if(!is_invertible)
@@ -479,7 +487,7 @@ static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned
                       0.0f, 0.0f, 0.0f,
                       0.0f, 0.0f, 0.0f};
       //TODO take var into account to setup the conversion matrices
-      float* mean_ptr = &upscaled_mean[((j + direction[j * width + i].h) * width + i + direction[j * width + i].w) * 4];
+      float* mean_ptr = &(upscaled_mean[((j + direction[j * width + i].h) * width + i + direction[j * width + i].w) * 4]);
       set_up_conversion_matrices(toY0U0V0, toRGB, wb, mean_ptr);
       float tmp[3];
 
@@ -494,7 +502,7 @@ static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned
       matrix_mul(toRGB, tmp, &(details[(j * width + i) * 4]));
       for(unsigned c = 0; c < 3; c++)
       {
-        out[(j * width + i) * 4 + c] = mean_ptr[c] + details[(j * width + i) * 4 + c];
+        out[(j * width + i) * 4 + c] = MAX(MAX(mean_ptr[c], 0.0f) + details[(j * width + i) * 4 + c], 0.0f);
       }
     }
   }
@@ -558,18 +566,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   for(int i = 0; i < NB_SCALES-1; i++)
   {
     decompose(means[i], means[i+1], width[i], height[i]);
+    //interpolate_bilinear(means[i], width[i], height[i], means[i+1], width[i+1], height[i+1], 4);
   }
-  for(int i = NB_SCALES-1; i > 0; i--)
-  {
-    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
-  }
+  // for(int i = NB_SCALES-1; i > 0; i--)
+  // {
+  //   get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
+  // }
   for(int i = NB_SCALES-1; i > 1; i--)
   {
     // const float weight[3] = {1.0f, powf(1.0f - i / (float)NB_SCALES, 4.0f), powf(1.0f - i / (float)NB_SCALES, 4.0f)};
     const float weight[3] = {1.0f, d->checker_scale / 2.0f, d->checker_scale / 2.0f};
+    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
     thresholding_and_recompose(means[i], width[i], height[i], details[i-1], means[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], weight);
   }
   const float weight[3] = {1.0f, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES};
+  get_details_and_direction(means[0], means[1], details[0], width[0], height[0], width[1], height[1], direction[0], wb, coefs[0]);
   thresholding_and_recompose(means[1], width[1], height[1], details[0], out, width[0], height[0], direction[0], threshold[0], wb, vars[0], weight);
 
   // cleanup
