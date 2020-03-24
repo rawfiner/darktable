@@ -219,7 +219,7 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
           int indexi = i + ki;
           for(unsigned c = 0; c < 3; c++)
           {
-            diff[index] += fabs(upscaled_mean[(indexj * width + indexi) * 4 + c] - in[(indexj * width + indexi) * 4 + c]) / wb[c];
+            diff[index] += fabs(upscaled_mean[(indexj * width + indexi) * 4 + c] - in[(j * width + i) * 4 + c]) / wb[c];
           }
         }
       }
@@ -246,6 +246,7 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
       // }
 
       // sort diff and dir jointly
+      SWAP(0, 1);
       SWAP(3, 4);
       SWAP(6, 7);
       SWAP(1, 2);
@@ -276,6 +277,9 @@ static void get_details_and_direction(const float* in, float* mean, float* detai
       if(j <= last) dir[0].h = 1;
       if(i >= width-1-last) dir[0].w = -1;
       if(j >= height-1-last) dir[0].h = -1;
+      // uncomment to compare approach with an approach which has a "normal" upsampling
+      // dir[0].w = 0;
+      // dir[0].h = 0;
       direction[j * width + i] = dir[0];
       for(unsigned c = 0; c < 3; c++)
       {
