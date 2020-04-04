@@ -115,17 +115,17 @@ static inline void interpolate_bilinear(const float *const restrict in, const si
     for(size_t j = 0; j < width_out; j++)
     {
       // Relative coordinates of the pixel in output space
-      const float x_out = (float)j /(float)width_out;
-      const float y_out = (float)i /(float)height_out;
+      const float x_out = ((float)j + 0.5f) /(float)width_out;
+      const float y_out = ((float)i + 0.5f) /(float)height_out;
 
       // Corresponding absolute coordinates of the pixel in input space
-      const float x_in = x_out * (float)width_in;
-      const float y_in = y_out * (float)height_in;
+      const float x_in = x_out * (float)width_in - 0.5f;
+      const float y_in = y_out * (float)height_in - 0.5f;
 
       // Nearest neighbours coordinates in input space
-      size_t x_prev = (size_t)floorf(x_in);
+      size_t x_prev = MAX((size_t)floorf(x_in), 0);
       size_t x_next = x_prev + 1;
-      size_t y_prev = (size_t)floorf(y_in);
+      size_t y_prev = MAX((size_t)floorf(y_in), 0);
       size_t y_next = y_prev + 1;
 
       x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
