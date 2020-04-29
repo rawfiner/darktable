@@ -1864,6 +1864,10 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   {
     precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
   }
+  for(int i = 0; i < roi_in->width * roi_in->height; i++)
+  {
+    in[i * 4 + 3] = 1.0f;
+  }
   // for each shift vector
   for(int kj_index = -K; kj_index <= K; kj_index++)
   {
@@ -1885,12 +1889,14 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
 // we will add up errors)
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
+#if 0
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
       dt_omp_firstprivate(d, ovoid, P, roi_in, roi_out, central_pixel_weight) \
       firstprivate(inited_slide, norm) \
       shared(kj, ki, in, Sa) \
       schedule(static)
+#endif
 #endif
       for(int j = 0; j < roi_out->height; j++)
       {
@@ -1903,6 +1909,7 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
         const int PM = MIN(MIN(P, roi_out->height - 1 - j - kj), roi_out->height - 1 - j);
         // first line of every thread
         // TODO: also every once in a while to assert numerical precision!
+        clock_t time0 = clock();
         if(!inited_slide)
         {
           // sum up a line
@@ -1922,13 +1929,16 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
           // only reuse this if we had a full stripe
           if(Pm == P && PM == P) inited_slide = 1;
         }
+        clock_t time1 = clock();
 
         // sliding window for this line:
         float *s = S;
         float slide = 0.0f;
         // sum up the first -P..P
         for(int i = 0; i < 2 * P + 1; i++) slide += s[i];
-        for(int i = 0; i < roi_out->width; i++, s++, ins += 4, out += 4)
+        float *inpp = in + (size_t)4 * roi_in->width * j;
+        float *inpps = in + 4l * ((size_t)roi_in->width * (j + kj) + ki);
+        for(int i = 0; i < roi_out->width; i++, s++, ins += 4, inpp += 4, inpps += 4, out += 4)
         {
           // FIXME: the comment above is actually relevant even for 1000 px width already.
           // XXX    numerical precision will not forgive us:
@@ -1937,25 +1947,25 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
           {
             // TODO: could put that outside the loop.
             // DEBUG XXX bring back to computable range:
-            const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
-            const float *inp = in + 4 * i + (size_t)4 * roi_in->width * j;
-            const float *inps = in + 4 * i + 4l * ((size_t)roi_in->width * (j + kj) + ki);
+            //const float iv[4] = { ins[0], ins[1], ins[2], 1.0f };
             float contribution_center = 0.0f;
-            for(int k = 0; k < 3; k++) contribution_center += (inp[k] - inps[k]) * (inp[k] - inps[k]);
+            for(int k = 0; k < 3; k++) contribution_center += (inpp[k] - inpps[k]) * (inpp[k] - inpps[k]);
             // multiply the center contribution to be able to have a general setting
             // that does not depend on patch size.
             contribution_center *= (2 * P + 1) * (2 * P + 1);
             float patch_dissimilarity = slide + contribution_center * central_pixel_weight;
             patch_dissimilarity /= (1.0 + central_pixel_weight);
+            patch_dissimilarity = fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm - 2.0f));
 #if defined(_OPENMP) && defined(OPENMP_SIMD_)
 #pragma omp SIMD()
 #endif
             for(size_t c = 0; c < 4; c++)
             {
-              out[c] += iv[c] * fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm - 2.0f));
+              out[c] += ins[c] * patch_dissimilarity;
             }
           }
         }
+        clock_t time2 = clock();
         if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
         {
           // sliding window in j direction:
@@ -1976,6 +1986,9 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
         }
         else
           inited_slide = 0;
+        clock_t time3 = clock();
+        if(piece->pipe->type == DT_DEV_PIXELPIPE_EXPORT)
+        printf("%d, %d, %d\n", (int)(time1 - time0), (int)(time2 - time1), (int)(time3 - time2));
       }
     }
   }
@@ -2055,7 +2068,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
 
   // P == 0 : this will degenerate to a (fast) bilateral filter.
 
-  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads());
+  float *Sa = dt_alloc_align(64, (size_t)sizeof(float) * roi_out->width * dt_get_num_threads()); //FIXME strange that size is not multiplied by 4
   // we want to sum up weights in col[3], so need to init to 0:
   memset(ovoid, 0x0, (size_t)sizeof(float) * roi_out->width * roi_out->height * 4);
   float *in = dt_alloc_align(64, (size_t)4 * sizeof(float) * roi_in->width * roi_in->height);
@@ -2091,7 +2104,8 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
                        MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f)};
   // update the coeffs with strength and scale
   for(int i = 0; i < 3; i++) wb[i] *= d->strength * scale;
-  const float central_pixel_weight = d->central_pixel_weight * scale;
+  const float central_pixel_weight = d->central_pixel_weight * scale * (2 * P + 1) * (2 * P + 1);
+  norm /= (1.0 + central_pixel_weight / ((2 * P + 1) * (2 * P + 1)));
 
   const float aa[3] = { d->a[1] * wb[0], d->a[1] * wb[1], d->a[1] * wb[2] };
   const float bb[3] = { d->b[1] * wb[0], d->b[1] * wb[1], d->b[1] * wb[2] };
@@ -2104,11 +2118,27 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   {
     precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
   }
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+      dt_omp_firstprivate(in, roi_in) \
+      schedule(static)
+#endif
+  for(int i = 0; i < roi_in->width * roi_in->height; i++)
+  {
+    in[i * 4 + 3] = 1.0f;
+  }
 
   // for each shift vector
+  #ifdef _OPENMP
+  #pragma omp parallel for collapse(2) default(none) \
+        firstprivate(ovoid, P, roi_in, roi_out, central_pixel_weight) \
+        firstprivate(d, norm, K, scale, scattering) \
+        firstprivate(in, Sa) \
+        schedule(dynamic)
+  #endif
   for(int kj_index = -K; kj_index <= K; kj_index++)
   {
-    for(int ki_index = -K; ki_index <= K; ki_index++)
+    for(int ki_index = -K; ki_index <= 0; ki_index++)
     {
       // This formula is made for:
       // - ensuring that kj = kj_index and ki = ki_index when d->scattering is 0
@@ -2124,19 +2154,13 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
 // we will add up errors)
 // do this in parallel with a little threading overhead. could parallelize the outer loops with a bit more
 // memory
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-      dt_omp_firstprivate(ovoid, P, roi_in, roi_out, central_pixel_weight) \
-      firstprivate(inited_slide, d, norm) \
-      shared(kj, ki, in, Sa) \
-      schedule(static)
-#endif
       for(int j = 0; j < roi_out->height; j++)
       {
         if(j + kj < 0 || j + kj >= roi_out->height) continue;
         float *S = Sa + dt_get_thread_num() * roi_out->width;
         const float *ins = in + 4l * ((size_t)roi_in->width * (j + kj) + ki);
         float *out = ((float *)ovoid) + (size_t)4 * roi_out->width * j;
+        float *outs = ((float *)ovoid) + (size_t)4 * (roi_out->width * (j + kj) + ki);
 
         const int Pm = MIN(MIN(P, j + kj), j);
         const int PM = MIN(MIN(P, roi_out->height - 1 - j - kj), roi_out->height - 1 - j);
@@ -2167,6 +2191,9 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
         float slide = 0.0f;
         // sum up the first -P..P
         for(int i = 0; i < 2 * P + 1; i++) slide += s[i];
+        const float *inpp = in + (size_t)4 * roi_in->width * j;
+        const float *inpps = in + 4l * ((size_t)roi_in->width * (j + kj) + ki);
+
         for(int i = 0; i < roi_out->width; i++)
         {
           // FIXME: the comment above is actually relevant even for 1000 px width already.
@@ -2176,24 +2203,30 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
           {
             // TODO: could put that outside the loop.
             // DEBUG XXX bring back to computable range:
-            const __m128 iv = { ins[0], ins[1], ins[2], 1.0f };
-            const float *inp = in + 4 * i + (size_t)4 * roi_in->width * j;
-            const float *inps = in + 4 * i + 4l * ((size_t)roi_in->width * (j + kj) + ki);
+            const __m128 iv = {ins[0], ins[1], ins[2], ins[3]};
             float contribution_center = 0.0f;
-            for(int k = 0; k < 3; k++) contribution_center += (inp[k] - inps[k]) * (inp[k] - inps[k]);
+            for(int k = 0; k < 3; k++)
+            {
+              contribution_center += (inpp[k] - inpps[k]) * (inpp[k] - inpps[k]);
+            }
             // multiply the center contribution to be able to have a general setting
             // that does not depend on patch size.
-            contribution_center *= (2 * P + 1) * (2 * P + 1);
             float patch_dissimilarity = slide + contribution_center * central_pixel_weight;
-            patch_dissimilarity /= (1.0 + central_pixel_weight);
+            float weight = fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm - 2.0f));
+            __m128 ivw = iv * _mm_set1_ps(weight);
             _mm_store_ps(out, _mm_load_ps(out)
-                                  + iv * _mm_set1_ps(fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm - 2.0f))));
+                                  + ivw);
+            _mm_store_ps(outs, _mm_load_ps(outs) + ivw);
             // _mm_store_ps(out, _mm_load_ps(out) + iv * _mm_set1_ps(fast_mexp2f(fmaxf(0.0f, slide*norm))));
           }
           s++;
           ins += 4;
           out += 4;
+          outs += 4;
+          inpp += 4;
+          inpps += 4;
         }
+
         if(inited_slide && j + P + 1 + MAX(0, kj) < roi_out->height)
         {
           // sliding window in j direction:
