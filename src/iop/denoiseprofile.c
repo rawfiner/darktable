@@ -2012,11 +2012,30 @@ static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t
   if(piece->pipe->mask_display & DT_DEV_PIXELPIPE_DISPLAY_MASK) dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 }
 
+static inline float chi2pdf(float k, float x)
+{
+  float k2 = MAX(k / 2.0f - 1.0f, 0.00000000001f);
+  //float logk2 = logf(k2);
+  //const float log2pi = logf(2.0f * M_PI);
+  float num = k2 * logf(MAX(x, 0.00000000000001f)) - x / 2.0f;
+  float gamma = lgamma(k / 2.0f) ;//0.5f * (log2pi + logk2) + k2 * (logk2 - 1);
+  float denom = k / 2.0f * logf(2.0f) + gamma;
+  return expf(num - denom);
+}
+
 #if defined(__SSE2__)
 static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                                 const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                 const dt_iop_roi_t *const roi_out)
 {
+  // printf("k=3, x=1: %f\n", chi2pdf(3.0f,1.0f));
+  // printf("k=9, x=8: %f\n", chi2pdf(9.0f,8.0f));
+  // printf("k=%f, x=%f: %f\n", 6.0f, 6.5f, chi2pdf(6.0f,6.5f));
+  // printf("k=%f, x=%f: %f\n", 6.0f, 2.1f, chi2pdf(6.0f,2.1f));
+  // printf("k=%f, x=%f: %f\n", 2.0f, 0.0f, chi2pdf(2.0f,0.0f));
+  // printf("k=%f, x=%f: %f\n", 2.0f, 3.3f, chi2pdf(2.0f,3.3f));
+  // printf("k=%f, x=%f: %f\n", 1.0f, 2.0f, chi2pdf(1.0f,2.0f));
+
   // this is called for preview and full pipe separately, each with its own pixelpipe piece.
   // get our data struct:
   dt_iop_denoiseprofile_data_t *d = (dt_iop_denoiseprofile_data_t *)piece->data;
@@ -2031,7 +2050,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   // The 0.045 was derived from the old formula, to keep the
   // norm identical when P=1, as the norm for P=1 seemed
   // to work quite well: 0.045 = 0.015 * (2 * P + 1) with P=1.
-  float norm = .045f / ((2 * P + 1) * (2 * P + 1));
+  float norm = .045f;// / ((2 * P + 1) * (2 * P + 1));
   if(!d->fix_anscombe_and_nlmeans_norm)
   {
     // use old formula
@@ -2104,6 +2123,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
   {
     precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
   }
+  printf("w0: %f\n", chi2pdf((2 * P + 1) * (2 * P + 1), (2 * P + 1) * (2 * P + 1)));
 
   // for each shift vector
   for(int kj_index = -K; kj_index <= K; kj_index++)
@@ -2118,6 +2138,20 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
       const int abs_ki = abs(ki_index);
       int kj = scale * ((abs_kj * abs_kj * abs_kj + 7.0 * abs_kj * sqrt(abs_ki)) * sign(kj_index) * scattering / 6.0 + kj_index);
       int ki = scale * ((abs_ki * abs_ki * abs_ki + 7.0 * abs_ki * sqrt(abs_kj)) * sign(ki_index) * scattering / 6.0 + ki_index);
+      const int nb_pixels_in_patch = (2 * P + 1) * (2 * P + 1);
+      const float esperance = nb_pixels_in_patch * (1.0f + central_pixel_weight);
+      const int overlapx = MAX(2 * P + 1 - abs(ki), 0);
+      const int overlapy = MAX(2 * P + 1 - abs(kj), 0);
+      float overlap = overlapx * overlapy; // number of overlapping pixels in the 2 patches
+      if(overlapx > P && overlapy > P)
+      {
+        overlap += nb_pixels_in_patch * central_pixel_weight;
+      }
+      const float variance = 2.0f * nb_pixels_in_patch + overlap;
+      const float gamma = 0.5f * variance / esperance;
+      const float nu = (float)esperance / gamma;
+      //const float weight0 = chi2pdf(nb_pixels_in_patch, nb_pixels_in_patch);
+      const float max_chi2pdf = chi2pdf(nu, nu - 2.0f);
 
       int inited_slide = 0;
 // don't construct summed area tables but use sliding window! (applies to cpu version res < 1k only, or else
@@ -2126,7 +2160,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
 // memory
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-      dt_omp_firstprivate(ovoid, P, roi_in, roi_out, central_pixel_weight) \
+      dt_omp_firstprivate(ovoid, P, roi_in, roi_out, central_pixel_weight, gamma, nu, max_chi2pdf) \
       firstprivate(inited_slide, d, norm) \
       shared(kj, ki, in, Sa) \
       schedule(static)
@@ -2186,8 +2220,24 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
             contribution_center *= (2 * P + 1) * (2 * P + 1);
             float patch_dissimilarity = slide + contribution_center * central_pixel_weight;
             patch_dissimilarity /= (1.0 + central_pixel_weight);
+            patch_dissimilarity = MAX(patch_dissimilarity * norm, 0.0f) / gamma;
+            //float k = nu;
+            //float x = patch_dissimilarity / gamma;
+            float weight;
+            if(patch_dissimilarity < nu - 2.0f)
+            {
+              float x = 1.0f - patch_dissimilarity / (nu - 2.0f);
+              weight = (1.0f - x) * max_chi2pdf + x * max_chi2pdf / 4.0f;
+              //if((ki == 0) && (kj == 0)) weight = weight0;
+            }
+            else
+            {
+              weight = chi2pdf(nu, patch_dissimilarity);
+            }
+            // expf((k / 2.0f - 1.0f) * (logf(x) - logf((k / 2.0f - 1.0f) / expf(1.0f)))
+            //                   - x / 2.0f - k / 2.0f * logf(2.0f)) / sqrt(2.0f * 3.1416 * (k / 2.0f - 1.0f));
             _mm_store_ps(out, _mm_load_ps(out)
-                                  + iv * _mm_set1_ps(fast_mexp2f(fmaxf(0.0f, patch_dissimilarity * norm - 2.0f))));
+                                  + iv * _mm_set1_ps(weight));
             // _mm_store_ps(out, _mm_load_ps(out) + iv * _mm_set1_ps(fast_mexp2f(fmaxf(0.0f, slide*norm))));
           }
           s++;
