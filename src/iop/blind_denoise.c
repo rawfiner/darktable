@@ -105,6 +105,310 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+// compute noise variance and signal variance
+static void var(const float *const in, float* var_noise, float* var_signal, const unsigned width, const unsigned height, float* out)
+{
+  // radius for first average
+  const int radius1 = 4;
+  // radius for second average
+  const int radius2 = 10;
+  float* averagetmp = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* average1 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* average2 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* diff1 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* diff2 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* correlation = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* rgbvar = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* rgbcov = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* vartmp = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* covtmp = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+
+  // compute the 2 box blurs
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius1, averagetmp, in) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++) averagetmp[(i * width + j) * 3 + c] = 0.0f;
+      int start = MAX(j-radius1, 0);
+      int end = MIN(j+radius1, width-1);
+      float norm = end - start + 1.0f;
+      for(int jj = start; jj <= end; jj++)
+      {
+        for(int c = 0; c < 3; c++)
+          averagetmp[(i * width + j) * 3 + c] += in[(i * width + jj) * 4 + c] / norm;
+      }
+    }
+  }
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius1, averagetmp, average1) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++) average1[(i * width + j) * 3 + c] = 0.0f;
+      int start = MAX(i-radius1, 0);
+      int end = MIN(i+radius1, height-1);
+      float norm = end - start + 1.0f;
+      for(int ii = start; ii <= end; ii++)
+      {
+        for(int c = 0; c < 3; c++)
+          average1[(i * width + j) * 3 + c] += averagetmp[(ii * width + j) * 3 + c] / norm;
+      }
+    }
+  }
+  // second box blur
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius2, averagetmp, in) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++) averagetmp[(i * width + j) * 3 + c] = 0.0f;
+      int start = MAX(j-radius2, 0);
+      int end = MIN(j+radius2, width-1);
+      float norm = end - start + 1.0f;
+      for(int jj = start; jj <= end; jj++)
+      {
+        for(int c = 0; c < 3; c++)
+          averagetmp[(i * width + j) * 3 + c] += in[(i * width + jj) * 4 + c] / norm;
+      }
+    }
+  }
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius2, averagetmp, average2) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++) average2[(i * width + j) * 3 + c] = 0.0f;
+      int start = MAX(i-radius2, 0);
+      int end = MIN(i+radius2, height-1);
+      float norm = end - start + 1.0f;
+      for(int ii = start; ii <= end; ii++)
+      {
+        for(int c = 0; c < 3; c++)
+          average2[(i * width + j) * 3 + c] += averagetmp[(ii * width + j) * 3 + c] / norm;
+      }
+    }
+  }
+  dt_free_align(averagetmp);
+
+  // compute pixel differences
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(average1, average2, in, diff1, diff2) \
+  schedule(static)
+#endif
+  for(int i = 0; i < height * width; i++)
+  {
+    for(int c = 0; c < 3; c++)
+    {
+      diff1[i * 3 + c] = in[i * 4 + c] - average1[i * 3 + c];
+      diff2[i * 3 + c] = average1[i * 3 + c] - average2[i * 3 + c];
+    }
+  }
+  //dt_free_align(average1);
+  //dt_free_align(average2);
+
+  // compute variance and covariance from diff2
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius2, vartmp, covtmp, diff2) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        vartmp[(i * width + j) * 3 + c] = 0.0f;
+        covtmp[(i * width + j) * 3 + c] = 0.0f;
+      }
+      int start = MAX(j-radius2, 0);
+      int end = MIN(j+radius2, width-1);
+      for(int jj = start; jj <= end; jj++)
+      {
+        for(int c = 0; c < 3; c++)
+        {
+          float curr = diff2[(i * width + jj) * 3 + c];
+          float next = diff2[(i * width + jj) * 3 + ((c + 1) % 3)];
+          vartmp[(i * width + j) * 3 + c] += curr * curr;
+          covtmp[(i * width + j) * 3 + c] += curr * next;
+        }
+      }
+    }
+  }
+  dt_free_align(diff2);
+
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius2, vartmp, covtmp, rgbvar, rgbcov) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        rgbvar[(i * width + j) * 3 + c] = 0.0f;
+        rgbcov[(i * width + j) * 3 + c] = 0.0f;
+      }
+      int start = MAX(i-radius2, 0);
+      int end = MIN(i+radius2, height-1);
+      int startj = MAX(j-radius2, 0);
+      int endj = MIN(j+radius2, width-1);
+      float norm = (end - start + 1.0f) * (endj - startj + 1.0f);
+      for(int ii = start; ii <= end; ii++)
+      {
+        for(int c = 0; c < 3; c++)
+        {
+          rgbvar[(i * width + j) * 3 + c] += vartmp[(ii * width + j) * 3 + c] / norm;
+          rgbcov[(i * width + j) * 3 + c] += covtmp[(ii * width + j) * 3 + c] / norm;
+        }
+      }
+    }
+  }
+
+  // rgbvar and rgbcov contain variance and covariance for diff2.
+  // compute fabs correlations from them.
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(correlation, rgbvar, rgbcov, average2) \
+  schedule(static)
+#endif
+  for(int i = 0; i < height * width; i++)
+  {
+    for(int c = 0; c < 3; c++)
+    {
+      //FIXME use average2 to determine the low variance threshold that should
+      // give a correlation of 1
+      correlation[i * 3 + c] = MIN(fabs(MAX(rgbcov[i * 3 + c],  average2[i * 3 + c] * average2[i * 3 + ((c + 1) % 3)] * 0.005f + 1e-10f)
+                             / MAX(sqrtf(rgbvar[i * 3 + c] * rgbvar[i * 3 + ((c + 1) % 3)]), average2[i * 3 + c] * average2[i * 3 + ((c + 1) % 3)] * 0.005f + 1e-10f)), 1.0f);
+    }
+  }
+
+  // now that we have reference correlations, we can compute the real
+  // variance of the image.
+  // start by computing variance and covariance from diff1
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius1, vartmp, covtmp, diff1) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        vartmp[(i * width + j) * 3 + c] = 0.0f;
+        covtmp[(i * width + j) * 3 + c] = 0.0f;
+      }
+      int start = MAX(j-radius1, 0);
+      int end = MIN(j+radius1, width-1);
+      for(int jj = start; jj <= end; jj++)
+      {
+        for(int c = 0; c < 3; c++)
+        {
+          float curr = diff1[(i * width + jj) * 3 + c];
+          float next = diff1[(i * width + jj) * 3 + ((c + 1) % 3)];
+          vartmp[(i * width + j) * 3 + c] += curr * curr;
+          covtmp[(i * width + j) * 3 + c] += curr * next;
+        }
+      }
+    }
+  }
+  dt_free_align(diff1);
+
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius1, vartmp, covtmp, rgbvar, rgbcov) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        rgbvar[(i * width + j) * 3 + c] = 0.0f;
+        rgbcov[(i * width + j) * 3 + c] = 0.0f;
+      }
+      int start = MAX(i-radius1, 0);
+      int end = MIN(i+radius1, height-1);
+      int startj = MAX(j-radius1, 0);
+      int endj = MIN(j+radius1, width-1);
+      float norm = (end - start + 1.0f) * (endj - startj + 1.0f);
+      for(int ii = start; ii <= end; ii++)
+      {
+        for(int c = 0; c < 3; c++)
+        {
+          rgbvar[(i * width + j) * 3 + c] += vartmp[(ii * width + j) * 3 + c] / norm;
+          rgbcov[(i * width + j) * 3 + c] += covtmp[(ii * width + j) * 3 + c] / norm;
+        }
+      }
+    }
+  }
+  dt_free_align(vartmp);
+  dt_free_align(covtmp);
+
+  // now that we have measured variance and covariance, compute signal variance
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(correlation, rgbvar, rgbcov, average1) \
+  schedule(static)
+#endif
+  for(int i = 0; i < height * width; i++)
+  {
+    for(int c = 0; c < 3; c++)
+    {
+      //if(correlation[i * 3 + c] < 0.2f)
+      // printf("error in correlation? %f\n", correlation[i * 3 + c]);
+      var_signal[i * 4 + c] = fabs(rgbcov[i * 3 + c] * rgbcov[i * 3 + ((c + 2) % 3)] / MAX(rgbcov[i * 3 + ((c + 1) % 3)], average1[i * 3 + ((c + 1) % 3)] * average1[i * 3 + ((c + 2) % 3)] * 0.005f + 1e-10f))  / 0.8f;
+                          //  * correlation[i * 3 + ((c + 1) % 3)] / (correlation[i * 3 + c] * correlation[i * 3 + ((c + 2) % 3)]);
+      var_noise[i * 4 + c] = MAX(rgbvar[i * 3 + c] - var_signal[i * 4 + c], 0.0f);
+    }
+    if((i % 263) == 0)
+    {
+      printf("%.6f; %.10f; %.6f; %.10f; %.6f; %.10f\n", average1[i * 3 + 0], var_noise[i * 4 + 0], average1[i * 3 + 1], var_noise[i * 4 + 1], average1[i * 3 + 2], var_noise[i * 4 + 2]);
+    }
+
+  }
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(out, correlation) \
+  schedule(static)
+#endif
+  for(int i = 0; i < height * width; i++)
+  {
+    for(int c = 0; c < 3; c++)
+    {
+      out[i * 4 + c] = correlation[i * 3 + c];
+    }
+  }
+  dt_free_align(correlation);
+  dt_free_align(rgbvar);
+  dt_free_align(rgbcov);
+  dt_free_align(average1);
+  dt_free_align(average2);
+}
+
 #if 0
 static void var(float* details, float* variance, unsigned width, unsigned height, unsigned radius, float* wb, unsigned max_var)
 {
@@ -169,6 +473,70 @@ static void var(float* details, float* variance, unsigned width, unsigned height
   free(tmp);
 }
 #endif
+
+static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned width, unsigned height)
+{
+  dt_iop_blind_denoise_dir_t* tmpdir = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * width * height);
+  memcpy(tmpdir, direction, sizeof(dt_iop_blind_denoise_dir_t) * width * height);
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(tmpdir, direction, width, height) \
+    schedule(static)
+#endif
+  for(int j = 1; j < height-1; j++)
+  {
+    for(int i = 1; i < width-1; i++)
+    {
+      float tmpf;
+      int8_t tmp[3];
+      tmp[0] = tmpdir[j*width+i].w;
+      tmp[1] = tmpdir[(j-1)*width+i].w;
+      tmp[2] = tmpdir[(j+1)*width+i].w;
+      if(tmp[2] < tmp[1])
+      {
+        tmpf = tmp[2];
+        tmp[2] = tmp[1];
+        tmp[1] = tmpf;
+      }
+      if(tmp[2] < tmp[0])
+      {
+        tmpf = tmp[2];
+        tmp[2] = tmp[0];
+        tmp[0] = tmpf;
+      }
+      if(tmp[1] < tmp[0])
+      {
+        tmpf = tmp[1];
+        tmp[1] = tmp[0];
+        tmp[0] = tmpf;
+      }
+      direction[j*width+i].w = tmp[1];
+      tmp[0] = tmpdir[j*width+i].h;
+      tmp[1] = tmpdir[j*width+i-1].h;
+      tmp[2] = tmpdir[j*width+i+1].h;
+      if(tmp[2] < tmp[1])
+      {
+        tmpf = tmp[2];
+        tmp[2] = tmp[1];
+        tmp[1] = tmpf;
+      }
+      if(tmp[2] < tmp[0])
+      {
+        tmpf = tmp[2];
+        tmp[2] = tmp[0];
+        tmp[0] = tmpf;
+      }
+      if(tmp[1] < tmp[0])
+      {
+        tmpf = tmp[1];
+        tmp[1] = tmp[0];
+        tmp[0] = tmpf;
+      }
+      direction[j*width+i].h = tmp[1];
+    }
+  }
+  free(tmpdir);
+}
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
@@ -441,12 +809,17 @@ static void set_up_conversion_matrices(float toY0U0V0[9], float toRGB[9], float 
   toY0U0V0[7] = 1.0f / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
   toY0U0V0[8] = -0.5f * GB_ratio / (1.0f + 0.5f * GR_ratio + 0.5f * GB_ratio);
   // uncomment for 'classic' Y0U0V0 transform
-  toY0U0V0[3] = 1.0f;
-  toY0U0V0[4] = 0.0f;
-  toY0U0V0[5] = -1.0f;
-  toY0U0V0[6] = -0.5f;
-  toY0U0V0[7] = 1.0f;
-  toY0U0V0[8] = -0.5f;
+  // toY0U0V0[3] = 1.0f;
+  // toY0U0V0[4] = 0.0f;
+  // toY0U0V0[5] = -1.0f;
+  // toY0U0V0[6] = -0.5f;
+  // toY0U0V0[7] = 1.0f;
+  // toY0U0V0[8] = -0.5f;
+
+  // for(int c = 0; c < 9; c++) toY0U0V0[c] = 0.0f;
+  //   toY0U0V0[0] = 1.0f;
+  //   toY0U0V0[4] = 1.0f;
+  //   toY0U0V0[8] = 1.0f;
 
   const gboolean is_invertible = invert_matrix(toY0U0V0, toRGB);
   if(!is_invertible)
@@ -471,6 +844,78 @@ static inline void matrix_mul(float* matrix, float* in, float* out)
     }
   }
 }
+
+#undef SWAP
+#define SWAP(x,y) {if(tmp[x] > tmp[y]) {float t = tmp[x]; tmp[x] = tmp[y]; tmp[y] = t;}}
+static void minmax_thresholding(float* details, unsigned width, unsigned height)
+{
+  float* in = malloc(sizeof(float) * 4 * width * height);
+  memcpy(in, details, sizeof(float) * 4 * width * height);
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+    dt_omp_firstprivate(details, in, width, height) \
+    schedule(static)
+#endif
+  for(unsigned j = 1; j < height-1; j++)
+  {
+    for(unsigned i = 1; i < width-1; i++)
+    {
+      for(int c = 0; c < 3; c++)
+      {
+        float tmp[9];
+        for(int jj = -1; jj <= 1; jj++)
+        {
+          for(int ii = -1; ii <= 1; ii++)
+          {
+            tmp[(jj+1)*3+ii+1] = in[((j+jj)*width+(i+ii))*4+c];
+          }
+        }
+        // sorting
+        SWAP(0, 1);
+        SWAP(3, 4);
+        SWAP(6, 7);
+        SWAP(1, 2);
+        SWAP(4, 5);
+        SWAP(7, 8);
+        SWAP(0, 1);
+        SWAP(3, 4);
+        SWAP(6, 7);
+        SWAP(0, 3);
+        SWAP(3, 6);
+        SWAP(0, 3);
+        SWAP(1, 4);
+        SWAP(4, 7);
+        SWAP(1, 4);
+        SWAP(2, 5);
+        SWAP(5, 8);
+        SWAP(2, 5);
+        SWAP(1, 3);
+        SWAP(5, 7);
+        SWAP(2, 6);
+        SWAP(4, 6);
+        SWAP(2, 4);
+        SWAP(2, 3);
+        SWAP(5, 6);
+        for(int k = 0; k < 8; k++)
+        {
+          if(tmp[k] > tmp[k+1])
+            printf("problem\n");
+        }
+        float curr = in[(j*width+i)*4+c];
+        if(curr == tmp[0])
+        {
+          details[(j*width+i)*4+c] = tmp[1];
+        }
+        if(curr == tmp[8])
+        {
+          details[(j*width+i)*4+c] = tmp[7];
+        }
+      }
+    }
+  }
+  free(in);
+}
+#undef SWAP
 
 static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned heightmean, float* details, float* out, unsigned width, unsigned height, dt_iop_blind_denoise_dir_t* direction, float threshold, float* wb, float* var, const float weight[3])
 {
@@ -554,9 +999,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
   }
 
+  float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
+  float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
+  var(in, var_noise, var_signal, width[0], height[0], ovoid);
+  return;
+
+
   for(int k = 0; k < NB_SCALES; k++)
   {
-    threshold[k] = threshold[k] * 0.1f * d->factor[k];
+    threshold[k] = threshold[k] * 0.01f * d->factor[k];
     float sum_coefs = 0.0f;
     for(int c = 0; c < 4; c++)
     {
@@ -574,20 +1025,28 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     // decompose(means[i], means[i+1], width[i], height[i]);
     interpolate_bilinear(means[i], width[i], height[i], means[i+1], width[i+1], height[i+1], 4);
   }
-  // for(int i = NB_SCALES-1; i > 0; i--)
-  // {
-  //   get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
-  // }
+  for(int i = NB_SCALES-1; i > 0; i--)
+  {
+    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
+    if(i < 4)
+    {
+      median_direction(direction[i-1], width[i-1], height[i-1]);
+    }
+  }
   for(int i = NB_SCALES-1; i > 1; i--)
   {
     // const float weight[3] = {1.0f, powf(1.0f - i / (float)NB_SCALES, 4.0f), powf(1.0f - i / (float)NB_SCALES, 4.0f)};
-    const float weight[3] = {1.0f, d->checker_scale / 2.0f, d->checker_scale / 2.0f};
-    get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
+    //const float weight[3] = {1.0f, d->checker_scale / 2.0f, d->checker_scale / 2.0f};
+    const float weight[3] = {1.0f, 1.0f, 1.0f};
+    //get_details_and_direction(means[i-1], means[i], details[i-1], width[i-1], height[i-1], width[i], height[i], direction[i-1], wb, coefs[i-1]);
     thresholding_and_recompose(means[i], width[i], height[i], details[i-1], means[i-1], width[i-1], height[i-1], direction[i-1], threshold[i-1], wb, vars[i-1], weight);
+    //if(i < 5) minmax_thresholding(means[i-1], width[i-1], height[i-1]);
   }
-  const float weight[3] = {1.0f, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES};
-  get_details_and_direction(means[0], means[1], details[0], width[0], height[0], width[1], height[1], direction[0], wb, coefs[0]);
+  //const float weight[3] = {1.0f, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES, d->checker_scale / 2.0f * 1.0f - 0 / (float)NB_SCALES};
+  const float weight[3] = {1.0f, 1.0f, 1.0f};
+  //get_details_and_direction(means[0], means[1], details[0], width[0], height[0], width[1], height[1], direction[0], wb, coefs[0]);
   thresholding_and_recompose(means[1], width[1], height[1], details[0], out, width[0], height[0], direction[0], threshold[0], wb, vars[0], weight);
+  minmax_thresholding(out, width[0], height[0]);
 
   // cleanup
   for(int i = 1; i < NB_SCALES; i++)
