@@ -109,16 +109,19 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 static void var(const float *const in, float* var_noise, float* var_signal, const unsigned width, const unsigned height, float* out, float wb[3])
 {
   // radius for first average
-  const int radius1 = 4;
+  const int radius1 = 2;
   // radius for second average
+  float* in_with_2_pixels_average = dt_alloc_align(64, 4 * sizeof(float) * width * height);
   float* averagetmp = dt_alloc_align(64, 3 * sizeof(float) * width * height);
   float* average1 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
-  float* average2 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
   float* diff1 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* diff2 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
   float* correlation = dt_alloc_align(64, 3 * sizeof(float) * width * height);
   float* rgbvar = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* rgbvar2 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
   float* rgbcov = dt_alloc_align(64, 3 * sizeof(float) * width * height);
   float* vartmp = dt_alloc_align(64, 3 * sizeof(float) * width * height);
+  float* vartmp2 = dt_alloc_align(64, 3 * sizeof(float) * width * height);
   float* covtmp = dt_alloc_align(64, 3 * sizeof(float) * width * height);
 
   // (1) compute local average
@@ -134,6 +137,70 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
   // which is equal to a * cov(Cbest,C1) + b * cov(Cbest,C2)
   // (8) find a and b coefficients for C1 and C2 to find also their signal variance
   // (9) find noise variance as measured variance - signal variance
+
+  // compute averaged image
+#ifdef _OPENM
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(radius1, in_with_2_pixels_average, in, wb) \
+  schedule(static) collapse(2)
+#endif
+  for(int i = 0; i < height; i++)
+  {
+    for(int j = 0; j < width; j++)
+    {
+      // find closest and second closest pixels (in terms of values)
+      // in pixels that are at a distance of 1 pixel to the considered
+      // pixel, and average the value of the found pixel with the one
+      // of the considered pixel.
+      float min_diff = 1000000.0f;
+      const float* min = NULL;
+      // second min is the second best pixel.
+      // we use it instead of min to avoid some "noise" overfitting
+      float second_min_diff = 1000000.0f;
+      const float* second_min = NULL;
+      float current[3];
+      float current_mean[3];
+      //TODO check if this is useful or useless for timings
+      for(int c = 0; c < 3; c++)
+      {
+        current[c] = in[(i * width + j) * 4 + c];
+        current_mean[c] = average1[(i * width + j) * 3 + c];
+      }
+      for(int ii = MAX(i-2, 0); ii <= MIN(i+2, height-1); ii++)
+      {
+        for(int jj = MAX(j-2, 0); jj <= MIN(j+2, width-1); jj++)
+        {
+          if((fabs(i - ii) <= 1) && (fabs(j - jj) <= 1)) continue;
+          float diff_all_channels = 0.0f;
+          for(int c = 0; c < 3; c++)
+          {
+            float diff = fabs(current[c] - in[(ii * width + jj) * 4 + c]);
+            diff += 0.0f * fabs(current_mean[c] - average1[(ii * width + jj) * 3 + c]);
+            diff /= wb[c];
+            diff_all_channels += diff;
+          }
+          if(diff_all_channels < min_diff)
+          {
+            second_min_diff = min_diff;
+            second_min = min;
+            min_diff = diff_all_channels;
+            min = &(in[(ii * width + jj) * 4]);
+          }
+          else if(diff_all_channels < second_min_diff)
+          {
+            second_min_diff = diff_all_channels;
+            second_min = &(in[(ii * width + jj) * 4]);
+          }
+        }
+      }
+      assert(min != NULL);
+      assert(second_min != NULL);
+      for(int c = 0; c < 3; c++)
+      {
+        in_with_2_pixels_average[(i * width + j) * 4 + c] = (in[(i * width + j) * 4 + c] + second_min[c]) / 2.0f;
+      }
+    }
+  }
 
   // compute local average
 #ifdef _OPENM
@@ -181,7 +248,7 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
   // compute pixel differences
 #ifdef _OPENM
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(average1, in, diff1) \
+  dt_omp_firstprivate(average1, in, in_with_2_pixels_average, diff1, diff2) \
   schedule(static)
 #endif
   for(int i = 0; i < height * width; i++)
@@ -189,15 +256,15 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
     for(int c = 0; c < 3; c++)
     {
       diff1[i * 3 + c] = in[i * 4 + c] - average1[i * 3 + c];
+      diff2[i * 3 + c] = in_with_2_pixels_average[i * 4 + c] - average1[i * 3 + c];
     }
   }
   //dt_free_align(average1);
-  //dt_free_align(average2);
 
   // start by computing variance and covariance from diff1
 #ifdef _OPENM
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(radius1, vartmp, covtmp, diff1) \
+  dt_omp_firstprivate(radius1, vartmp, vartmp2, covtmp, diff1, diff2) \
   schedule(static) collapse(2)
 #endif
   for(int i = 0; i < height; i++)
@@ -207,6 +274,7 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
       for(int c = 0; c < 3; c++)
       {
         vartmp[(i * width + j) * 3 + c] = 0.0f;
+        vartmp2[(i * width + j) * 3 + c] = 0.0f;
         covtmp[(i * width + j) * 3 + c] = 0.0f;
       }
       int start = MAX(j-radius1, 0);
@@ -216,18 +284,21 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
         for(int c = 0; c < 3; c++)
         {
           float curr = diff1[(i * width + jj) * 3 + c];
+          float curr2 = diff2[(i * width + jj) * 3 + c];
           float next = diff1[(i * width + jj) * 3 + ((c + 1) % 3)];
           vartmp[(i * width + j) * 3 + c] += curr * curr;
+          vartmp2[(i * width + j) * 3 + c] += curr2 * curr2;
           covtmp[(i * width + j) * 3 + c] += curr * next;
         }
       }
     }
   }
   dt_free_align(diff1);
+  dt_free_align(diff2);
 
 #ifdef _OPENM
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(radius1, vartmp, covtmp, rgbvar, rgbcov) \
+  dt_omp_firstprivate(radius1, vartmp, vartmp2, covtmp, rgbvar, rgbvar2, rgbcov) \
   schedule(static) collapse(2)
 #endif
   for(int i = 0; i < height; i++)
@@ -237,18 +308,20 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
       for(int c = 0; c < 3; c++)
       {
         rgbvar[(i * width + j) * 3 + c] = 0.0f;
+        rgbvar2[(i * width + j) * 3 + c] = 0.0f;
         rgbcov[(i * width + j) * 3 + c] = 0.0f;
       }
       int start = MAX(i-radius1, 0);
       int end = MIN(i+radius1, height-1);
       int startj = MAX(j-radius1, 0);
       int endj = MIN(j+radius1, width-1);
-      float norm = (end - start + 1.0f) * (endj - startj + 1.0f);
+      float norm = (end - start + 1.0f) * (endj - startj + 1.0f) - 1.0f;
       for(int ii = start; ii <= end; ii++)
       {
         for(int c = 0; c < 3; c++)
         {
           rgbvar[(i * width + j) * 3 + c] += vartmp[(ii * width + j) * 3 + c] / norm;
+          rgbvar2[(i * width + j) * 3 + c] += vartmp2[(ii * width + j) * 3 + c] / norm;
           rgbcov[(i * width + j) * 3 + c] += covtmp[(ii * width + j) * 3 + c] / norm;
         }
       }
@@ -260,160 +333,39 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
 
 #ifdef _OPENM
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(radius1, average1, in, radius1, wb, var_signal, var_noise) \
+  dt_omp_firstprivate(radius1, rgb_var, rgb_var2, average1, in, radius1, wb, var_signal, var_noise) \
   schedule(static) collapse(2)
 #endif
   for(int i = 0; i < height; i++)
   {
     for(int j = 0; j < width; j++)
     {
-      // (2) decide which channel has the lowest amount of noise
-      float max = average1[(i * width + j) * 3 + 0] / wb[0];
-      int bestc = 0;
-      for(int c = 1; c < 3; c++)
-      {
-        float current_average = average1[(i * width + j) * 3 + c] / wb[c];
-        if(current_average > max)
-        {
-          max = current_average;
-          bestc = c;
-        }
-      }
-
-      // (3) compute the averages of the pixels bellow the average (BLA) and of the
-      // pixels higher than average (HTA)
-      int start = MAX(i-radius1, 0);
-      int end = MIN(i+radius1, height-1);
-      int startj = MAX(j-radius1, 0);
-      int endj = MIN(j+radius1, width-1);
-      float average = average1[(i * width + j) * 3 + bestc];
-      float above_average[3] = {0.0f};
-      float below_average[3] = {0.0f};
-      unsigned nb_above_average = 0;
-      unsigned nb_below_average = 0;
-      for(int ii = start; ii <= end; ii++)
-      {
-        for(int jj = startj; jj <= endj; jj++)
-        {
-          float pixelc = in[(ii * width + jj) * 4 + bestc];
-          if(pixelc >= average)
-          {
-            for(int c = 0; c < 3; c++)
-            {
-              above_average[c] += in[(ii * width + jj) * 4 + c] - average1[(i * width + j) * 3 + c];
-            }
-            nb_above_average++;
-          }
-          if(pixelc <= average)
-          {
-            for(int c = 0; c < 3; c++)
-            {
-              below_average[c] += in[(ii * width + jj) * 4 + c] - average1[(i * width + j) * 3 + c];
-            }
-            nb_below_average++;
-          }
-        }
-      }
       for(int c = 0; c < 3; c++)
       {
-        above_average[c] /= (float)nb_above_average;
-        below_average[c] /= (float)nb_below_average;
-      }
-      // (4) find the coefs a and b such as Cbest = a * C1 + b * C2 + cst
-      // these coefs are found by forcing BLA and HLA equality of Cbest-avgCbest and
-      // of a * (C1-avgC1) + b * (C2-avgC2)
-
-      // c = a[c] * c+1 + b[c] * c+2
-      int bestc_plus_1 = (bestc + 1) % 3;
-      int bestc_plus_2 = (bestc + 2) % 3;
-      float a[3];
-      float b[3];
-      float h0 = above_average[bestc];
-      float h1 = above_average[bestc_plus_1];
-      float h2 = above_average[bestc_plus_2];
-      float l0 = below_average[bestc];
-      float l1 = below_average[bestc_plus_1];
-      float l2 = below_average[bestc_plus_2];
-      if(h1 * l2 - h2 * l1 != 0.0f)
-      {
-        a[bestc] = (h0 * l2 - h2 * l0) / (h1 * l2 - h2 * l1);
-        if(l2 != 0.0f)
-          b[bestc] = (l0 - a[bestc] * l1) / l2;
-        else
-          b[bestc] = (h0 - a[bestc] * h1) / h2;
-      }
-      else
-      {
-        a[bestc] = 0.f;
-        b[bestc] = 0.f;
-      }
-      if(fabs(a[bestc]) > 2.0f)
-      {
-        a[bestc] = 0.f;
-        b[bestc] = 0.f;
-      }
-      if(fabs(b[bestc]) > 2.0f)
-      {
-        a[bestc] = 0.f;
-        b[bestc] = 0.f;
-      }
-      // printf("new: %f, %f\n", above_average[bestc], above_average[bestc] - a[bestc] * above_average[bestc_plus_1] - b[bestc] * above_average[bestc_plus_2]);
-      // printf("new: %f, %f\n", below_average[bestc], below_average[bestc] - a[bestc] * below_average[bestc_plus_1] - b[bestc] * below_average[bestc_plus_2]);
-
-      // a[bestc] = (above_average[bestc_plus_2] * below_average[bestc] - above_average[bestc] * below_average[bestc_plus_2])
-      //         / (above_average[bestc_plus_1] * below_average[bestc] - above_average[bestc] * below_average[bestc_plus_1]);
-      // b[bestc] = (below_average[bestc_plus_2] - a[bestc] * below_average[bestc_plus_1]) / below_average[bestc];
-      // printf("%f, %f\n", above_average[bestc], above_average[bestc] - a[bestc] * above_average[bestc_plus_1] - b[bestc] * above_average[bestc_plus_2]);
-      // printf("%f, %f\n", below_average[bestc], below_average[bestc] - a[bestc] * below_average[bestc_plus_1] - b[bestc] * below_average[bestc_plus_2]);
-
-
-      // (8) find a and b coefficients for C1 and C2
-      a[bestc_plus_1] = -b[bestc] / a[bestc];
-      b[bestc_plus_1] = 1.0f / a[bestc];
-      a[bestc_plus_2] = 1.0f / b[bestc];
-      b[bestc_plus_2] = -a[bestc] / b[bestc];
-
-      // this works actually better than code above
-      for(int c = 0; c < 3; c++)
-      {
-        a[c] = 0.5f * average1[((i * width) + j) * 3 + c] / average1[((i * width) + j) * 3 + ((c + 1) % 3)];
-        b[c] = 0.5f * average1[((i * width) + j) * 3 + c] / average1[((i * width) + j) * 3 + ((c + 2) % 3)];
-      }
-      // (7) find the signal variance of Cbest as cov(Cbest, a * C1 + b * C2)
-      // which is equal to a * cov(Cbest,C1) + b * cov(Cbest,C2)
-      for(int c = 0; c < 3; c++)
-      {
-        var_signal[(i * width + j) * 4 + c] = MAX(a[c] * rgbcov[(i * width + j) * 3 + c]
-                                            + b[c] * rgbcov[(i * width + j) * 3 + ((c + 2) % 3)], 0.0f);
-        var_noise[(i * width + j) * 4 + c] = MAX(rgbvar[(i * width + j) * 3 + c] - var_signal[(i * width + j) * 4 + c], 0.0f);
+        var_noise[(i * width + j) * 4 + c] = MAX(2.0f * (rgbvar[(i * width + j) * 3 + c] - rgbvar2[(i * width + j) * 3 + c]), 0.0f);
+        var_signal[(i * width + j) * 4 + c] = rgbvar[(i * width + j) * 3 + c] - var_noise[(i * width + j) * 4 + c];
       }
       if(((i % 7) == 0) && ((j % 17) == 0))
       {
         //printf("%d, %d, %d\n", bestc, nb_above_average, nb_below_average);
         //printf("%d, %d, %f, %f\n", nb_above_average, nb_below_average, a[bestc], b[bestc]);
-        if(a[bestc] != 0.5f)
         printf("%.6f; %.10f; %.6f; %.10f; %.6f; %.10f\n", average1[((i * width) + j) * 3 + 0], var_noise[((i * width) + j) * 4 + 0], average1[((i * width) + j) * 3 + 1], var_noise[((i * width) + j) * 4 + 1], average1[((i * width) + j) * 3 + 2], var_noise[((i * width) + j) * 4 + 2]);
-      }
-      for(int c = 0; c < 3; c++)
-      {
-        out[((i * width) + j) * 4 + c] = a[c] * in[((i * width) + j) * 4 + ((c + 1) % 3)]
-                                       + b[c] * in[((i * width) + j) * 4 + ((c + 2) % 3)];
-                                       //- a[c] * average1[((i * width) + j) * 3 + ((c + 1) % 3)]
-                                       //+ b[c] * average1[((i * width) + j) * 3 + ((c + 2) % 3)]
-                                       //+ average1[((i * width) + j) * 3 + c];
       }
     }
   }
 
 #ifdef _OPENM
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(out, average1) \
+  dt_omp_firstprivate(out, var_noise, average1) \
   schedule(static)
 #endif
   for(int i = 0; i < height * width; i++)
   {
     for(int c = 0; c < 3; c++)
     {
+      out[i * 4 + c] = //in[((i * width) + j) * 4 + c];
+                        var_noise[i * 4 + c] / MAX(average1[i * 3 + c], 1e-16);
+
       //out[i * 4 + c] = average1[i * 3 + c];
     }
   }
@@ -421,7 +373,7 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
   dt_free_align(rgbvar);
   dt_free_align(rgbcov);
   dt_free_align(average1);
-  dt_free_align(average2);
+  dt_free_align(in_with_2_pixels_average);
 }
 
 #if 0
