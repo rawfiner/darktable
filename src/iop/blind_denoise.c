@@ -152,12 +152,12 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
       // in pixels that are at a distance of 1 pixel to the considered
       // pixel, and average the value of the found pixel with the one
       // of the considered pixel.
-      float min_diff = 1000000.0f;
-      const float* min = NULL;
+      float min_lower_diff = 1000000.0f;
+      const float* min_lower = NULL;
       // second min is the second best pixel.
       // we use it instead of min to avoid some "noise" overfitting
-      float second_min_diff = 1000000.0f;
-      const float* second_min = NULL;
+      float min_upper_diff = -1000000.0f;
+      const float* min_upper = NULL;
       float current[3];
       float current_mean[3];
       //TODO check if this is useful or useless for timings
@@ -174,30 +174,47 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
           float diff_all_channels = 0.0f;
           for(int c = 0; c < 3; c++)
           {
-            float diff = fabs(current[c] - in[(ii * width + jj) * 4 + c]);
-            diff += 0.0f * fabs(current_mean[c] - average1[(ii * width + jj) * 3 + c]);
+            float diff = current[c] - in[(ii * width + jj) * 4 + c];
+            diff += current_mean[c] - average1[(ii * width + jj) * 3 + c];
             diff /= wb[c];
             diff_all_channels += diff;
           }
-          if(diff_all_channels < min_diff)
+          if(diff_all_channels < 0.0f)
           {
-            second_min_diff = min_diff;
-            second_min = min;
-            min_diff = diff_all_channels;
-            min = &(in[(ii * width + jj) * 4]);
+            if(diff_all_channels > min_upper_diff)
+            {
+              min_upper_diff = diff_all_channels;
+              min_upper = &(in[(ii * width + jj) * 4]);
+            }
           }
-          else if(diff_all_channels < second_min_diff)
+          else
           {
-            second_min_diff = diff_all_channels;
-            second_min = &(in[(ii * width + jj) * 4]);
+            if(diff_all_channels < min_lower_diff)
+            {
+              min_lower_diff = diff_all_channels;
+              min_lower = &(in[(ii * width + jj) * 4]);
+            }
           }
         }
       }
-      assert(min != NULL);
-      assert(second_min != NULL);
+      assert(min_upper != NULL);
+      assert(min_lower != NULL);
       for(int c = 0; c < 3; c++)
       {
-        in_with_2_pixels_average[(i * width + j) * 4 + c] = (in[(i * width + j) * 4 + c] + second_min[c]) / 2.0f;
+        int count = 1;
+        in_with_2_pixels_average[(i * width + j) * 4 + c] = in[(i * width + j) * 4 + c];
+        if(min_upper != NULL)
+        {
+          in_with_2_pixels_average[(i * width + j) * 4 + c] += min_upper[c];
+          count++;
+        }
+        if(min_lower != NULL)
+        {
+          in_with_2_pixels_average[(i * width + j) * 4 + c] += min_lower[c];
+          count++;
+        }
+        // problem: this will lead to inaccuracies next, when computing variance from this
+        in_with_2_pixels_average[(i * width + j) * 4 + c] /= (float)count;
       }
     }
   }
@@ -342,14 +359,14 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
     {
       for(int c = 0; c < 3; c++)
       {
-        var_noise[(i * width + j) * 4 + c] = MAX(2.0f * (rgbvar[(i * width + j) * 3 + c] - rgbvar2[(i * width + j) * 3 + c]), 0.0f);
+        var_noise[(i * width + j) * 4 + c] = MAX(3.0f * (rgbvar[(i * width + j) * 3 + c] - rgbvar2[(i * width + j) * 3 + c]), 0.0f);
         var_signal[(i * width + j) * 4 + c] = rgbvar[(i * width + j) * 3 + c] - var_noise[(i * width + j) * 4 + c];
       }
       if(((i % 7) == 0) && ((j % 17) == 0))
       {
         //printf("%d, %d, %d\n", bestc, nb_above_average, nb_below_average);
         //printf("%d, %d, %f, %f\n", nb_above_average, nb_below_average, a[bestc], b[bestc]);
-        printf("%.6f; %.10f; %.6f; %.10f; %.6f; %.10f\n", average1[((i * width) + j) * 3 + 0], var_noise[((i * width) + j) * 4 + 0], average1[((i * width) + j) * 3 + 1], var_noise[((i * width) + j) * 4 + 1], average1[((i * width) + j) * 3 + 2], var_noise[((i * width) + j) * 4 + 2]);
+        //printf("%.6f; %.10f; %.6f; %.10f; %.6f; %.10f\n", average1[((i * width) + j) * 3 + 0], var_noise[((i * width) + j) * 4 + 0], average1[((i * width) + j) * 3 + 1], var_noise[((i * width) + j) * 4 + 1], average1[((i * width) + j) * 3 + 2], var_noise[((i * width) + j) * 4 + 2]);
       }
     }
   }
@@ -504,6 +521,224 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
   }
   free(tmpdir);
 }
+
+// calculer directement en une passe le downscaled, et I - downscaled_upscaled
+// compute downscaled image 4 times, and stick them with symmetry
+// input:  | /|
+//         |/ |
+// output "normal" downscaling : |/|
+// output: |/\|
+//         |\/|
+__DT_CLONE_TARGETS__
+static inline void downscale_bilinear_mirrored(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out/*, float *const restrict details*/)
+{
+  const size_t ch = 4;
+  const size_t width_out = width_in / 2;
+  const size_t height_out = height_in / 2;
+  const size_t total_width_out = width_out * 2;
+  //const size_t total_height_out = height_out * 2;
+  // Fast vectorized bilinear interpolation on ch channels
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, out:64) \
+  dt_omp_firstprivate(in, out, width_out, height_out, width_in, height_in, ch, total_width_out)
+#endif
+  for(size_t i = 0; i < height_out; i++)
+  {
+    for(size_t j = 0; j < width_out; j++)
+    {
+      // Relative coordinates of the pixel in output space
+      const float x_out = ((float)j + 0.5f) /(float)width_out;
+      const float y_out = ((float)i + 0.5f) /(float)height_out;
+
+      // Corresponding absolute coordinates of the pixel in input space
+      const float x_in = x_out * (float)width_in - 0.5f;
+      const float y_in = y_out * (float)height_in - 0.5f;
+
+      // Nearest neighbours coordinates in input space
+      size_t x_prev_ref = MAX((size_t)floorf(x_in), 0);
+      size_t y_prev_ref = MAX((size_t)floorf(y_in), 0);
+      size_t x_prev = x_prev_ref;
+      size_t y_prev = y_prev_ref;
+      size_t x_next = x_prev + 1;
+      size_t y_next = y_prev + 1;
+      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+      x_next = (x_next < width_in) ? x_next : width_in - 1;
+      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+      y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+      // Nearest pixels in input array (nodes in grid)
+      size_t Y_prev = y_prev * width_in;
+      size_t Y_next =  y_next * width_in;
+      const float* Q_NW = (float *)in + (Y_prev + x_prev) * ch;
+      const float* Q_NE = (float *)in + (Y_prev + x_next) * ch;
+      const float* Q_SE = (float *)in + (Y_next + x_next) * ch;
+      const float* Q_SW = (float *)in + (Y_next + x_prev) * ch;
+
+      // Interpolate over ch layers
+      float* pixel_out = (float *)out + (i * total_width_out + j) * ch;
+
+#pragma unroll
+      for(size_t c = 0; c < ch; c++)
+      {
+        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
+      }
+
+      // pour la symétrie, utiliser qque chose du style (1.0f - x_out) * (float)width_in - 0.5f + width
+
+      // decaler x_prev et y_prev d'un offset de 1 en fonction de la moyenne qu'on veut ?
+      // pour inverser, ça sera le même algo, sauf qu'on écrira dans Q_NW Q_NE etc,
+      // la valeur qu'on avait dans (x_out, y_out), en accumulant et en conservant
+      // en mémoire le nombre d'accumulation par pixel (qui vaut 2 ou 4 a priori)
+      // OU: en étant intelligent et normalisant directement par 2 ou par 4 en fonction
+      // de la position du pixel.
+
+      x_prev = x_prev_ref + 1;
+      y_prev = y_prev_ref + 1;
+      x_next = x_prev + 1;
+      y_next = y_prev + 1;
+      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+      x_next = (x_next < width_in) ? x_next : width_in - 1;
+      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+      y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+      // Nearest pixels in input array (nodes in grid)
+      Y_prev = y_prev * width_in;
+      Y_next =  y_next * width_in;
+      Q_NW = (float *)in + (Y_prev + x_prev) * ch;
+      Q_NE = (float *)in + (Y_prev + x_next) * ch;
+      Q_SE = (float *)in + (Y_next + x_next) * ch;
+      Q_SW = (float *)in + (Y_next + x_prev) * ch;
+
+      // vertical symmetry
+      // write the top right corner.
+      pixel_out = (float *)out + (i * total_width_out + width_out + (width_out - j - 1)) * ch;
+
+#pragma unroll
+      for(size_t c = 0; c < ch; c++)
+      {
+        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
+      }
+
+      x_prev = x_prev_ref;
+      y_prev = y_prev_ref + 1;
+      //TODO transform this in an inline function or a MACRO that takes x_prev, y_prev and pixel_out as arguments
+      x_next = x_prev + 1;
+      y_next = y_prev + 1;
+      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+      x_next = (x_next < width_in) ? x_next : width_in - 1;
+      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+      y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+      // Nearest pixels in input array (nodes in grid)
+      Y_prev = y_prev * width_in;
+      Y_next =  y_next * width_in;
+      Q_NW = (float *)in + (Y_prev + x_prev) * ch;
+      Q_NE = (float *)in + (Y_prev + x_next) * ch;
+      Q_SE = (float *)in + (Y_next + x_next) * ch;
+      Q_SW = (float *)in + (Y_next + x_prev) * ch;
+      // horizontal symmetry
+      // write the bottom left corner.
+      pixel_out = (float *)out + ((height_out + height_out - i - 1) * total_width_out + j) * ch;
+
+#pragma unroll
+      for(size_t c = 0; c < ch; c++)
+      {
+        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
+      }
+      x_prev = x_prev_ref + 1;
+      y_prev = y_prev_ref;
+      //TODO transform this in an inline function or a MACRO that takes x_prev, y_prev and pixel_out as arguments
+      x_next = x_prev + 1;
+      y_next = y_prev + 1;
+      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+      x_next = (x_next < width_in) ? x_next : width_in - 1;
+      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+      y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+      // Nearest pixels in input array (nodes in grid)
+      Y_prev = y_prev * width_in;
+      Y_next =  y_next * width_in;
+      Q_NW = (float *)in + (Y_prev + x_prev) * ch;
+      Q_NE = (float *)in + (Y_prev + x_next) * ch;
+      Q_SE = (float *)in + (Y_next + x_next) * ch;
+      Q_SW = (float *)in + (Y_next + x_prev) * ch;
+      // horizontal and vertical symmetry
+      // write the bottom right corner.
+      pixel_out = (float *)out + ((height_out + height_out - i - 1) * total_width_out + (width_out + width_out - j - 1)) * ch;
+
+#pragma unroll
+      for(size_t c = 0; c < ch; c++)
+      {
+        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
+      }
+    }
+  }
+}
+
+#if 0
+__DT_CLONE_TARGETS__
+static inline void downscale_bilinear_2x2(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out)
+{
+  const size_t ch = 4;
+  const size_t width_out = (width_in + 1) / 2;
+  const size_t height_out = (height_in + 1) / 2;
+  // Fast vectorized bilinear interpolation on ch channels
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, out:64) \
+  dt_omp_firstprivate(in, out, width_out, height_out, width_in, height_in, ch)
+#endif
+  for(size_t i = 0; i < height_out; i++)
+  {
+    for(size_t j = 0; j < width_out; j++)
+    {
+      // Relative coordinates of the pixel in output space
+      const float x_out = ((float)j + 0.5f) /(float)width_out;
+      const float y_out = ((float)i + 0.5f) /(float)height_out;
+
+      // Corresponding absolute coordinates of the pixel in input space
+      const float x_in = x_out * (float)width_in - 0.5f;
+      const float y_in = y_out * (float)height_in - 0.5f;
+
+      // Nearest neighbours coordinates in input space
+      size_t x_prev = MAX((size_t)floorf(x_in), 0);
+      size_t x_next = x_prev + 1;
+      size_t y_prev = MAX((size_t)floorf(y_in), 0);
+      size_t y_next = y_prev + 1;
+
+      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+      x_next = (x_next < width_in) ? x_next : width_in - 1;
+      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+      y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+      // Nearest pixels in input array (nodes in grid)
+      const size_t Y_prev = y_prev * width_in;
+      const size_t Y_next =  y_next * width_in;
+      const float *const Q_NW = (float *)in + (Y_prev + x_prev) * ch;
+      const float *const Q_NE = (float *)in + (Y_prev + x_next) * ch;
+      const float *const Q_SE = (float *)in + (Y_next + x_next) * ch;
+      const float *const Q_SW = (float *)in + (Y_next + x_prev) * ch;
+
+      // Spatial differences between nodes
+      const float Dy_next = (float)y_next - y_in;
+      const float Dy_prev = 1.f - Dy_next; // because next - prev = 1
+      const float Dx_next = (float)x_next - x_in;
+      const float Dx_prev = 1.f - Dx_next; // because next - prev = 1
+
+      // Interpolate over ch layers
+      float *const pixel_out = (float *)out + (i * width_out + j) * ch;
+
+#pragma unroll
+      for(size_t c = 0; c < ch; c++)
+      {
+        pixel_out[c] = Dy_prev * (Q_SW[c] * Dx_next + Q_SE[c] * Dx_prev) +
+                       Dy_next * (Q_NW[c] * Dx_next + Q_NE[c] * Dx_prev);
+      }
+    }
+  }
+}
+#endif
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
@@ -966,10 +1201,26 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
   }
 
+  const size_t width_out = width[0] / 2;
+  const size_t total_width_out = width_out * 2;
+  const size_t height_out = height[0] / 2;
+  const size_t total_height_out = MAX(height_out * 2, height[0]);
+  float* dwn_mirrored = dt_alloc_align(64, sizeof(float) * 4 * total_width_out * total_height_out);
+  downscale_bilinear_mirrored(in, width[0], height[0], dwn_mirrored);
+  for(size_t i = 0; i < MIN(total_height_out, height[0]); i++)
+  {
+    for(size_t j = 0; j < MIN(total_width_out, width[0]); j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[((i * width[0]) + j) * 4 + c] = dwn_mirrored[((i * total_width_out) + j) * 4 + c];
+      }
+    }
+  }
+  return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   var(in, var_noise, var_signal, width[0], height[0], ovoid, wb);
-  return;
 
 
   for(int k = 0; k < NB_SCALES; k++)
