@@ -522,6 +522,32 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
   free(tmpdir);
 }
 
+
+static inline void average_2x2(const float* const in, size_t x_prev, size_t y_prev, size_t width_in, size_t height_in, float* const pixel_out)
+{
+  const size_t ch = 4;
+  size_t x_next = x_prev + 1;
+  size_t y_next = y_prev + 1;
+  x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+  x_next = (x_next < width_in) ? x_next : width_in - 1;
+  y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+  y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+  // Nearest pixels in input array (nodes in grid)
+  size_t Y_prev = y_prev * width_in;
+  size_t Y_next =  y_next * width_in;
+  const float* Q_NW = (float *)in + (Y_prev + x_prev) * ch;
+  const float* Q_NE = (float *)in + (Y_prev + x_next) * ch;
+  const float* Q_SE = (float *)in + (Y_next + x_next) * ch;
+  const float* Q_SW = (float *)in + (Y_next + x_prev) * ch;
+
+#pragma unroll
+  for(size_t c = 0; c < ch; c++)
+  {
+    pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
+  }
+}
+
 // calculer directement en une passe le downscaled, et I - downscaled_upscaled
 // compute downscaled image 4 times, and stick them with symmetry
 // input:  | /|
@@ -558,120 +584,25 @@ static inline void downscale_bilinear_mirrored(const float *const restrict in, c
       // Nearest neighbours coordinates in input space
       size_t x_prev_ref = MAX((size_t)floorf(x_in), 0);
       size_t y_prev_ref = MAX((size_t)floorf(y_in), 0);
-      size_t x_prev = x_prev_ref;
-      size_t y_prev = y_prev_ref;
-      size_t x_next = x_prev + 1;
-      size_t y_next = y_prev + 1;
-      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
-      x_next = (x_next < width_in) ? x_next : width_in - 1;
-      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
-      y_next = (y_next < height_in) ? y_next : height_in - 1;
 
-      // Nearest pixels in input array (nodes in grid)
-      size_t Y_prev = y_prev * width_in;
-      size_t Y_next =  y_next * width_in;
-      const float* Q_NW = (float *)in + (Y_prev + x_prev) * ch;
-      const float* Q_NE = (float *)in + (Y_prev + x_next) * ch;
-      const float* Q_SE = (float *)in + (Y_next + x_next) * ch;
-      const float* Q_SW = (float *)in + (Y_next + x_prev) * ch;
-
-      // Interpolate over ch layers
+      // top left corner
       float* pixel_out = (float *)out + (i * total_width_out + j) * ch;
-
-#pragma unroll
-      for(size_t c = 0; c < ch; c++)
-      {
-        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
-      }
-
-      // pour la symétrie, utiliser qque chose du style (1.0f - x_out) * (float)width_in - 0.5f + width
-
-      // decaler x_prev et y_prev d'un offset de 1 en fonction de la moyenne qu'on veut ?
-      // pour inverser, ça sera le même algo, sauf qu'on écrira dans Q_NW Q_NE etc,
-      // la valeur qu'on avait dans (x_out, y_out), en accumulant et en conservant
-      // en mémoire le nombre d'accumulation par pixel (qui vaut 2 ou 4 a priori)
-      // OU: en étant intelligent et normalisant directement par 2 ou par 4 en fonction
-      // de la position du pixel.
-
-      x_prev = x_prev_ref + 1;
-      y_prev = y_prev_ref + 1;
-      x_next = x_prev + 1;
-      y_next = y_prev + 1;
-      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
-      x_next = (x_next < width_in) ? x_next : width_in - 1;
-      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
-      y_next = (y_next < height_in) ? y_next : height_in - 1;
-
-      // Nearest pixels in input array (nodes in grid)
-      Y_prev = y_prev * width_in;
-      Y_next =  y_next * width_in;
-      Q_NW = (float *)in + (Y_prev + x_prev) * ch;
-      Q_NE = (float *)in + (Y_prev + x_next) * ch;
-      Q_SE = (float *)in + (Y_next + x_next) * ch;
-      Q_SW = (float *)in + (Y_next + x_prev) * ch;
+      average_2x2(in, x_prev_ref, y_prev_ref, width_in, height_in, pixel_out);
 
       // vertical symmetry
-      // write the top right corner.
+      // top right corner
       pixel_out = (float *)out + (i * total_width_out + width_out + (width_out - j - 1)) * ch;
+      average_2x2(in, x_prev_ref + 1, y_prev_ref + 1, width_in, height_in, pixel_out);
 
-#pragma unroll
-      for(size_t c = 0; c < ch; c++)
-      {
-        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
-      }
-
-      x_prev = x_prev_ref;
-      y_prev = y_prev_ref + 1;
-      //TODO transform this in an inline function or a MACRO that takes x_prev, y_prev and pixel_out as arguments
-      x_next = x_prev + 1;
-      y_next = y_prev + 1;
-      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
-      x_next = (x_next < width_in) ? x_next : width_in - 1;
-      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
-      y_next = (y_next < height_in) ? y_next : height_in - 1;
-
-      // Nearest pixels in input array (nodes in grid)
-      Y_prev = y_prev * width_in;
-      Y_next =  y_next * width_in;
-      Q_NW = (float *)in + (Y_prev + x_prev) * ch;
-      Q_NE = (float *)in + (Y_prev + x_next) * ch;
-      Q_SE = (float *)in + (Y_next + x_next) * ch;
-      Q_SW = (float *)in + (Y_next + x_prev) * ch;
       // horizontal symmetry
-      // write the bottom left corner.
+      // bottom left corner.
       pixel_out = (float *)out + ((height_out + height_out - i - 1) * total_width_out + j) * ch;
+      average_2x2(in, x_prev_ref, y_prev_ref + 1, width_in, height_in, pixel_out);
 
-#pragma unroll
-      for(size_t c = 0; c < ch; c++)
-      {
-        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
-      }
-      x_prev = x_prev_ref + 1;
-      y_prev = y_prev_ref;
-      //TODO transform this in an inline function or a MACRO that takes x_prev, y_prev and pixel_out as arguments
-      x_next = x_prev + 1;
-      y_next = y_prev + 1;
-      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
-      x_next = (x_next < width_in) ? x_next : width_in - 1;
-      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
-      y_next = (y_next < height_in) ? y_next : height_in - 1;
-
-      // Nearest pixels in input array (nodes in grid)
-      Y_prev = y_prev * width_in;
-      Y_next =  y_next * width_in;
-      Q_NW = (float *)in + (Y_prev + x_prev) * ch;
-      Q_NE = (float *)in + (Y_prev + x_next) * ch;
-      Q_SE = (float *)in + (Y_next + x_next) * ch;
-      Q_SW = (float *)in + (Y_next + x_prev) * ch;
       // horizontal and vertical symmetry
-      // write the bottom right corner.
+      // bottom right corner.
       pixel_out = (float *)out + ((height_out + height_out - i - 1) * total_width_out + (width_out + width_out - j - 1)) * ch;
-
-#pragma unroll
-      for(size_t c = 0; c < ch; c++)
-      {
-        pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
-      }
+      average_2x2(in, x_prev_ref + 1, y_prev_ref, width_in, height_in, pixel_out);
     }
   }
 }
