@@ -543,43 +543,41 @@ static inline void size_mirrored(const size_t w, const size_t h, size_t* mirrore
   *mirrored_h = (h - 2) / 2 + (h - 3) / 2 + 2;
 }
 
-static inline float* source_to_dest(const size_t w, const size_t h, const size_t total_line_width, const size_t total_column_height, const size_t i, const size_t j, float* const out)
+static inline float* source_to_dest(const size_t w, const size_t h, const size_t total_line_width, const size_t total_column_height, const size_t x, const size_t y, float* const out)
 {
   const size_t ch = 4;
-  const size_t i_odd = i & 1;
-  const size_t j_odd = j & 1;
-  size_t i_out = i / 2;
-  size_t j_out = j / 2;
-  if(i_odd)
+  const size_t x_odd = x & 1;
+  const size_t y_odd = y & 1;
+  size_t x_out = x / 2;
+  size_t y_out = y / 2;
+  if(x_odd)
   {
-    i_out = total_line_width - 1 - i / 2;
+    x_out = total_line_width - 1 - x / 2;
   }
-  if(j_odd)
+  if(y_odd)
   {
-    j_out = total_column_height - 1 - j / 2;
+    y_out = total_column_height - 1 - y / 2;
   }
-  return out + ch * (j_out * total_line_width + i_out);
+  return out + ch * (y_out * total_line_width + x_out);
 }
 
-static inline void average_2x2(const float* const in, size_t x_prev, size_t y_prev, const size_t width_in, const size_t height_in, const size_t width_out, const size_t height_out, float* const out)
+static inline void average_2x2(const float* const in, size_t x, size_t y, const size_t width_in, const size_t height_in, const size_t width_out, const size_t height_out, float* const out)
 {
   const size_t ch = 4;
-  size_t x_next = x_prev + 1;
-  size_t y_next = y_prev + 1;
-  x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
+  size_t x_next = x + 1;
+  size_t y_next = y + 1;
   x_next = (x_next < width_in) ? x_next : width_in - 1;
-  y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
   y_next = (y_next < height_in) ? y_next : height_in - 1;
 
   // Nearest pixels in input array (nodes in grid)
-  size_t Y_prev = y_prev * width_in;
+  size_t Y = y * width_in;
   size_t Y_next =  y_next * width_in;
-  const float* Q_NW = (float *)in + (Y_prev + x_prev) * ch;
-  const float* Q_NE = (float *)in + (Y_prev + x_next) * ch;
+  const float* Q_NW = (float *)in + (Y + x) * ch;
+  const float* Q_NE = (float *)in + (Y + x_next) * ch;
   const float* Q_SE = (float *)in + (Y_next + x_next) * ch;
-  const float* Q_SW = (float *)in + (Y_next + x_prev) * ch;
+  const float* Q_SW = (float *)in + (Y_next + x) * ch;
 
-  float* pixel_out = source_to_dest(width_in, height_in, width_out, height_out, x_prev, y_prev, out);
+  float* pixel_out = source_to_dest(width_in, height_in, width_out, height_out, x, y, out);
 
 #pragma unroll
   for(size_t c = 0; c < ch; c++)
