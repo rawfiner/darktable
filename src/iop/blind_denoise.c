@@ -522,7 +522,9 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
   free(tmpdir);
 }
 
-static inline float* source_to_dest(const size_t w, const size_t h, const size_t i, const size_t j, float* const out)
+// computes the size of the image after 4 2x2 downsampling that are stick
+// together mirrored.
+static inline void size_mirrored(const size_t w, const size_t h, size_t* mirrored_w, size_t* mirrored_h)
 {
   // to determine the total width of the line, we have to consider
   // the coordinate of the last pixel on the line of the original image.
@@ -537,8 +539,15 @@ static inline float* source_to_dest(const size_t w, const size_t h, const size_t
   // is (w-3)/2+1.
   // As we combine the images obtained starting from 0 and from 1 using
   // symmetry, total width is (w-2)/2+(w-3)/2+2
-  const size_t total_line_width = (w - 2) / 2 + (w - 3) / 2 + 2;
-  const size_t total_column_height = (h - 2) / 2 + (h - 3) / 2 + 2;
+  *mirrored_w = (w - 2) / 2 + (w - 3) / 2 + 2;
+  *mirrored_h = (h - 2) / 2 + (h - 3) / 2 + 2;
+}
+
+static inline float* source_to_dest(const size_t w, const size_t h, const size_t i, const size_t j, float* const out)
+{
+  size_t total_line_width;
+  size_t total_column_height;
+  size_mirrored(w, h, &total_line_width, &total_column_height);
   const size_t i_odd = i & 1;
   const size_t j_odd = j & 1;
   size_t i_out = i / 2;
@@ -1157,10 +1166,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
   }
 
-  const size_t w = width[0];
-  const size_t h = height[0];
-  const size_t total_width_out = (w - 2) / 2 + 1 + (w - 3) / 2 + 1;
-  const size_t total_height_out = (h - 2) / 2 + (h - 3) / 2 + 2;
+  size_t total_width_out;
+  size_t total_height_out;
+  size_mirrored(width[0], height[0], &total_width_out, &total_height_out);
   float* dwn_mirrored = dt_alloc_align(64, sizeof(float) * 4 * total_width_out * total_height_out);
   memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
   downscale_bilinear_mirrored(in, width[0], height[0], dwn_mirrored);
