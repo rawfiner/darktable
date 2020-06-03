@@ -524,18 +524,21 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
 
 static inline float* source_to_dest(const size_t w, const size_t h, const size_t i, const size_t j, float* const out)
 {
-  // coordinate of last pixel on the line is (w-2) / 2,
-  // as it is the coordinate of last pixel at the top left of
-  // a group of 2x2 pixels of original image
-  // (whose size is w) divided by 2.
-  // Thus, width is that plus 1.
-  const size_t half_line_width = (w - 2) / 2 + 1;
-  // if we assume (w-2) is even
-  // coordinate of last odd pixel on the line is (w-3) / 2,
-  const size_t second_half_line_width = (w - 3) / 2 + 1;
-  const size_t total_line_width = half_line_width + second_half_line_width;
+  // to determine the total width of the line, we have to consider
+  // the coordinate of the last pixel on the line of the original image.
+  // if image has width w, its last pixel is at (w-1)
+  // but we consider 2x2 blocks of pixels using the coordinate
+  // of the top left pixel, thus last such pixel is at (w-2).
+  // Also, we do 2x2 blocks either starting at index 0 or at index 1.
+  // if starting at index 1, the relative coordinate become (w-3)
+  // From these coordinate (w-2) and (w-3), we get the maximum
+  // coordinate we will gate for a downsampled line: (w-2)/2 and (w-3)/2
+  // The width obtained starting with 0 is (w-2)/2+1 and starting with 1
+  // is (w-3)/2+1.
+  // As we combine the images obtained starting from 0 and from 1 using
+  // symmetry, total width is (w-2)/2+(w-3)/2+2
+  const size_t total_line_width = (w - 2) / 2 + (w - 3) / 2 + 2;
   const size_t total_column_height = (h - 2) / 2 + (h - 3) / 2 + 2;
-  //printf("%ld %ld %ld\n", w, half_line_width, total_line_width);
   const size_t i_odd = i & 1;
   const size_t j_odd = j & 1;
   size_t i_out = i / 2;
