@@ -646,69 +646,38 @@ static inline void upscale_bilinear_mirrored(float *const restrict mirrored, con
   }
 }
 
-#if 0
 __DT_CLONE_TARGETS__
-static inline void downscale_bilinear_2x2(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out)
+static inline void get_details_from_mirrored(float *const restrict in, float *const restrict mirrored, float *const restrict details, const size_t width_in, const size_t height_in)
 {
   const size_t ch = 4;
-  const size_t width_out = (width_in + 1) / 2;
-  const size_t height_out = (height_in + 1) / 2;
-  // Fast vectorized bilinear interpolation on ch channels
+  size_t width_mirrored;
+  size_t height_mirrored;
+  size_mirrored(width_in, height_in, &width_mirrored, &height_mirrored);
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
-  schedule(simd:static) aligned(in, out:64) \
-  dt_omp_firstprivate(in, out, width_out, height_out, width_in, height_in, ch)
+  schedule(simd:static) aligned(mirrored:64) \
+  dt_omp_firstprivate(mirrored, in, details, width_mirrored, height_mirrored, width_in, height_in, ch)
 #endif
-  for(size_t i = 0; i < height_out; i++)
+  for(size_t i = 0; i < height_in; i++)
   {
-    for(size_t j = 0; j < width_out; j++)
+    for(size_t j = 0; j < width_in; j++)
     {
-      // Relative coordinates of the pixel in output space
-      const float x_out = ((float)j + 0.5f) /(float)width_out;
-      const float y_out = ((float)i + 0.5f) /(float)height_out;
-
-      // Corresponding absolute coordinates of the pixel in input space
-      const float x_in = x_out * (float)width_in - 0.5f;
-      const float y_in = y_out * (float)height_in - 0.5f;
-
-      // Nearest neighbours coordinates in input space
-      size_t x_prev = MAX((size_t)floorf(x_in), 0);
-      size_t x_next = x_prev + 1;
-      size_t y_prev = MAX((size_t)floorf(y_in), 0);
-      size_t y_next = y_prev + 1;
-
-      x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
-      x_next = (x_next < width_in) ? x_next : width_in - 1;
-      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
-      y_next = (y_next < height_in) ? y_next : height_in - 1;
-
-      // Nearest pixels in input array (nodes in grid)
-      const size_t Y_prev = y_prev * width_in;
-      const size_t Y_next =  y_next * width_in;
-      const float *const Q_NW = (float *)in + (Y_prev + x_prev) * ch;
-      const float *const Q_NE = (float *)in + (Y_prev + x_next) * ch;
-      const float *const Q_SE = (float *)in + (Y_next + x_next) * ch;
-      const float *const Q_SW = (float *)in + (Y_next + x_prev) * ch;
-
-      // Spatial differences between nodes
-      const float Dy_next = (float)y_next - y_in;
-      const float Dy_prev = 1.f - Dy_next; // because next - prev = 1
-      const float Dx_next = (float)x_next - x_in;
-      const float Dx_prev = 1.f - Dx_next; // because next - prev = 1
-
-      // Interpolate over ch layers
-      float *const pixel_out = (float *)out + (i * width_out + j) * ch;
-
-#pragma unroll
-      for(size_t c = 0; c < ch; c++)
+      size_t i_prev = MAX((int32_t)i - 1, 0);
+      size_t j_prev = MAX((int32_t)j - 1, 0);
+      // gather the 4 pixels that used (i,j) point
+      float* pixel0 = get_mirrored_pixel(width_mirrored, height_mirrored, j, i, mirrored);
+      float* pixel1 = get_mirrored_pixel(width_mirrored, height_mirrored, j_prev, i, mirrored);
+      float* pixel2 = get_mirrored_pixel(width_mirrored, height_mirrored, j, i_prev, mirrored);
+      float* pixel3 = get_mirrored_pixel(width_mirrored, height_mirrored, j_prev, i_prev, mirrored);
+      for(size_t c = 0; c < 3; c++)
       {
-        pixel_out[c] = Dy_prev * (Q_SW[c] * Dx_next + Q_SE[c] * Dx_prev) +
-                       Dy_next * (Q_NW[c] * Dx_next + Q_NE[c] * Dx_prev);
+        float upscaled = 0.25f * (pixel0[c] + pixel1[c] + pixel2[c] + pixel3[c]);
+        details[(i * width_in + j) * ch + c] = in[(i * width_in + j) * ch + c] - upscaled;
       }
     }
   }
 }
-#endif
+
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
