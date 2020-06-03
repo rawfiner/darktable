@@ -594,13 +594,11 @@ static inline void average_2x2(const float* const in, size_t x, size_t y, const 
 // output: |/\|
 //         |\/|
 __DT_CLONE_TARGETS__
-static inline void downscale_bilinear_mirrored(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out/*, float *const restrict details*/)
+static inline void downscale_bilinear_mirrored(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out)
 {
   size_t width_out;
   size_t height_out;
   size_mirrored(width_in, height_in, &width_out, &height_out);
-  //const size_t total_height_out = height_out * 2;
-  // Fast vectorized bilinear interpolation on ch channels
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(in, out:64) \
