@@ -522,8 +522,36 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
   free(tmpdir);
 }
 
+static inline float* source_to_dest(const size_t w, const size_t h, const size_t i, const size_t j, float* const out)
+{
+  // coordinate of last pixel on the line is (w-2) / 2,
+  // as it is the coordinate of last pixel at the top left of
+  // a group of 2x2 pixels of original image
+  // (whose size is w) divided by 2.
+  // Thus, width is that plus 1.
+  const size_t half_line_width = (w - 2) / 2 + 1;
+  // if we assume (w-2) is even
+  // coordinate of last odd pixel on the line is (w-3) / 2,
+  const size_t second_half_line_width = (w - 3) / 2 + 1;
+  const size_t total_line_width = half_line_width + second_half_line_width;
+  const size_t total_column_height = (h - 2) / 2 + (h - 3) / 2 + 2;
+  //printf("%ld %ld %ld\n", w, half_line_width, total_line_width);
+  const size_t i_odd = i & 1;
+  const size_t j_odd = j & 1;
+  size_t i_out = i / 2;
+  size_t j_out = j / 2;
+  if(i_odd)
+  {
+    i_out = total_line_width - 1 - i / 2;
+  }
+  if(j_odd)
+  {
+    j_out = total_column_height - 1 - j / 2;
+  }
+  return out + 4 * (j_out * total_line_width + i_out);
+}
 
-static inline void average_2x2(const float* const in, size_t x_prev, size_t y_prev, size_t width_in, size_t height_in, float* const pixel_out)
+static inline void average_2x2(const float* const in, size_t x_prev, size_t y_prev, size_t width_in, size_t height_in, float* const out)
 {
   const size_t ch = 4;
   size_t x_next = x_prev + 1;
@@ -540,6 +568,8 @@ static inline void average_2x2(const float* const in, size_t x_prev, size_t y_pr
   const float* Q_NE = (float *)in + (Y_prev + x_next) * ch;
   const float* Q_SE = (float *)in + (Y_next + x_next) * ch;
   const float* Q_SW = (float *)in + (Y_next + x_prev) * ch;
+
+  float* pixel_out = source_to_dest(width_in, height_in, x_prev, y_prev, out);
 
 #pragma unroll
   for(size_t c = 0; c < ch; c++)
@@ -558,54 +588,46 @@ static inline void average_2x2(const float* const in, size_t x_prev, size_t y_pr
 __DT_CLONE_TARGETS__
 static inline void downscale_bilinear_mirrored(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out/*, float *const restrict details*/)
 {
-  const size_t ch = 4;
-  const size_t width_out = width_in / 2;
-  const size_t height_out = height_in / 2;
-  const size_t total_width_out = width_out * 2;
   //const size_t total_height_out = height_out * 2;
   // Fast vectorized bilinear interpolation on ch channels
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(in, out:64) \
-  dt_omp_firstprivate(in, out, width_out, height_out, width_in, height_in, ch, total_width_out)
+  dt_omp_firstprivate(in, out, width_in, height_in)
 #endif
-  for(size_t i = 0; i < height_out; i++)
+  for(size_t i = 0; i < height_in-1; i++)
   {
-    for(size_t j = 0; j < width_out; j++)
+    for(size_t j = 0; j < width_in-1; j++)
     {
-      // Relative coordinates of the pixel in output space
-      const float x_out = ((float)j + 0.5f) /(float)width_out;
-      const float y_out = ((float)i + 0.5f) /(float)height_out;
-
-      // Corresponding absolute coordinates of the pixel in input space
-      const float x_in = x_out * (float)width_in - 0.5f;
-      const float y_in = y_out * (float)height_in - 0.5f;
-
-      // Nearest neighbours coordinates in input space
-      size_t x_prev_ref = MAX((size_t)floorf(x_in), 0);
-      size_t y_prev_ref = MAX((size_t)floorf(y_in), 0);
-
-      // top left corner
-      float* pixel_out = (float *)out + (i * total_width_out + j) * ch;
-      average_2x2(in, x_prev_ref, y_prev_ref, width_in, height_in, pixel_out);
-
-      // vertical symmetry
-      // top right corner
-      pixel_out = (float *)out + (i * total_width_out + width_out + (width_out - j - 1)) * ch;
-      average_2x2(in, x_prev_ref + 1, y_prev_ref + 1, width_in, height_in, pixel_out);
-
-      // horizontal symmetry
-      // bottom left corner.
-      pixel_out = (float *)out + ((height_out + height_out - i - 1) * total_width_out + j) * ch;
-      average_2x2(in, x_prev_ref, y_prev_ref + 1, width_in, height_in, pixel_out);
-
-      // horizontal and vertical symmetry
-      // bottom right corner.
-      pixel_out = (float *)out + ((height_out + height_out - i - 1) * total_width_out + (width_out + width_out - j - 1)) * ch;
-      average_2x2(in, x_prev_ref + 1, y_prev_ref, width_in, height_in, pixel_out);
+      average_2x2(in, j, i, width_in, height_in, out);
     }
   }
 }
+
+#if 0
+__DT_CLONE_TARGETS__
+static inline void upscale_bilinear_mirrored(const float *const restrict mirrored, const size_t width_upscaled, const size_t height_upscaled, float *const restrict upscaled)
+{
+  const size_t ch = 4;
+  const size_t width_mirrored = width_upscaled / 2;
+  const size_t height_mirrored = height_upscaled / 2;
+  const size_t total_width_mirrored = width_mirrored * 2;
+  //const size_t total_height_mirrored = height_mirrored * 2;
+  // Fast vectorized bilinear interpolation on ch channels
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(upscaled, mirrored:64) \
+  dt_omp_firstprivate(upscaled, mirrored, width_mirrored, height_mirrored, width_upscaled, height_upscaled, ch, total_width_mirrored)
+#endif
+  for(size_t i = 0; i < height_upscaled; i++)
+  {
+    for(size_t j = 0; j < width_upscaled; j++)
+    {
+      //TODO
+    }
+  }
+}
+#endif
 
 #if 0
 __DT_CLONE_TARGETS__
@@ -1132,11 +1154,12 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
   }
 
-  const size_t width_out = width[0] / 2;
-  const size_t total_width_out = width_out * 2;
-  const size_t height_out = height[0] / 2;
-  const size_t total_height_out = MAX(height_out * 2, height[0]);
+  const size_t w = width[0];
+  const size_t h = height[0];
+  const size_t total_width_out = (w - 2) / 2 + 1 + (w - 3) / 2 + 1;
+  const size_t total_height_out = (h - 2) / 2 + (h - 3) / 2 + 2;
   float* dwn_mirrored = dt_alloc_align(64, sizeof(float) * 4 * total_width_out * total_height_out);
+  memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
   downscale_bilinear_mirrored(in, width[0], height[0], dwn_mirrored);
   for(size_t i = 0; i < MIN(total_height_out, height[0]); i++)
   {
@@ -1148,6 +1171,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       }
     }
   }
+  //upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
