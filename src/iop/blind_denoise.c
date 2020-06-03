@@ -543,11 +543,9 @@ static inline void size_mirrored(const size_t w, const size_t h, size_t* mirrore
   *mirrored_h = (h - 2) / 2 + (h - 3) / 2 + 2;
 }
 
-static inline float* source_to_dest(const size_t w, const size_t h, const size_t i, const size_t j, float* const out)
+static inline float* source_to_dest(const size_t w, const size_t h, const size_t total_line_width, const size_t total_column_height, const size_t i, const size_t j, float* const out)
 {
-  size_t total_line_width;
-  size_t total_column_height;
-  size_mirrored(w, h, &total_line_width, &total_column_height);
+  const size_t ch = 4;
   const size_t i_odd = i & 1;
   const size_t j_odd = j & 1;
   size_t i_out = i / 2;
@@ -560,10 +558,10 @@ static inline float* source_to_dest(const size_t w, const size_t h, const size_t
   {
     j_out = total_column_height - 1 - j / 2;
   }
-  return out + 4 * (j_out * total_line_width + i_out);
+  return out + ch * (j_out * total_line_width + i_out);
 }
 
-static inline void average_2x2(const float* const in, size_t x_prev, size_t y_prev, size_t width_in, size_t height_in, float* const out)
+static inline void average_2x2(const float* const in, size_t x_prev, size_t y_prev, const size_t width_in, const size_t height_in, const size_t width_out, const size_t height_out, float* const out)
 {
   const size_t ch = 4;
   size_t x_next = x_prev + 1;
@@ -581,7 +579,7 @@ static inline void average_2x2(const float* const in, size_t x_prev, size_t y_pr
   const float* Q_SE = (float *)in + (Y_next + x_next) * ch;
   const float* Q_SW = (float *)in + (Y_next + x_prev) * ch;
 
-  float* pixel_out = source_to_dest(width_in, height_in, x_prev, y_prev, out);
+  float* pixel_out = source_to_dest(width_in, height_in, width_out, height_out, x_prev, y_prev, out);
 
 #pragma unroll
   for(size_t c = 0; c < ch; c++)
@@ -600,18 +598,21 @@ static inline void average_2x2(const float* const in, size_t x_prev, size_t y_pr
 __DT_CLONE_TARGETS__
 static inline void downscale_bilinear_mirrored(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out/*, float *const restrict details*/)
 {
+  size_t width_out;
+  size_t height_out;
+  size_mirrored(width_in, height_in, &width_out, &height_out);
   //const size_t total_height_out = height_out * 2;
   // Fast vectorized bilinear interpolation on ch channels
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(in, out:64) \
-  dt_omp_firstprivate(in, out, width_in, height_in)
+  dt_omp_firstprivate(in, out, width_in, height_in, width_out, height_out)
 #endif
   for(size_t i = 0; i < height_in-1; i++)
   {
     for(size_t j = 0; j < width_in-1; j++)
     {
-      average_2x2(in, j, i, width_in, height_in, out);
+      average_2x2(in, j, i, width_in, height_in, width_out, height_out, out);
     }
   }
 }
