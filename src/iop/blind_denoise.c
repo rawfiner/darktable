@@ -625,22 +625,23 @@ static inline void upscale_bilinear_mirrored(float *const restrict mirrored, con
   schedule(simd:static) aligned(upscaled, mirrored:64) \
   dt_omp_firstprivate(upscaled, mirrored, width_mirrored, height_mirrored, width_upscaled, height_upscaled, ch)
 #endif
-  for(size_t i = 1; i < height_upscaled; i++)
+  for(size_t i = 0; i < height_upscaled; i++)
   {
-    for(size_t j = 1; j < width_upscaled; j++)
+    for(size_t j = 0; j < width_upscaled; j++)
     {
+      size_t i_prev = MAX((int32_t)i - 1, 0);
+      size_t j_prev = MAX((int32_t)j - 1, 0);
       // gather the 4 pixels that used (i,j) point
       float* pixel0 = source_to_dest(width_mirrored, height_mirrored, j, i, mirrored);
-      float* pixel1 = source_to_dest(width_mirrored, height_mirrored, j-1, i, mirrored);
-      float* pixel2 = source_to_dest(width_mirrored, height_mirrored, j, i-1, mirrored);
-      float* pixel3 = source_to_dest(width_mirrored, height_mirrored, j-1, i-1, mirrored);
+      float* pixel1 = source_to_dest(width_mirrored, height_mirrored, j_prev, i, mirrored);
+      float* pixel2 = source_to_dest(width_mirrored, height_mirrored, j, i_prev, mirrored);
+      float* pixel3 = source_to_dest(width_mirrored, height_mirrored, j_prev, i_prev, mirrored);
       for(size_t c = 0; c < 3; c++)
       {
         upscaled[(i * width_upscaled + j) * ch + c] = 0.25f * (pixel0[c] + pixel1[c] + pixel2[c] + pixel3[c]);
       }
     }
   }
-  //TODO handle case where i or j == 0
 }
 
 #if 0
