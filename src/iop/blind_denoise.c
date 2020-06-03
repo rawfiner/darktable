@@ -543,7 +543,7 @@ static inline void size_mirrored(const size_t w, const size_t h, size_t* mirrore
   *mirrored_h = (h - 2) / 2 + (h - 3) / 2 + 2;
 }
 
-static inline float* source_to_dest(const size_t width_out, const size_t height_out, const size_t x, const size_t y, float* const out)
+static inline float* source_to_dest(const size_t width_out, const size_t height_out, const size_t x, const size_t y, float *const restrict out)
 {
   const size_t ch = 4;
   const size_t x_odd = x & 1;
@@ -613,30 +613,35 @@ static inline void downscale_bilinear_mirrored(const float *const restrict in, c
   }
 }
 
-#if 0
 __DT_CLONE_TARGETS__
-static inline void upscale_bilinear_mirrored(const float *const restrict mirrored, const size_t width_upscaled, const size_t height_upscaled, float *const restrict upscaled)
+static inline void upscale_bilinear_mirrored(float *const restrict mirrored, const size_t width_upscaled, const size_t height_upscaled, float *const restrict upscaled)
 {
   const size_t ch = 4;
-  const size_t width_mirrored = width_upscaled / 2;
-  const size_t height_mirrored = height_upscaled / 2;
-  const size_t total_width_mirrored = width_mirrored * 2;
-  //const size_t total_height_mirrored = height_mirrored * 2;
-  // Fast vectorized bilinear interpolation on ch channels
+  size_t width_mirrored;
+  size_t height_mirrored;
+  size_mirrored(width_upscaled, height_upscaled, &width_mirrored, &height_mirrored);
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(upscaled, mirrored:64) \
-  dt_omp_firstprivate(upscaled, mirrored, width_mirrored, height_mirrored, width_upscaled, height_upscaled, ch, total_width_mirrored)
+  dt_omp_firstprivate(upscaled, mirrored, width_mirrored, height_mirrored, width_upscaled, height_upscaled, ch)
 #endif
-  for(size_t i = 0; i < height_upscaled; i++)
+  for(size_t i = 1; i < height_upscaled; i++)
   {
-    for(size_t j = 0; j < width_upscaled; j++)
+    for(size_t j = 1; j < width_upscaled; j++)
     {
-      //TODO
+      // gather the 4 pixels that used (i,j) point
+      float* pixel0 = source_to_dest(width_mirrored, height_mirrored, j, i, mirrored);
+      float* pixel1 = source_to_dest(width_mirrored, height_mirrored, j-1, i, mirrored);
+      float* pixel2 = source_to_dest(width_mirrored, height_mirrored, j, i-1, mirrored);
+      float* pixel3 = source_to_dest(width_mirrored, height_mirrored, j-1, i-1, mirrored);
+      for(size_t c = 0; c < 3; c++)
+      {
+        upscaled[(i * width_upscaled + j) * ch + c] = 0.25f * (pixel0[c] + pixel1[c] + pixel2[c] + pixel3[c]);
+      }
     }
   }
+  //TODO handle case where i or j == 0
 }
-#endif
 
 #if 0
 __DT_CLONE_TARGETS__
@@ -1179,7 +1184,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       }
     }
   }
-  //upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
+  upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
