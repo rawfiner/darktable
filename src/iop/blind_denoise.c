@@ -522,9 +522,11 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
   free(tmpdir);
 }
 
-// computes the size of the image after 4 2x2 downsampling that are stick
+// computes one dimension of the image after 4 2x2 downsampling that are stick
 // together mirrored.
-static inline void size_mirrored(const size_t w, const size_t h, size_t* mirrored_w, size_t* mirrored_h)
+// will return the width if the arg is the width of the original image
+// will return the height if the arg is the height of the original image
+static inline size_t get_dimension_mirrored(const size_t w)
 {
   // to determine the total width of the line, we have to consider
   // the coordinate of the last pixel on the line of the original image.
@@ -539,8 +541,7 @@ static inline void size_mirrored(const size_t w, const size_t h, size_t* mirrore
   // is (w-3)/2+1.
   // As we combine the images obtained starting from 0 and from 1 using
   // symmetry, total width is (w-2)/2+(w-3)/2+2
-  *mirrored_w = (w - 2) / 2 + (w - 3) / 2 + 2;
-  *mirrored_h = (h - 2) / 2 + (h - 3) / 2 + 2;
+  return (w - 2) / 2 + (w - 3) / 2 + 2;
 }
 
 // gives the pixel in the mirrored image that contains the 2x2 average
@@ -598,9 +599,8 @@ static inline void average_2x2(const float* const in, size_t x, size_t y, const 
 __DT_CLONE_TARGETS__
 static inline void downscale_bilinear_mirrored(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out)
 {
-  size_t width_out;
-  size_t height_out;
-  size_mirrored(width_in, height_in, &width_out, &height_out);
+  const size_t width_out = get_dimension_mirrored(width_in);
+  const size_t height_out = get_dimension_mirrored(height_in);
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(in, out:64) \
@@ -619,9 +619,8 @@ __DT_CLONE_TARGETS__
 static inline void upscale_bilinear_mirrored(float *const restrict mirrored, const size_t width_upscaled, const size_t height_upscaled, float *const restrict upscaled)
 {
   const size_t ch = 4;
-  size_t width_mirrored;
-  size_t height_mirrored;
-  size_mirrored(width_upscaled, height_upscaled, &width_mirrored, &height_mirrored);
+  const size_t width_mirrored = get_dimension_mirrored(width_upscaled);
+  const size_t height_mirrored = get_dimension_mirrored(height_upscaled);
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(upscaled, mirrored:64) \
@@ -650,9 +649,8 @@ __DT_CLONE_TARGETS__
 static inline void get_details_from_mirrored(float *const restrict in, float *const restrict mirrored, float *const restrict details, const size_t width_in, const size_t height_in)
 {
   const size_t ch = 4;
-  size_t width_mirrored;
-  size_t height_mirrored;
-  size_mirrored(width_in, height_in, &width_mirrored, &height_mirrored);
+  const size_t width_mirrored = get_dimension_mirrored(width_in);
+  const size_t height_mirrored = get_dimension_mirrored(height_in);
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(mirrored:64) \
@@ -1140,9 +1138,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
   }
 
-  size_t total_width_out;
-  size_t total_height_out;
-  size_mirrored(width[0], height[0], &total_width_out, &total_height_out);
+  const size_t total_width_out = get_dimension_mirrored(width[0]);
+  const size_t total_height_out = get_dimension_mirrored(height[0]);
   float* dwn_mirrored = dt_alloc_align(64, sizeof(float) * 4 * total_width_out * total_height_out);
   memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
   downscale_bilinear_mirrored(in, width[0], height[0], dwn_mirrored);
