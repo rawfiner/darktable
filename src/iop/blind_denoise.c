@@ -645,6 +645,7 @@ static inline void upscale_bilinear_mirrored(float *const restrict mirrored, con
   }
 }
 
+// puts in details the reconstruction error when downscaling and upscaling
 __DT_CLONE_TARGETS__
 static inline void get_details_from_mirrored(float *const restrict in, float *const restrict mirrored, float *const restrict details, const size_t width_in, const size_t height_in)
 {
@@ -675,6 +676,7 @@ static inline void get_details_from_mirrored(float *const restrict in, float *co
     }
   }
 }
+
 
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
@@ -1143,17 +1145,18 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float* dwn_mirrored = dt_alloc_align(64, sizeof(float) * 4 * total_width_out * total_height_out);
   memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
   downscale_bilinear_mirrored(in, width[0], height[0], dwn_mirrored);
-  for(size_t i = 0; i < MIN(total_height_out, height[0]); i++)
-  {
-    for(size_t j = 0; j < MIN(total_width_out, width[0]); j++)
-    {
-      for(size_t c = 0; c < 4; c++)
-      {
-        out[((i * width[0]) + j) * 4 + c] = dwn_mirrored[((i * total_width_out) + j) * 4 + c];
-      }
-    }
-  }
+  // for(size_t i = 0; i < MIN(total_height_out, height[0]); i++)
+  // {
+  //   for(size_t j = 0; j < MIN(total_width_out, width[0]); j++)
+  //   {
+  //     for(size_t c = 0; c < 4; c++)
+  //     {
+  //       out[((i * width[0]) + j) * 4 + c] = dwn_mirrored[((i * total_width_out) + j) * 4 + c];
+  //     }
+  //   }
+  // }
   upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
+  get_details_from_mirrored(in, dwn_mirrored, out, width[0], height[0]);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
