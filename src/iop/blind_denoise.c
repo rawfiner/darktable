@@ -654,7 +654,7 @@ static inline void get_details_from_mirrored(float *const restrict in, float *co
   const size_t height_mirrored = get_dimension_mirrored(height_in);
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
-  schedule(simd:static) aligned(mirrored:64) \
+  schedule(simd:static) aligned(in, details, mirrored:64) \
   dt_omp_firstprivate(mirrored, in, details, width_mirrored, height_mirrored, width_in, height_in, ch)
 #endif
   for(size_t i = 0; i < height_in; i++)
@@ -677,6 +677,82 @@ static inline void get_details_from_mirrored(float *const restrict in, float *co
   }
 }
 
+// prepare the image that will be used in non-local means to compute the weights:
+// image will have 4 channels:
+// - 1 "fine details" channel equal to R/wb[0] + G/wb[1] + B/wb[2]
+// - 1 channel that is a 3x3 average on the R channel
+// - 1 channel that is a 3x3 average on the G channel
+// - 1 channel that is a 3x3 average on the B channel
+// on all channels, an anscombe transform (sqrt) is applied.
+__DT_CLONE_TARGETS__
+static inline void prepare_for_nlmeans(float *const restrict in, float *const restrict out, const size_t width, const size_t height, const float wb[3])
+{
+  const size_t ch = 4;
+  const int radius = 1;
+  float *const restrict average = dt_alloc_align(64, width * height * ch * sizeof(float));
+  memset(average, 0, width * height * ch * sizeof(float));
+  memset(out, 0, width * height * ch * sizeof(float));
+  // start by doing a 3x3 average of the input
+  // convolve along columns
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, average:64) \
+  dt_omp_firstprivate(in, average, width, height, ch)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (i < radius) ? 0 : i - radius;
+      size_t end_convol = i + radius;
+      end_convol = (end_convol < height) ? end_convol : height - 1;
+      const float num_elem = (float)end_convol - (float)begin_convol + 1.0f;
+
+      for(size_t ii = begin_convol; ii <= end_convol; ii++)
+      {
+        for(size_t c = 0; c < 3; c++)
+        {
+          average[(i * width + j) * ch + c] += in[(ii * width + j) * ch + c] / num_elem;
+        }
+      }
+    }
+  }
+  // convolve along rows and compute first channel and anscombe
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, average, out:64) \
+  dt_omp_firstprivate(in, average, out, width, height, ch, wb)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (j < radius) ? 0 : j - radius;
+      size_t end_convol = j + radius;
+      end_convol = (end_convol < width) ? end_convol : width - 1;
+      const float num_elem = (float)end_convol - (float)begin_convol + 1.0f;
+
+      for(size_t jj = begin_convol; jj <= end_convol; jj++)
+      {
+        for(size_t c = 0; c < 3; c++)
+        {
+          out[(i * width + j) * ch + (c + 1)] += average[(i * width + jj) * ch + c] / num_elem;
+        }
+      }
+      // compute first channel
+      for(size_t c = 0; c < 3; c++)
+      {
+        out[(i * width + j) * ch] += in[(i * width + j) * ch + c] / wb[c];
+      }
+      // anscombe transform for all channels
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[(i * width + j) * ch + c] = sqrtf(MAX(out[(i * width + j) * ch + c], 0.0f));
+      }
+    }
+  }
+  dt_free_align(average);
+}
 
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
@@ -1157,6 +1233,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // }
   upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
   get_details_from_mirrored(in, dwn_mirrored, out, width[0], height[0]);
+  prepare_for_nlmeans(in, out, width[0], height[0], wb);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
