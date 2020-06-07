@@ -754,6 +754,60 @@ static inline void prepare_for_nlmeans(float *const restrict in, float *const re
   dt_free_align(average);
 }
 
+__DT_CLONE_TARGETS__
+static inline void nlmeans(float *const restrict guide, float *const restrict in, float *const restrict out, const size_t width, const size_t height)
+{
+  //const float force = 4.0f;
+  const size_t ch = 4;
+  const int k = 2;
+  const size_t total_neighbors = (2 * k + 1) * (2 * k + 1);
+  float *const restrict diff = dt_alloc_align(64, width * height * total_neighbors * sizeof(float));
+  memset(out, 0, width * height * ch * sizeof(float));
+
+#ifdef _OPENMP
+#pragma omp parallel for collapse(2) default(none) \
+  schedule(static) \
+  dt_omp_firstprivate(guide, diff, width, height, ch, total_neighbors)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t ii_begin = (i < k) ? 0 : i - k;
+      size_t ii_end = i + k;
+      ii_end = (ii_end < height) ? ii_end : height - 1;
+
+      const size_t jj_begin = (j < k) ? 0 : j - k;
+      size_t jj_end = j + k;
+      jj_end = (jj_end < width) ? jj_end : width - 1;
+
+#ifdef _OPENMP
+#pragma omp parallel for collapse(2) default(none) \
+  schedule(static) \
+  dt_omp_firstprivate(guide, diff, ii_begin, ii_end, jj_begin, jj_end, ch, total_neighbors)
+#endif
+      for(size_t ii = ii_begin; ii < ii_end; ii++)
+      {
+        for(size_t jj = jj_begin; jj < jj_end; jj++)
+        {
+          float diff_tmp = 0.0f;
+#ifdef _OPENMP
+#pragma omp for simd aligned(guide:64) \
+  schedule(simd:static) reduction(+:diff_tmp)
+#endif
+          for(size_t c = 0; c < ch; c++)
+          {
+            diff_tmp += (guide[(i * width + j) * ch + c] - guide[(ii * width + jj) * ch + c])
+                      * (guide[(i * width + j) * ch + c] - guide[(ii * width + jj) * ch + c]);
+          }
+          size_t index = (i * width + j) * total_neighbors + (ii + k - i) * (2 * k + 1) + (jj + k - j);
+          diff[index] = diff_tmp;
+        }
+      }
+    }
+  }
+  dt_free_align(diff);
+}
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
