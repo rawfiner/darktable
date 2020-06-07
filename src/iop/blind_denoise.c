@@ -767,8 +767,8 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2) default(none) \
-  schedule(static) \
-  dt_omp_firstprivate(guide, diff, width, height, ch, total_neighbors)
+  schedule(simd:static) \
+  dt_omp_firstprivate(guide, diff, norm, width, height, ch, total_neighbors)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -796,8 +796,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 
           float diff_tmp = 0.0f;
 #ifdef _OPENMP
-#pragma omp for simd aligned(guide:64) \
-  schedule(simd:static) reduction(+:diff_tmp)
+#pragma omp simd aligned(guide:64) reduction(+:diff_tmp)
 #endif
           for(size_t c = 0; c < ch; c++)
           {
@@ -822,7 +821,6 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
       norm[i * width + j] = min_diff;
     }
   }
-
   dt_free_align(diff);
   dt_free_align(norm);
 }
@@ -1305,7 +1303,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // }
   upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
   get_details_from_mirrored(in, dwn_mirrored, out, width[0], height[0]);
-  prepare_for_nlmeans(in, out, width[0], height[0], wb);
+  float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
+  prepare_for_nlmeans(in, guide, width[0], height[0], wb);
+  nlmeans(guide, in, out, width[0], height[0]);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
