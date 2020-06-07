@@ -760,8 +760,9 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   //const float force = 4.0f;
   const size_t ch = 4;
   const int k = 2;
-  const size_t total_neighbors = (2 * k + 1) * (2 * k + 1);
+  const size_t total_neighbors = (2 * k) * (2 * k); // central pixel is not counted
   float *const restrict diff = dt_alloc_align(64, width * height * total_neighbors * sizeof(float));
+  float *const restrict norm = dt_alloc_align(64, width * height * sizeof(float));
   memset(out, 0, width * height * ch * sizeof(float));
 
 #ifdef _OPENMP
@@ -781,15 +782,18 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
       size_t jj_end = j + k;
       jj_end = (jj_end < width) ? jj_end : width - 1;
 
-#ifdef _OPENMP
-#pragma omp parallel for collapse(2) default(none) \
-  schedule(static) \
-  dt_omp_firstprivate(guide, diff, ii_begin, ii_end, jj_begin, jj_end, ch, total_neighbors)
-#endif
+      size_t index_neighbor = 0;
+      float min_diff = INFINITY;
+      // compute patch difference and find "best" neighbor
+      // for this pixel within the group of pixels that are at
+      // at a distance of more than 1
       for(size_t ii = ii_begin; ii < ii_end; ii++)
       {
         for(size_t jj = jj_begin; jj < jj_end; jj++)
         {
+          if(ii == i && jj == j)
+            continue;
+
           float diff_tmp = 0.0f;
 #ifdef _OPENMP
 #pragma omp for simd aligned(guide:64) \
@@ -800,13 +804,27 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
             diff_tmp += (guide[(i * width + j) * ch + c] - guide[(ii * width + jj) * ch + c])
                       * (guide[(i * width + j) * ch + c] - guide[(ii * width + jj) * ch + c]);
           }
-          size_t index = (i * width + j) * total_neighbors + (ii + k - i) * (2 * k + 1) + (jj + k - j);
+          size_t index = (i * width + j) * total_neighbors + index_neighbor;
           diff[index] = diff_tmp;
+
+          // find best neighbor for each pixel.
+          // we only consider for this pixels which are far enough from our
+          // reference pixel, to avoid comparing the pixel with other pixels
+          // that may have the same noise issues for instance due to demosaic
+          if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
+          {
+            if(diff_tmp < min_diff)
+              min_diff = diff_tmp;
+          }
+          index_neighbor++;
         }
       }
+      norm[i * width + j] = min_diff;
     }
   }
+
   dt_free_align(diff);
+  dt_free_align(norm);
 }
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
