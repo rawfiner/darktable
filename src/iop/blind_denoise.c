@@ -23,6 +23,7 @@
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
 #include "common/fast_guided_filter.h"
+#include "common/gaussian.h"
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
@@ -762,13 +763,16 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   const int k = 2;
   const size_t total_neighbors = (2 * k + 1) * (2 * k + 1) - 1; // central pixel is not counted
   float *const restrict diff = dt_alloc_align(64, width * height * total_neighbors * sizeof(float));
-  float *const restrict norm = dt_alloc_align(64, width * height * sizeof(float));
+  float *const restrict min_diffs = dt_alloc_align(64, width * height * sizeof(float));
+  float *const restrict averaged_min_diffs = dt_alloc_align(64, width * height * sizeof(float));
   memset(out, 0, width * height * ch * sizeof(float));
 
+  float max_min_diff = 0.0f;
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2) default(none) \
   schedule(simd:static) \
-  dt_omp_firstprivate(guide, diff, norm, width, height, ch, total_neighbors)
+  dt_omp_firstprivate(guide, diff, min_diffs, width, height, ch, total_neighbors) \
+  reduction(max:max_min_diff)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -818,11 +822,26 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
           index_neighbor++;
         }
       }
-      norm[i * width + j] = min_diff;
+      min_diffs[i * width + j] = min_diff;
+      if(min_diff > max_min_diff)
+        max_min_diff = min_diff;
     }
   }
+
+  // local average of min diffs
+  const float sigma = 10.0f;
+  const float min = 0.0f;
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
+  if(g)
+  {
+    dt_gaussian_blur(g, min_diffs, averaged_min_diffs);
+    dt_gaussian_free(g);
+  }
+
+
   dt_free_align(diff);
-  dt_free_align(norm);
+  dt_free_align(min_diffs);
+  dt_free_align(averaged_min_diffs);
 }
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
