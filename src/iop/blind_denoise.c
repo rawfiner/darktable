@@ -760,7 +760,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   //const float force = 4.0f;
   const size_t ch = 4;
   const int k = 2;
-  const size_t total_neighbors = (2 * k) * (2 * k); // central pixel is not counted
+  const size_t total_neighbors = (2 * k + 1) * (2 * k + 1) - 1; // central pixel is not counted
   float *const restrict diff = dt_alloc_align(64, width * height * total_neighbors * sizeof(float));
   float *const restrict norm = dt_alloc_align(64, width * height * sizeof(float));
   memset(out, 0, width * height * ch * sizeof(float));
