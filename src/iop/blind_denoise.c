@@ -791,9 +791,9 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
       // compute patch difference and find "best" neighbor
       // for this pixel within the group of pixels that are at
       // at a distance of more than 1
-      for(size_t ii = ii_begin; ii < ii_end; ii++)
+      for(size_t ii = ii_begin; ii <= ii_end; ii++)
       {
-        for(size_t jj = jj_begin; jj < jj_end; jj++)
+        for(size_t jj = jj_begin; jj <= jj_end; jj++)
         {
           if(ii == i && jj == j)
             continue;
@@ -829,7 +829,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   }
 
   // local average of min diffs
-  const float sigma = 10.0f;
+  const float sigma = 50.0f;
   const float min = 0.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
   if(g)
@@ -838,6 +838,16 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
     dt_gaussian_free(g);
   }
 
+  for(size_t i = 0; i < width * height; i++)
+  {
+    out[i * ch + 0] = MAX(-logf(min_diffs[i]) - 6.0f, 0.0f) / 6.0f;
+    out[i * ch + 1] = MAX(-logf(averaged_min_diffs[i]) - 6.0f, 0.0f) / 6.0f;
+    //printf("%f\n", averaged_min_diffs[i]);
+  }
+
+  // compute norm for each pixel:
+  // a global compensation of averaged_min_diffs to reach a target
+  // a local compensation of min_diff if it is higher than average
 
   dt_free_align(diff);
   dt_free_align(min_diffs);
