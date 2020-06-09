@@ -766,7 +766,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   float *const restrict min_diffs = dt_alloc_align(64, width * height * sizeof(float));
   float *const restrict norm = dt_alloc_align(64, width * height * sizeof(float));
   float *const restrict averaged_min_diffs = dt_alloc_align(64, width * height * sizeof(float));
-  memset(out, 0, width * height * ch * sizeof(float));
+  memcpy(out, in, width * height * ch * sizeof(float));
 
   float max_min_diff = 0.0f;
 #ifdef _OPENMP
@@ -850,20 +850,57 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   for(size_t i = 0; i < width * height; i++)
   {
     if(min_diffs[i] > averaged_min_diffs[i])
-      norm[i] = min_diffs[i] / target;
+      norm[i] = sqrt(min_diffs[i] / target);
     else
-      norm[i] = averaged_min_diffs[i] / target;
-  }
-
-  for(size_t i = 0; i < width * height; i++)
-  {
-    out[i * ch + 0] = MAX(-logf(min_diffs[i]) - 6.0f, 0.0f) / 6.0f;
-    out[i * ch + 1] = MAX(-logf(averaged_min_diffs[i]) - 6.0f, 0.0f) / 6.0f;
-    out[i * ch + 2] = MAX(-logf(norm[i]) - 6.0f, 0.0f) / 6.0f;
+      norm[i] = sqrt(averaged_min_diffs[i] / target);
   }
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
 
+#ifdef _OPENMP
+#pragma omp parallel for collapse(2) default(none) \
+  schedule(static) \
+  dt_omp_firstprivate(diff, norm, in, out, width, height, ch, total_neighbors)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t ii_begin = (i < k) ? 0 : i - k;
+      size_t ii_end = i + k;
+      ii_end = (ii_end < height) ? ii_end : height - 1;
+
+      const size_t jj_begin = (j < k) ? 0 : j - k;
+      size_t jj_end = j + k;
+      jj_end = (jj_end < width) ? jj_end : width - 1;
+
+      size_t index_neighbor = 0;
+      float total_weight = 1.0f;
+      for(size_t ii = ii_begin; ii <= ii_end; ii++)
+      {
+        for(size_t jj = jj_begin; jj <= jj_end; jj++)
+        {
+          if(ii == i && jj == j)
+            continue;
+
+          size_t index = (i * width + j) * total_neighbors + index_neighbor;
+          const float difference = diff[index];
+          const float normalized_difference = difference / (norm[i * width + j] * norm[ii * width + j]);
+          const float weight = exp2f(-normalized_difference);
+          total_weight += weight;
+          for(size_t c = 0; c < 3; c++)
+          {
+            out[(i * width + j) * ch + c] += weight * in[(ii * width + jj) * ch + c];
+          }
+          index_neighbor++;
+        }
+      }
+      for(size_t c = 0; c < 3; c++)
+      {
+        out[(i * width + j) * ch + c] /= total_weight;
+      }
+    }
+  }
 
   dt_free_align(diff);
   dt_free_align(norm);
