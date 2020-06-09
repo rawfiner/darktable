@@ -764,6 +764,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   const size_t total_neighbors = (2 * k + 1) * (2 * k + 1) - 1; // central pixel is not counted
   float *const restrict diff = dt_alloc_align(64, width * height * total_neighbors * sizeof(float));
   float *const restrict min_diffs = dt_alloc_align(64, width * height * sizeof(float));
+  float *const restrict norm = dt_alloc_align(64, width * height * sizeof(float));
   float *const restrict averaged_min_diffs = dt_alloc_align(64, width * height * sizeof(float));
   memset(out, 0, width * height * ch * sizeof(float));
 
@@ -838,20 +839,34 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
     dt_gaussian_free(g);
   }
 
+  const float target = 2.0f; // exp2f(-target) = 0.25f;
+  // we want for each pixel that the patch with best similarity
+  // gets a weight of at least exp2f(-target) in the weighted mean,
+  // knowing that central patch takes a weight of 1.
+#ifdef _OPENMP
+#pragma omp parallel for default(none) schedule(static) \
+  dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height)
+#endif
+  for(size_t i = 0; i < width * height; i++)
+  {
+    if(min_diffs[i] > averaged_min_diffs[i])
+      norm[i] = min_diffs[i] / target;
+    else
+      norm[i] = averaged_min_diffs[i] / target;
+  }
+
   for(size_t i = 0; i < width * height; i++)
   {
     out[i * ch + 0] = MAX(-logf(min_diffs[i]) - 6.0f, 0.0f) / 6.0f;
     out[i * ch + 1] = MAX(-logf(averaged_min_diffs[i]) - 6.0f, 0.0f) / 6.0f;
-    //printf("%f\n", averaged_min_diffs[i]);
+    out[i * ch + 2] = MAX(-logf(norm[i]) - 6.0f, 0.0f) / 6.0f;
   }
-
-  // compute norm for each pixel:
-  // a global compensation of averaged_min_diffs to reach a target
-  // a local compensation of min_diff if it is higher than average
-
-  dt_free_align(diff);
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
+
+
+  dt_free_align(diff);
+  dt_free_align(norm);
 }
 
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
