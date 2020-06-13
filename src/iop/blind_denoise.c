@@ -641,6 +641,20 @@ static inline void get_details_from_downscaled(float *const restrict in, float *
   }
 }
 
+__DT_CLONE_TARGETS__
+static inline void add_details_to_upscaled_image(float *const restrict inout, float *const restrict details, const size_t width, const size_t height)
+{
+  const size_t ch = 4;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  schedule(simd:static) aligned(details, inout:64) \
+  dt_omp_firstprivate(details, inout, width, height, ch)
+#endif
+  for(size_t i = 0; i < width * height * ch; i++)
+  {
+    inout[i] = inout[i] + details[i];
+  }
+}
 
 // computes one dimension of the image after 4 2x2 downsampling that are stick
 // together mirrored.
@@ -1486,9 +1500,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
   }
 
-  const size_t total_width_out = get_dimension_mirrored(width[0]);
-  const size_t total_height_out = get_dimension_mirrored(height[0]);
+  const size_t total_width_out = (width[0]);
+  const size_t total_height_out = (height[0]);
   float* dwn_mirrored = dt_alloc_align(64, sizeof(float) * 4 * total_width_out * total_height_out);
+  float* det = dt_alloc_align(64, sizeof(float) * 4 * total_width_out * total_height_out);
   memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
   downscale_bilinear_mirrored(in, width[0], height[0], dwn_mirrored);
   // for(size_t i = 0; i < MIN(total_height_out, height[0]); i++)
@@ -1507,8 +1522,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   prepare_for_nlmeans(in, guide, width[0], height[0], wb);
   nlmeans(guide, in, out, width[0], height[0]);
   downscale_bilinear(in, width[0], height[0], dwn_mirrored);
+  get_details_from_downscaled(in, dwn_mirrored, det, width[0], height[0]);
   upscale_bilinear(dwn_mirrored, width[0], height[0], out);
-  get_details_from_downscaled(in, dwn_mirrored, out, width[0], height[0]);
+  add_details_to_upscaled_image(out, det, width[0], height[0]);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
