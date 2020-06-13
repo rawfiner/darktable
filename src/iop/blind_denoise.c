@@ -523,6 +523,107 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
   free(tmpdir);
 }
 
+static inline size_t get_dimension_downscaled(const size_t w)
+{
+  // to determine the total width of the line, we have to consider
+  // the coordinate of the last pixel on the line of the original image.
+  // if image has width w, its last pixel is at (w-1)
+  // but we consider 2x2 blocks of pixels using the coordinate
+  // of the top left pixel, thus last such pixel is at (w-2).
+  return (w - 2) / 2 + 1;
+}
+
+static inline void average_2x2(const float* const in, size_t x, size_t y, const size_t width_in, const size_t height_in, const size_t width_out, const size_t height_out, float* const out)
+{
+  const size_t ch = 4;
+  size_t x_next = x + 1;
+  size_t y_next = y + 1;
+  x_next = (x_next < width_in) ? x_next : width_in - 1;
+  y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+  // Nearest pixels in input array (nodes in grid)
+  size_t Y = y * width_in;
+  size_t Y_next =  y_next * width_in;
+  const float* Q_NW = (float *)in + (Y + x) * ch;
+  const float* Q_NE = (float *)in + (Y + x_next) * ch;
+  const float* Q_SE = (float *)in + (Y_next + x_next) * ch;
+  const float* Q_SW = (float *)in + (Y_next + x) * ch;
+  size_t x_out = x / 2;
+  size_t y_out = y / 2;
+  float* pixel_out = out + ch * (y_out * width_out + x_out);
+
+#pragma unroll
+  for(size_t c = 0; c < ch; c++)
+  {
+    pixel_out[c] = 0.25f * (Q_SW[c] + Q_SE[c] + Q_NW[c] + Q_NE[c]);
+  }
+}
+
+__DT_CLONE_TARGETS__
+static inline void downscale_bilinear(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out)
+{
+  const size_t width_out = get_dimension_downscaled(width_in);
+  const size_t height_out = get_dimension_downscaled(height_in);
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, out:64) \
+  dt_omp_firstprivate(in, out, width_in, height_in, width_out, height_out)
+#endif
+  for(size_t i = 0; i < height_in; i+=2)
+  {
+    for(size_t j = 0; j < width_in; j+=2)
+    {
+      average_2x2(in, j, i, width_in, height_in, width_out, height_out, out);
+    }
+  }
+}
+
+__DT_CLONE_TARGETS__
+static inline void upscale_bilinear(float *const restrict in, const size_t width_upscaled, const size_t height_upscaled, float *const restrict upscaled)
+{
+  const size_t ch = 4;
+  const size_t width_in = get_dimension_downscaled(width_upscaled);
+  const size_t height_in = get_dimension_downscaled(height_upscaled);
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(upscaled, in:64) \
+  dt_omp_firstprivate(upscaled, in, width_in, height_in, width_upscaled, height_upscaled, ch)
+#endif
+  for(size_t i = 0; i < height_upscaled; i++)
+  {
+    for(size_t j = 0; j < width_upscaled; j++)
+    {
+      const size_t i_main_pixel = i / 2;
+      const size_t j_main_pixel = j / 2;
+      const int i_even = 1 - (i & 1);
+      const int j_even = 1 - (j & 1);
+      const size_t i_prev = MAX((int)i_main_pixel - i_even, 0);
+      const size_t j_prev = MAX((int)j_main_pixel - j_even, 0);
+      const size_t i_next = MIN(i_prev + 1, height_in);
+      const size_t j_next = MIN(j_prev + 1, width_in);
+
+      const float* Q_NW = (float *)in + (i_prev * width_in + j_prev) * ch;
+      const float* Q_NE = (float *)in + (i_prev * width_in + j_next) * ch;
+      const float* Q_SE = (float *)in + (i_next * width_in + j_next) * ch;
+      const float* Q_SW = (float *)in + (i_next * width_in + j_prev) * ch;
+      // if i is even, the closest point is at south, else at north
+      const float w_S = i_even * 0.75f + (1 - i_even) * 0.25f;
+      const float w_N = 1.0f - w_S;
+      // if j is even, the closest point is at east, else at west
+      const float w_E = j_even * 0.75f + (1 - j_even) * 0.25f;
+      const float w_W = 1.0f - w_E;
+
+      float* pixel_out = upscaled + (i * width_upscaled + j) * ch;
+
+    #pragma unroll
+      for(size_t c = 0; c < ch; c++)
+      {
+        pixel_out[c] = w_S * (w_W * Q_SW[c] + w_E * Q_SE[c]) + w_N * (w_W * Q_NW[c] + w_E * Q_NE[c]);
+      }
+    }
+  }
+}
+
 // computes one dimension of the image after 4 2x2 downsampling that are stick
 // together mirrored.
 // will return the width if the arg is the width of the original image
@@ -565,7 +666,7 @@ static inline float* get_mirrored_pixel(const size_t width_mirrored, const size_
   return mirrored + ch * (y_mirrored * width_mirrored + x_mirrored);
 }
 
-static inline void average_2x2(const float* const in, size_t x, size_t y, const size_t width_in, const size_t height_in, const size_t width_out, const size_t height_out, float* const out)
+static inline void average_2x2_mirrored(const float* const in, size_t x, size_t y, const size_t width_in, const size_t height_in, const size_t width_out, const size_t height_out, float* const out)
 {
   const size_t ch = 4;
   size_t x_next = x + 1;
@@ -611,7 +712,7 @@ static inline void downscale_bilinear_mirrored(const float *const restrict in, c
   {
     for(size_t j = 0; j < width_in-1; j++)
     {
-      average_2x2(in, j, i, width_in, height_in, width_out, height_out, out);
+      average_2x2_mirrored(in, j, i, width_in, height_in, width_out, height_out, out);
     }
   }
 }
@@ -1387,6 +1488,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   prepare_for_nlmeans(in, guide, width[0], height[0], wb);
   nlmeans(guide, in, out, width[0], height[0]);
+  downscale_bilinear(in, width[0], height[0], dwn_mirrored);
+  upscale_bilinear(dwn_mirrored, width[0], height[0], out);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
