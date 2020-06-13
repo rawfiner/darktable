@@ -624,6 +624,24 @@ static inline void upscale_bilinear(float *const restrict in, const size_t width
   }
 }
 
+__DT_CLONE_TARGETS__
+static inline void get_details_from_downscaled(float *const restrict in, float *const restrict downscaled, float *const restrict details, const size_t width_in, const size_t height_in)
+{
+  const size_t ch = 4;
+  upscale_bilinear(downscaled, width_in, height_in, details);
+  // at this point details contains the upscaled image
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  schedule(simd:static) aligned(details, in:64) \
+  dt_omp_firstprivate(details, in, width_in, height_in, ch)
+#endif
+  for(size_t i = 0; i < width_in * height_in * ch; i++)
+  {
+    details[i] = in[i] - details[i];
+  }
+}
+
+
 // computes one dimension of the image after 4 2x2 downsampling that are stick
 // together mirrored.
 // will return the width if the arg is the width of the original image
@@ -1490,6 +1508,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   nlmeans(guide, in, out, width[0], height[0]);
   downscale_bilinear(in, width[0], height[0], dwn_mirrored);
   upscale_bilinear(dwn_mirrored, width[0], height[0], out);
+  get_details_from_downscaled(in, dwn_mirrored, out, width[0], height[0]);
   return;
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
