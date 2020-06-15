@@ -599,8 +599,8 @@ static inline void upscale_bilinear(float *const restrict in, const size_t width
       const int j_even = 1 - (j & 1);
       const size_t i_prev = MAX((int)i_main_pixel - i_even, 0);
       const size_t j_prev = MAX((int)j_main_pixel - j_even, 0);
-      const size_t i_next = MIN(i_prev + 1, height_in);
-      const size_t j_next = MIN(j_prev + 1, width_in);
+      const size_t i_next = MIN(i_prev + 1, height_in - 1);
+      const size_t j_next = MIN(j_prev + 1, width_in - 1);
 
       const float* Q_NW = (float *)in + (i_prev * width_in + j_prev) * ch;
       const float* Q_NE = (float *)in + (i_prev * width_in + j_next) * ch;
