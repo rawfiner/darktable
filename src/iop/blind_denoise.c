@@ -46,7 +46,7 @@ typedef struct dt_iop_blind_denoise_params_t
   // users data bases, and you should increment the version
   // of DT_MODULE(VERSION) above!
   int checker_scale;
-  float factor[NB_SCALES];
+  //float factor[NB_SCALES];
 } dt_iop_blind_denoise_params_t;
 
 typedef struct dt_iop_blind_denoise_self_and_index_t
@@ -67,8 +67,8 @@ typedef struct dt_iop_blind_denoise_gui_data_t
 {
   // whatever you need to make your gui happy.
   // stored in self->gui_data
-  dt_iop_blind_denoise_self_and_index_t s[NB_SCALES];
-  GtkWidget *scale, *factor[NB_SCALES]; // this is needed by gui_update
+  //dt_iop_blind_denoise_self_and_index_t s[NB_SCALES];
+  GtkWidget *scale;//, *factor[NB_SCALES]; // this is needed by gui_update
 } dt_iop_blind_denoise_gui_data_t;
 
 typedef struct dt_iop_blind_denoise_global_data_t
@@ -106,6 +106,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+#if 0
 // compute noise variance and signal variance
 static void var(const float *const in, float* var_noise, float* var_signal, const unsigned width, const unsigned height, float* out, float wb[3])
 {
@@ -394,7 +395,6 @@ static void var(const float *const in, float* var_noise, float* var_signal, cons
   dt_free_align(in_with_2_pixels_average);
 }
 
-#if 0
 static void var(float* details, float* variance, unsigned width, unsigned height, unsigned radius, float* wb, unsigned max_var)
 {
   float* tmp = calloc(sizeof(float), width * height * 4);
@@ -457,7 +457,6 @@ static void var(float* details, float* variance, unsigned width, unsigned height
   }
   free(tmp);
 }
-#endif
 
 static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned width, unsigned height)
 {
@@ -522,6 +521,7 @@ static void median_direction(dt_iop_blind_denoise_dir_t* direction, unsigned wid
   }
   free(tmpdir);
 }
+#endif
 
 static inline size_t get_dimension_downscaled(const size_t w)
 {
@@ -889,7 +889,7 @@ static inline void prepare_for_nlmeans(float *const restrict in, float *const re
 }
 
 __DT_CLONE_TARGETS__
-static inline void nlmeans(float *const restrict guide, float *const restrict in, float *const restrict out, const size_t width, const size_t height)
+static inline void nlmeans(float *const restrict guide, float *const restrict in, float *const restrict out, const size_t width, const size_t height, const int scale)
 {
   //const float force = 4.0f;
   const size_t ch = 4;
@@ -905,7 +905,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2) default(none) \
   schedule(simd:static) \
-  dt_omp_firstprivate(guide, diff, min_diffs, width, height, ch, total_neighbors) \
+  dt_omp_firstprivate(guide, diff, min_diffs, width, height, ch, total_neighbors, scale) \
   reduction(max:max_min_diff)
 #endif
   for(size_t i = 0; i < height; i++)
@@ -948,7 +948,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
           // we only consider for this pixels which are far enough from our
           // reference pixel, to avoid comparing the pixel with other pixels
           // that may have the same noise issues for instance due to demosaic
-          if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
+          if(scale < 2 || (abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
           {
             if(diff_tmp < min_diff)
               min_diff = diff_tmp;
@@ -972,13 +972,13 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
     dt_gaussian_free(g);
   }
 
-  const float target = 2.0f; // exp2f(-target) = 0.25f;
+  const float target = sqrt(scale + 1.f); // exp2f(-target) = 0.25f;
   // we want for each pixel that the patch with best similarity
   // gets a weight of at least exp2f(-target) in the weighted mean,
   // knowing that central patch takes a weight of 1.
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(static) \
-  dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height)
+  dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, target)
 #endif
   for(size_t i = 0; i < width * height; i++)
   {
@@ -1039,6 +1039,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   dt_free_align(norm);
 }
 
+#if 0
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
 
 // for each pixel, direction[0] is the best direction, direction[1] the second best, etc
@@ -1460,26 +1461,30 @@ static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned
   }
   free(upscaled_mean);
 }
+#endif
 
 #define RADIUS 5
+#define NB_DOWNSCALES 2
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
+  // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
   float* out = (float*)ovoid;
   float* in = (float*)ivoid;
+  if(piece->pipe->type != DT_DEV_PIXELPIPE_FULL && piece->pipe->type != DT_DEV_PIXELPIPE_EXPORT)
+  {
+    memcpy(out, in, sizeof(float) * 4 * roi_out->width * roi_out->height);
+    return;
+  }
   float* means[NB_SCALES];
-  float* vars[NB_SCALES];
   float* details[NB_SCALES];
-  dt_iop_blind_denoise_dir_t* direction[NB_SCALES];
-  //float threshold[NB_SCALES] = {0.7, 1.0, 0.9, 0.6, 0.4, 0.2, 0.1, 0.05};
-  float threshold[NB_SCALES] = {5.0, 4.5, 3.0, 1.7, 1.0, 0.6, 0.3, 0.1};
+  // float force[NB_SCALES] = {5.0, 4.5, 3.0, 1.7, 1.0, 0.6, 0.3, 0.1};
 //  float threshold[NB_SCALES] = {0.20, 0.20, 0.20, 0.15, 0.10, 0.05, 0.01, 0.007};
 //  float threshold[NB_SCALES] = {4.0f, 1.8f, 0.70, 0.3, 0.1, 0.05, 0.01, 0.007};
-  unsigned width[NB_SCALES];
-  unsigned height[NB_SCALES];
-  float coefs[NB_SCALES][4];
+  size_t width[NB_SCALES];
+  size_t height[NB_SCALES];
+  // float coefs[NB_SCALES][4];
   float wb[3];
   for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.temperature.coeffs[i];
 
@@ -1487,18 +1492,92 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   means[0] = in;
   width[0] = roi_out->width;
   height[0] = roi_out->height;
-  details[0] = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
-  vars[0] = (float*)calloc(sizeof(float), 4 * width[0] * height[0]);
-  direction[0] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[0] * height[0]);
+  details[0] = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   for(int i = 1; i < NB_SCALES; i++)
   {
-    width[i] = (width[i-1] + 1) / 2;
-    height[i] = (height[i-1] + 1) / 2;
-    means[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
-    vars[i] = (float*)calloc(sizeof(float), 4 * width[i] * height[i]);
-    details[i] = (float*)malloc(sizeof(float) * 4 * width[i] * height[i]);
-    direction[i] = (dt_iop_blind_denoise_dir_t*)malloc(sizeof(dt_iop_blind_denoise_dir_t) * 4 * width[i] * height[i]);
+    if(i < NB_DOWNSCALES)
+    {
+      width[i] = get_dimension_downscaled(width[i-1]);
+      height[i] = get_dimension_downscaled(height[i-1]);
+    }
+    else
+    {
+      width[i] = get_dimension_mirrored(width[i-1]);
+      height[i] = get_dimension_mirrored(height[i-1]);
+    }
+    means[i] = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
+    details[i] = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
   }
+
+  downscale_bilinear(means[0], width[0], height[0], means[1]);
+  printf("%d downscale bilin ok\n", 0);
+#ifdef _OPENMP
+#pragma omp parallel sections
+#endif
+  {
+#ifdef _OPENMP
+#pragma omp section
+#endif
+    {
+      // this runs on full resolution, so it will take some time
+      // and it is not needed to compute the next scales
+      get_details_from_downscaled(means[0], means[1], details[0], width[0], height[0]);
+      printf("%d get details ok\n", 0);
+    }
+#ifdef _OPENMP
+#pragma omp section
+#endif
+    {
+      // here we already divided resolution by 4, faster to run
+      for(int i = 1; i < NB_SCALES-1; i++)
+      {
+        if(i < NB_DOWNSCALES)
+        {
+          downscale_bilinear(means[i], width[i], height[i], means[i+1]);
+          get_details_from_downscaled(means[i], means[i+1], details[i], width[i], height[i]);
+          printf("%d downscale bilin ok\n", i);
+        }
+        else
+        {
+          downscale_bilinear_mirrored(means[i], width[i], height[i], means[i+1]);
+          get_details_from_mirrored(means[i], means[i+1], details[i], width[i], height[i]);
+          printf("%d downscale mirrored ok\n", i);
+        }
+      }
+    }
+  }
+  for(int i = NB_SCALES-1; i >= 1; i--)
+  {
+    printf("%d\n", i);
+    float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
+    prepare_for_nlmeans(means[i], guide, width[i], height[i], wb);
+    printf("%d prepare ok\n", i);
+    float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
+    nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
+    printf("%d nlmeans ok\n", i);
+    dt_free_align(guide);
+    if(i <= NB_DOWNSCALES)
+    {
+      upscale_bilinear(nlmeans_output, width[i-1], height[i-1], means[i-1]);
+      printf("%d upscale bilin ok\n", i);
+    }
+    else
+    {
+      upscale_bilinear_mirrored(nlmeans_output, width[i-1], height[i-1], means[i-1]);
+      printf("%d upscale mirrored ok\n", i);
+    }
+    dt_free_align(nlmeans_output);
+    add_details_to_upscaled_image(means[i-1], details[i-1], width[i-1], height[i-1]);
+    printf("%d add details ok\n", i);
+  }
+  float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
+  prepare_for_nlmeans(means[0], guide, width[0], height[0], wb);
+  printf("%d prepare ok\n", 0);
+  nlmeans(guide, means[0], out, width[0], height[0], 0);
+  printf("%d nlmeans ok\n", 0);
+  dt_free_align(guide);
+  return;
+
 
   const size_t total_width_out = (width[0]);
   const size_t total_height_out = (height[0]);
@@ -1518,14 +1597,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // }
   upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
   get_details_from_mirrored(in, dwn_mirrored, out, width[0], height[0]);
-  float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
+  guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   prepare_for_nlmeans(in, guide, width[0], height[0], wb);
-  nlmeans(guide, in, out, width[0], height[0]);
+  nlmeans(guide, in, out, width[0], height[0], 0);
   downscale_bilinear(in, width[0], height[0], dwn_mirrored);
   get_details_from_downscaled(in, dwn_mirrored, det, width[0], height[0]);
   upscale_bilinear(dwn_mirrored, width[0], height[0], out);
   add_details_to_upscaled_image(out, det, width[0], height[0]);
-  return;
+
+#if 0
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   float* var_signal = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
   var(in, var_noise, var_signal, width[0], height[0], ovoid, wb);
@@ -1585,6 +1665,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   free(vars[0]);
   free(details[0]);
   free(direction[0]);
+#endif
 }
 
 void reload_defaults(dt_iop_module_t *module)
@@ -1604,8 +1685,8 @@ void init(dt_iop_module_t *module)
   // init defaults:
   dt_iop_blind_denoise_params_t tmp;
   tmp.checker_scale = 10;
-  for(int i = 0; i < NB_SCALES; i++)
-    tmp.factor[i] = 0.1;
+//  for(int i = 0; i < NB_SCALES; i++)
+//    tmp.factor[i] = 0.1;
 
   memcpy(module->params, &tmp, sizeof(dt_iop_blind_denoise_params_t));
   memcpy(module->default_params, &tmp, sizeof(dt_iop_blind_denoise_params_t));
@@ -1638,6 +1719,7 @@ static void scale_callback(GtkWidget *w, dt_iop_module_t *self)
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
+#if 0
 static void factor_callback(GtkWidget *w, dt_iop_blind_denoise_self_and_index_t *s)
 {
   if(darktable.gui->reset) return;
@@ -1645,14 +1727,17 @@ static void factor_callback(GtkWidget *w, dt_iop_blind_denoise_self_and_index_t 
   p->factor[s->n] = dt_bauhaus_slider_get(w);
   dt_dev_add_history_item(darktable.develop, s->self, TRUE);
 }
+#endif
 
 void gui_update(dt_iop_module_t *self)
 {
   dt_iop_blind_denoise_gui_data_t *g = (dt_iop_blind_denoise_gui_data_t *)self->gui_data;
   dt_iop_blind_denoise_params_t *p = (dt_iop_blind_denoise_params_t *)self->params;
   dt_bauhaus_slider_set(g->scale, p->checker_scale);
+#if 0
   for(int i = 0; i < NB_SCALES; i++)
     dt_bauhaus_slider_set(g->factor[i], p->factor[i]);
+#endif
 }
 
 void gui_init(dt_iop_module_t *self)
@@ -1667,6 +1752,7 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->scale), TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->scale), "value-changed", G_CALLBACK(scale_callback), self);
 
+#if 0
   for(int i = 0; i < NB_SCALES; i++)
   {
     g->s[i].self = self;
@@ -1676,6 +1762,7 @@ void gui_init(dt_iop_module_t *self)
     gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->factor[i]), TRUE, TRUE, 0);
     g_signal_connect(G_OBJECT(g->factor[i]), "value-changed", G_CALLBACK(factor_callback), &(g->s[i]));
   }
+#endif
 }
 
 void gui_cleanup(dt_iop_module_t *self)
