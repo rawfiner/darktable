@@ -921,7 +921,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
       jj_end = (jj_end < width) ? jj_end : width - 1;
 
       size_t index_neighbor = 0;
-      float min_diff = INFINITY;
+      float min_diff = 99999.f;
       // compute patch difference and find "best" neighbor
       // for this pixel within the group of pixels that are at
       // at a distance of more than 1
@@ -933,8 +933,10 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
             continue;
 
           float diff_tmp = 0.0f;
+#if 0
 #ifdef _OPENMP
 #pragma omp simd aligned(guide:64) reduction(+:diff_tmp)
+#endif
 #endif
           for(size_t c = 0; c < ch; c++)
           {
@@ -942,13 +944,14 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
                       * (guide[(i * width + j) * ch + c] - guide[(ii * width + jj) * ch + c]);
           }
           size_t index = (i * width + j) * total_neighbors + index_neighbor;
+          diff_tmp = MIN(99999.f, diff_tmp);
           diff[index] = diff_tmp;
 
           // find best neighbor for each pixel.
           // we only consider for this pixels which are far enough from our
           // reference pixel, to avoid comparing the pixel with other pixels
           // that may have the same noise issues for instance due to demosaic
-          if(scale < 2 || (abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
+          if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
           {
             if(diff_tmp < min_diff)
               min_diff = diff_tmp;
@@ -963,7 +966,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   }
 
   // local average of min diffs
-  const float sigma = 50.0f;
+  const float sigma = 10.0f;
   const float min = 0.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
   if(g)
@@ -972,7 +975,8 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
     dt_gaussian_free(g);
   }
 
-  const float target = sqrt(scale + 1.f); // exp2f(-target) = 0.25f;
+  float t[8] = {.0001f, .0005f, .00001f, .00005f, .0001f, .0005f, .00001f, .00005f};
+  float target = t[scale]; // exp2f(-target) = 0.25f;
   // we want for each pixel that the patch with best similarity
   // gets a weight of at least exp2f(-target) in the weighted mean,
   // knowing that central patch takes a weight of 1.
@@ -982,10 +986,11 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 #endif
   for(size_t i = 0; i < width * height; i++)
   {
+    averaged_min_diffs[i] = 1.0f;
     if(min_diffs[i] > averaged_min_diffs[i])
       norm[i] = sqrt(min_diffs[i] / target);
     else
-      norm[i] = sqrt(averaged_min_diffs[i] / target);
+      norm[i] = sqrt((averaged_min_diffs[i] + 1e-8) / target);
   }
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
@@ -1489,10 +1494,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   for(int i = 0; i < 3; i++) wb[i] = piece->pipe->dsc.temperature.coeffs[i];
 
   // init
-  means[0] = in;
   width[0] = roi_out->width;
   height[0] = roi_out->height;
+  means[0] = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   details[0] = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
+  memcpy(means[0], in, sizeof(float) * 4 * roi_out->width * roi_out->height);
   for(int i = 1; i < NB_SCALES; i++)
   {
     if(i < NB_DOWNSCALES)
@@ -1546,6 +1552,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       }
     }
   }
+  //upscale_bilinear_mirrored(means[NB_SCALES-1], width[NB_SCALES-1-1], height[NB_SCALES-1-1], means[NB_SCALES-1-1]);
   for(int i = NB_SCALES-1; i >= 1; i--)
   {
     printf("%d\n", i);
@@ -1555,7 +1562,6 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
     nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
     printf("%d nlmeans ok\n", i);
-    dt_free_align(guide);
     if(i <= NB_DOWNSCALES)
     {
       upscale_bilinear(nlmeans_output, width[i-1], height[i-1], means[i-1]);
@@ -1566,12 +1572,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       upscale_bilinear_mirrored(nlmeans_output, width[i-1], height[i-1], means[i-1]);
       printf("%d upscale mirrored ok\n", i);
     }
+    dt_free_align(guide);
     dt_free_align(nlmeans_output);
+    //if(i != 1)
     add_details_to_upscaled_image(means[i-1], details[i-1], width[i-1], height[i-1]);
     printf("%d add details ok\n", i);
   }
   float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   prepare_for_nlmeans(means[0], guide, width[0], height[0], wb);
+  //add_details_to_upscaled_image(means[0], details[0], width[0], height[0]);
   printf("%d prepare ok\n", 0);
   nlmeans(guide, means[0], out, width[0], height[0], 0);
   printf("%d nlmeans ok\n", 0);
