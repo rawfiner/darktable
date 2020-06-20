@@ -881,7 +881,7 @@ static inline void prepare_for_nlmeans(float *const restrict in, float *const re
       // anscombe transform for all channels
       for(size_t c = 0; c < 4; c++)
       {
-        out[(i * width + j) * ch + c] = sqrtf(MAX(out[(i * width + j) * ch + c], 0.0f));
+        out[(i * width + j) * ch + c] = sqrtf(MAX(out[(i * width + j) * ch + c] + 3.f / 8.f, 0.0f));
       }
     }
   }
@@ -951,22 +951,22 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
           // we only consider for this pixels which are far enough from our
           // reference pixel, to avoid comparing the pixel with other pixels
           // that may have the same noise issues for instance due to demosaic
-          if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
-          {
+          // if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
+          // {
             if(diff_tmp < min_diff)
               min_diff = diff_tmp;
-          }
+          // }
           index_neighbor++;
         }
       }
       min_diffs[i * width + j] = min_diff;
       if(min_diff > max_min_diff)
         max_min_diff = min_diff;
-    }
+      }
   }
 
   // local average of min diffs
-  const float sigma = 10.0f;
+  const float sigma = 100.0f / exp2f(scale);
   const float min = 0.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
   if(g)
@@ -975,8 +975,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
     dt_gaussian_free(g);
   }
 
-  float t[8] = {.0001f, .0005f, .00001f, .00005f, .0001f, .0005f, .00001f, .00005f};
-  float target = t[scale]; // exp2f(-target) = 0.25f;
+  float target = 0.1f * exp2f(scale) * (scale + 1.0f); // exp2f(-target) = 0.25f;
   // we want for each pixel that the patch with best similarity
   // gets a weight of at least exp2f(-target) in the weighted mean,
   // knowing that central patch takes a weight of 1.
@@ -986,7 +985,6 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 #endif
   for(size_t i = 0; i < width * height; i++)
   {
-    averaged_min_diffs[i] = 1.0f;
     if(min_diffs[i] > averaged_min_diffs[i])
       norm[i] = sqrt(min_diffs[i] / target);
     else
@@ -1039,10 +1037,66 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
       }
     }
   }
-
   dt_free_align(diff);
   dt_free_align(norm);
 }
+
+static int sign(float a)
+{
+  return (a >= 0.0f) - (a < 0.0f);
+}
+
+__DT_CLONE_TARGETS__
+static void amplify_nlmeans_effect(float *const restrict in, float *const restrict details, float *const restrict nlmeans_output, const size_t width, const size_t height, const int scale)
+{
+  // here, in = lowpassed + details
+  // we want to threshold towards "lowpassed".
+  const size_t ch = 4;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  schedule(static) aligned(details, in, nlmeans_output:64) \
+  dt_omp_firstprivate(details, in, nlmeans_output, width, height, ch, scale)
+#endif
+  for(size_t i = 0; i < width * height; i++)
+  {
+    for(size_t c = 0; c < 3; c++)
+    {
+      const float lowpassed = in[i * ch + c] - details[i * ch + c];
+      const float diff_before_nlmeans = details[i * ch + c];
+      float diff_after_nlmeans = nlmeans_output[i * ch + c] - lowpassed;
+      const int sign_before = sign(diff_before_nlmeans);
+      const int sign_after = sign(diff_after_nlmeans);
+      if(sign_before != sign_after)
+      {
+        nlmeans_output[i * ch + c] = lowpassed;
+      }
+      else
+      {
+        // signs are equal.
+        const int sign_diff = sign_before;
+        float delta = sign_diff * (diff_before_nlmeans - diff_after_nlmeans);
+        if(delta > 0.0f)
+        {
+          // non local means reduced the difference with lowpassed:
+          // diff_after is lower than diff_before.
+          // amplify the effect non local means had.
+          const float amplification = 100.0f * exp2f(-scale);
+          delta *= amplification;
+          // thresholding
+          diff_after_nlmeans = sign_diff * MAX(sign_diff * diff_after_nlmeans - delta, 0.0f);
+          nlmeans_output[i * ch + c] = lowpassed + diff_after_nlmeans;
+        }
+        else
+        {
+          // non local means amplified the difference with lowpassed:
+          // restore old value.
+          nlmeans_output[i * ch + c] = in[i * ch + c];
+        }
+      }
+    }
+  }
+}
+
 
 #if 0
 #define SWAP(x,y) if (diff[y] < diff[x]) { float tmp = diff[x]; diff[x] = diff[y]; diff[y] = tmp; dt_iop_blind_denoise_dir_t tmpdir = dir[x]; dir[x] = dir[y]; dir[y] = tmpdir; }
@@ -1227,11 +1281,6 @@ static void decompose(const float* in, float* out, unsigned width, unsigned heig
   }
 }
 #endif
-
-static int sign(float a)
-{
-  return (a >= 0.0f) - (a < 0.0f);
-}
 
 static gboolean invert_matrix(const float in[9], float out[9])
 {
@@ -1552,7 +1601,6 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       }
     }
   }
-  //upscale_bilinear_mirrored(means[NB_SCALES-1], width[NB_SCALES-1-1], height[NB_SCALES-1-1], means[NB_SCALES-1-1]);
   for(int i = NB_SCALES-1; i >= 1; i--)
   {
     printf("%d\n", i);
@@ -1561,6 +1609,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     printf("%d prepare ok\n", i);
     float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
     nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
+    if(i != NB_SCALES-1)
+      amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
     printf("%d nlmeans ok\n", i);
     if(i <= NB_DOWNSCALES)
     {
@@ -1574,15 +1624,14 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
     dt_free_align(guide);
     dt_free_align(nlmeans_output);
-    //if(i != 1)
     add_details_to_upscaled_image(means[i-1], details[i-1], width[i-1], height[i-1]);
     printf("%d add details ok\n", i);
   }
   float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   prepare_for_nlmeans(means[0], guide, width[0], height[0], wb);
-  //add_details_to_upscaled_image(means[0], details[0], width[0], height[0]);
   printf("%d prepare ok\n", 0);
   nlmeans(guide, means[0], out, width[0], height[0], 0);
+  amplify_nlmeans_effect(means[0], details[0], out, width[0], height[0], 0);
   printf("%d nlmeans ok\n", 0);
   dt_free_align(guide);
   return;
