@@ -779,6 +779,43 @@ static inline void upscale_bilinear_mirrored(float *const restrict mirrored, con
   }
 }
 
+/* check that out is exactly corresponding to in downscaled-upscaled in a
+ * mirrored way using convolution direct formula */
+__DT_CLONE_TARGETS__
+static inline void check_downscale_upscale_mirrored(const float *const restrict in, const size_t width_in, const size_t height_in, float *const restrict out)
+{
+  const size_t ch = 4;
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, out:64) \
+  dt_omp_firstprivate(in, out, width_in, height_in)
+#endif
+  for(size_t i = 1; i < height_in-1; i++)
+  {
+    for(size_t j = 1; j < width_in-1; j++)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        float mean = in[(i * width_in + j) * ch + c]
+                   + 0.5f * in[((i+1) * width_in + j) * ch + c]
+                   + 0.5f * in[((i-1) * width_in + j) * ch + c]
+                   + 0.5f * in[(i * width_in + j+1) * ch + c]
+                   + 0.5f * in[(i * width_in + j-1) * ch + c]
+                   + 0.25f * in[((i+1) * width_in + j+1) * ch + c]
+                   + 0.25f * in[((i+1) * width_in + j-1) * ch + c]
+                   + 0.25f * in[((i-1) * width_in + j+1) * ch + c]
+                   + 0.25f * in[((i-1) * width_in + j-1) * ch + c];
+        mean /= 4.0f;
+        if(fabs(mean - out[(i * width_in + j) * ch + c]) / mean > 0.001f)
+        {
+          printf("%ld, %ld, %f, %f\n", i, j, mean, out[(i * width_in + j) * ch + c]);
+        }
+      }
+    }
+  }
+}
+
+
 // puts in details the reconstruction error when downscaling and upscaling
 __DT_CLONE_TARGETS__
 static inline void get_details_from_mirrored(float *const restrict in, float *const restrict mirrored, float *const restrict details, const size_t width_in, const size_t height_in)
@@ -1601,7 +1638,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       }
     }
   }
-  for(int i = NB_SCALES-1; i >= 1; i--)
+  for(int i = NB_DOWNSCALES+1/*NB_SCALES-1*/; i >= 1; i--)
   {
     printf("%d\n", i);
     float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
@@ -1634,7 +1671,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   amplify_nlmeans_effect(means[0], details[0], out, width[0], height[0], 0);
   printf("%d nlmeans ok\n", 0);
   dt_free_align(guide);
-  return;
+  // return;
 
 
   const size_t total_width_out = (width[0]);
@@ -1654,6 +1691,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   //   }
   // }
   upscale_bilinear_mirrored(dwn_mirrored, width[0], height[0], out);
+  check_downscale_upscale_mirrored(in, width[0], height[0], out);
+  return;
   get_details_from_mirrored(in, dwn_mirrored, out, width[0], height[0]);
   guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   prepare_for_nlmeans(in, guide, width[0], height[0], wb);
