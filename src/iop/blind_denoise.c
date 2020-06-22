@@ -827,7 +827,24 @@ static inline void check_downscale_upscale_mirrored(const float *const restrict 
   }
 }
 
+__DT_CLONE_TARGETS__
+static inline void get_details_from_mirrored(float *const restrict in, float *const restrict mirrored, float *const restrict details, const size_t width_in, const size_t height_in)
+{
+  const size_t ch = 4;
+  upscale_bilinear_mirrored(mirrored, width_in, height_in, details);
+  // at this point details contains the upscaled image
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  schedule(simd:static) aligned(details, in:64) \
+  dt_omp_firstprivate(details, in, width_in, height_in, ch)
+#endif
+  for(size_t i = 0; i < width_in * height_in * ch; i++)
+  {
+    details[i] = in[i] - details[i];
+  }
+}
 
+#if 0
 // puts in details the reconstruction error when downscaling and upscaling
 __DT_CLONE_TARGETS__
 static inline void get_details_from_mirrored(float *const restrict in, float *const restrict mirrored, float *const restrict details, const size_t width_in, const size_t height_in)
@@ -859,6 +876,7 @@ static inline void get_details_from_mirrored(float *const restrict in, float *co
     }
   }
 }
+#endif
 
 // prepare the image that will be used in non-local means to compute the weights:
 // image will have 4 channels:
@@ -1572,7 +1590,6 @@ static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
   float* out = (float*)ovoid;
   float* in = (float*)ivoid;
   if(piece->pipe->type != DT_DEV_PIXELPIPE_FULL && piece->pipe->type != DT_DEV_PIXELPIPE_EXPORT)
@@ -1616,56 +1633,25 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   printf("bilin %d %ld\n", 0, width[0]);
   downscale_bilinear(means[0], width[0], height[0], means[1]);
   printf("%d downscale bilin ok\n", 0);
-#ifdef _OPENMP
-#pragma omp parallel sections
-#endif
+  get_details_from_downscaled(means[0], means[1], details[0], width[0], height[0]);
+  printf("%d get details ok\n", 0);
+  for(int i = 1; i < NB_SCALES-1; i++)
   {
-#ifdef _OPENMP
-#pragma omp section
-#endif
+    if(i < NB_DOWNSCALES)
     {
-      // this runs on full resolution, so it will take some time
-      // and it is not needed to compute the next scales
-      get_details_from_downscaled(means[0], means[1], details[0], width[0], height[0]);
-      printf("%d get details ok\n", 0);
+      downscale_bilinear(means[i], width[i], height[i], means[i+1]);
+      printf("%d downscale bilin ok\n", i);
+      get_details_from_downscaled(means[i], means[i+1], details[i], width[i], height[i]);
+      printf("%d get details ok\n", i);
     }
-#ifdef _OPENMP
-#pragma omp section
-#endif
+    else
     {
-      // here we already divided resolution by 4, faster to run
-      for(int i = 1; i < NB_SCALES; i++)
-      {
-        if(i < NB_DOWNSCALES)
-        {
-          printf("bilin %d %ld\n", i, width[i]);
-          downscale_bilinear(means[i], width[i], height[i], means[i+1]);
-          get_details_from_downscaled(means[i], means[i+1], details[i], width[i], height[i]);
-          printf("%d downscale bilin ok\n", i);
-        }
-        else
-        {
-          printf("mirrored %d %ld\n", i, width[i]);
-          downscale_bilinear_mirrored(means[i], width[i], height[i], means[i+1]);
-          get_details_from_mirrored(means[i], means[i+1], details[i], width[i], height[i]);
-          printf("%d downscale mirrored ok\n", i);
-        }
-      }
+      downscale_bilinear_mirrored(means[i], width[i], height[i], means[i+1]);
+      printf("%d downscale mirrored ok\n", i);
+      get_details_from_mirrored(means[i], means[i+1], details[i], width[i], height[i]);
+      printf("%d get details mirrored ok\n", i);
     }
   }
-  memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
-  const int tmp = MIN(d->checker_scale, NB_SCALES-1);
-  for(size_t i = 0; i < height[tmp]; i++)
-  {
-    for(size_t j = 0; j < width[tmp]; j++)
-    {
-      for(size_t c = 0; c < 4; c++)
-      {
-        out[((i * width[0]) + j) * 4 + c] = means[tmp][((i * width[tmp]) + j) * 4 + c];
-      }
-    }
-  }
-  //return;
   for(int i = NB_SCALES-1; i >= 1; i--)
   {
     printf("%d\n", i);
@@ -1673,9 +1659,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     prepare_for_nlmeans(means[i], guide, width[i], height[i], wb);
     printf("%d prepare ok\n", i);
     float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
-    //nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
-    //if(i != NB_SCALES-1)
-    //  amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
+    nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
+    if(i != NB_SCALES-1)
+      amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
     memcpy(nlmeans_output, means[i], width[i] * height[i] * 4 * sizeof(float));
     printf("%d nlmeans ok\n", i);
     if(i <= NB_DOWNSCALES)
@@ -1698,9 +1684,24 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   printf("%d prepare ok\n", 0);
   nlmeans(guide, means[0], out, width[0], height[0], 0);
   amplify_nlmeans_effect(means[0], details[0], out, width[0], height[0], 0);
-  memcpy(out, means[0], width[0] * height[0] * 4 * sizeof(float));
+  //memcpy(out, means[0], width[0] * height[0] * 4 * sizeof(float));
   printf("%d nlmeans ok\n", 0);
   dt_free_align(guide);
+  dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
+  memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
+  const int tmp = MIN(d->checker_scale, NB_SCALES-1)-1;
+  for(size_t k = 0; k < height[tmp]; k++)
+  {
+    for(size_t j = 0; j < width[tmp]; j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[((k * width[0]) + j) * 4 + c] = details[tmp][((k * width[tmp]) + j) * 4 + c];
+      }
+    }
+  }
+  return;
+
   return;
 
 
