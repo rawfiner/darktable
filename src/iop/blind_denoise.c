@@ -680,13 +680,15 @@ static inline size_t get_dimension_mirrored(const size_t w)
 
 // gives the pixel in the mirrored image that contains the 2x2 average
 // which top left pixel has (x,y) coordinates in the original image
-static inline float* get_mirrored_pixel(const size_t width_mirrored, const size_t height_mirrored, const size_t x, const size_t y, float *const restrict mirrored)
+static inline float* get_mirrored_pixel(const size_t width_mirrored, const size_t height_mirrored, const int32_t x, const int32_t y, float *const restrict mirrored)
 {
   const size_t ch = 4;
   const size_t x_odd = x & 1;
   const size_t y_odd = y & 1;
   size_t x_mirrored = x / 2;
   size_t y_mirrored = y / 2;
+  if(x_mirrored >= width_mirrored) printf("problem\n");
+  if(y_mirrored >= height_mirrored) printf("problem\n");
   if(x_odd)
   {
     x_mirrored = width_mirrored - 1 - x / 2;
@@ -771,6 +773,16 @@ static inline void upscale_bilinear_mirrored(float *const restrict mirrored, con
       float* pixel1 = get_mirrored_pixel(width_mirrored, height_mirrored, j_prev, i, mirrored);
       float* pixel2 = get_mirrored_pixel(width_mirrored, height_mirrored, j, i_prev, mirrored);
       float* pixel3 = get_mirrored_pixel(width_mirrored, height_mirrored, j_prev, i_prev, mirrored);
+      if(j == width_upscaled - 1)
+      {
+        pixel0 = pixel1;
+        pixel2 = pixel3;
+      }
+      if(i == height_upscaled - 1)
+      {
+        pixel0 = pixel2;
+        pixel1 = pixel3;
+      }
       for(size_t c = 0; c < 3; c++)
       {
         upscaled[(i * width_upscaled + j) * ch + c] = 0.25f * (pixel0[c] + pixel1[c] + pixel2[c] + pixel3[c]);
@@ -1560,7 +1572,7 @@ static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
+  dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
   float* out = (float*)ovoid;
   float* in = (float*)ivoid;
   if(piece->pipe->type != DT_DEV_PIXELPIPE_FULL && piece->pipe->type != DT_DEV_PIXELPIPE_EXPORT)
@@ -1587,7 +1599,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   memcpy(means[0], in, sizeof(float) * 4 * roi_out->width * roi_out->height);
   for(int i = 1; i < NB_SCALES; i++)
   {
-    if(i < NB_DOWNSCALES)
+    if(i <= NB_DOWNSCALES)
     {
       width[i] = get_dimension_downscaled(width[i-1]);
       height[i] = get_dimension_downscaled(height[i-1]);
@@ -1601,6 +1613,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     details[i] = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
   }
 
+  printf("bilin %d %ld\n", 0, width[0]);
   downscale_bilinear(means[0], width[0], height[0], means[1]);
   printf("%d downscale bilin ok\n", 0);
 #ifdef _OPENMP
@@ -1621,16 +1634,18 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 #endif
     {
       // here we already divided resolution by 4, faster to run
-      for(int i = 1; i < NB_SCALES-1; i++)
+      for(int i = 1; i < NB_SCALES; i++)
       {
         if(i < NB_DOWNSCALES)
         {
+          printf("bilin %d %ld\n", i, width[i]);
           downscale_bilinear(means[i], width[i], height[i], means[i+1]);
           get_details_from_downscaled(means[i], means[i+1], details[i], width[i], height[i]);
           printf("%d downscale bilin ok\n", i);
         }
         else
         {
+          printf("mirrored %d %ld\n", i, width[i]);
           downscale_bilinear_mirrored(means[i], width[i], height[i], means[i+1]);
           get_details_from_mirrored(means[i], means[i+1], details[i], width[i], height[i]);
           printf("%d downscale mirrored ok\n", i);
@@ -1638,16 +1653,30 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       }
     }
   }
-  for(int i = NB_DOWNSCALES+1/*NB_SCALES-1*/; i >= 1; i--)
+  memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
+  const int tmp = MIN(d->checker_scale, NB_SCALES-1);
+  for(size_t i = 0; i < height[tmp]; i++)
+  {
+    for(size_t j = 0; j < width[tmp]; j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[((i * width[0]) + j) * 4 + c] = means[tmp][((i * width[tmp]) + j) * 4 + c];
+      }
+    }
+  }
+  //return;
+  for(int i = NB_SCALES-1; i >= 1; i--)
   {
     printf("%d\n", i);
     float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
     prepare_for_nlmeans(means[i], guide, width[i], height[i], wb);
     printf("%d prepare ok\n", i);
     float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
-    nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
-    if(i != NB_SCALES-1)
-      amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
+    //nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
+    //if(i != NB_SCALES-1)
+    //  amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
+    memcpy(nlmeans_output, means[i], width[i] * height[i] * 4 * sizeof(float));
     printf("%d nlmeans ok\n", i);
     if(i <= NB_DOWNSCALES)
     {
@@ -1669,9 +1698,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   printf("%d prepare ok\n", 0);
   nlmeans(guide, means[0], out, width[0], height[0], 0);
   amplify_nlmeans_effect(means[0], details[0], out, width[0], height[0], 0);
+  memcpy(out, means[0], width[0] * height[0] * 4 * sizeof(float));
   printf("%d nlmeans ok\n", 0);
   dt_free_align(guide);
-  // return;
+  return;
 
 
   const size_t total_width_out = (width[0]);
