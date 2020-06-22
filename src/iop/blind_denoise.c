@@ -1088,7 +1088,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 
           size_t index = (i * width + j) * total_neighbors + index_neighbor;
           const float difference = diff[index];
-          const float normalized_difference = difference / (norm[i * width + j] * norm[ii * width + j]);
+          const float normalized_difference = difference / (norm[i * width + j] * norm[ii * width + jj]);
           const float weight = exp2f(-normalized_difference);
           total_weight += weight;
           for(size_t c = 0; c < 3; c++)
@@ -1652,9 +1652,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       printf("%d get details mirrored ok\n", i);
     }
   }
+
   for(int i = NB_SCALES-1; i >= 1; i--)
   {
-    printf("%d\n", i);
     float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
     prepare_for_nlmeans(means[i], guide, width[i], height[i], wb);
     printf("%d prepare ok\n", i);
@@ -1662,7 +1662,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
     if(i != NB_SCALES-1)
       amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
-    memcpy(nlmeans_output, means[i], width[i] * height[i] * 4 * sizeof(float));
+    //memcpy(nlmeans_output, means[i], width[i] * height[i] * 4 * sizeof(float));
     printf("%d nlmeans ok\n", i);
     if(i <= NB_DOWNSCALES)
     {
@@ -1679,6 +1679,21 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     add_details_to_upscaled_image(means[i-1], details[i-1], width[i-1], height[i-1]);
     printf("%d add details ok\n", i);
   }
+    dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
+    memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
+    const int tmp = MIN(d->checker_scale, NB_SCALES-1)-1;
+    for(size_t k = 0; k < height[tmp]; k++)
+    {
+      for(size_t j = 0; j < width[tmp]; j++)
+      {
+        for(size_t c = 0; c < 4; c++)
+        {
+          out[((k * width[0]) + j) * 4 + c] = means[tmp][((k * width[tmp]) + j) * 4 + c];
+        }
+      }
+    }
+    return;
+
   float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   prepare_for_nlmeans(means[0], guide, width[0], height[0], wb);
   printf("%d prepare ok\n", 0);
@@ -1687,20 +1702,6 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   //memcpy(out, means[0], width[0] * height[0] * 4 * sizeof(float));
   printf("%d nlmeans ok\n", 0);
   dt_free_align(guide);
-  dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
-  memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
-  const int tmp = MIN(d->checker_scale, NB_SCALES-1)-1;
-  for(size_t k = 0; k < height[tmp]; k++)
-  {
-    for(size_t j = 0; j < width[tmp]; j++)
-    {
-      for(size_t c = 0; c < 4; c++)
-      {
-        out[((k * width[0]) + j) * 4 + c] = details[tmp][((k * width[tmp]) + j) * 4 + c];
-      }
-    }
-  }
-  return;
 
   return;
 
