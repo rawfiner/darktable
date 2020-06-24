@@ -569,9 +569,9 @@ static inline void downscale_bilinear(const float *const restrict in, const size
   schedule(simd:static) aligned(in, out:64) \
   dt_omp_firstprivate(in, out, width_in, height_in, width_out, height_out)
 #endif
-  for(size_t i = 0; i < height_in; i+=2)
+  for(size_t i = 0; i < height_in-1; i+=2)
   {
-    for(size_t j = 0; j < width_in; j+=2)
+    for(size_t j = 0; j < width_in-1; j+=2)
     {
       average_2x2(in, j, i, width_in, height_in, width_out, height_out, out);
     }
@@ -1681,6 +1681,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
     dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
     memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
+    for(size_t k = 0; k < width[0] * height[0] * 4; k++)
+    {
+      out[k] = 1.0f;
+    }
     const int tmp = MIN(d->checker_scale, NB_SCALES-1)-1;
     for(size_t k = 0; k < height[tmp]; k++)
     {
