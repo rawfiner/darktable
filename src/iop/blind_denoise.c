@@ -1018,14 +1018,16 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
           // we only consider for this pixels which are far enough from our
           // reference pixel, to avoid comparing the pixel with other pixels
           // that may have the same noise issues for instance due to demosaic
-          // if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
-          // {
+          if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
+          {
             if(diff_tmp < min_diff)
               min_diff = diff_tmp;
-          // }
+          }
           index_neighbor++;
         }
       }
+      // it seems averaging the logs of diffs gives much better results (more uniform)
+      min_diff = log2f(min_diff)+20.0f;
       min_diffs[i * width + j] = min_diff;
       if(min_diff > max_min_diff)
         max_min_diff = min_diff;
@@ -1033,7 +1035,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   }
 
   // local average of min diffs
-  const float sigma = 100.0f / exp2f(scale);
+  const float sigma = 10.0f / exp2f(scale);
   const float min = 0.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
   if(g)
@@ -1041,8 +1043,9 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
     dt_gaussian_blur(g, min_diffs, averaged_min_diffs);
     dt_gaussian_free(g);
   }
-
-  float target = 0.1f * exp2f(scale) * (scale + 1.0f); // exp2f(-target) = 0.25f;
+  printf("%d: %.15f\n", scale, averaged_min_diffs[10]);
+  float t[NB_SCALES] = {0.005f, 0.005f, 0.005f, 0.01f, 0.05f, 0.1f, 0.5f, 1.f};
+  float target = t[scale] * 20.0f;// * exp2f(6.0f * scale + 1.0f);// * (scale + 1.0f); // exp2f(-target) = 0.25f;
   // we want for each pixel that the patch with best similarity
   // gets a weight of at least exp2f(-target) in the weighted mean,
   // knowing that central patch takes a weight of 1.
@@ -1053,9 +1056,9 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   for(size_t i = 0; i < width * height; i++)
   {
     if(min_diffs[i] > averaged_min_diffs[i])
-      norm[i] = sqrt(min_diffs[i] / target);
+      norm[i] = sqrt(exp2f(min_diffs[i]-20.0f) / target);
     else
-      norm[i] = sqrt((averaged_min_diffs[i] + 1e-8) / target);
+      norm[i] = sqrt(exp2f(averaged_min_diffs[i]-20.0f) / target);
   }
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
@@ -1147,7 +1150,7 @@ static void amplify_nlmeans_effect(float *const restrict in, float *const restri
           // non local means reduced the difference with lowpassed:
           // diff_after is lower than diff_before.
           // amplify the effect non local means had.
-          const float amplification = 100.0f * exp2f(-scale);
+          const float amplification = 0.0f * exp2f(-scale);
           delta *= amplification;
           // thresholding
           diff_after_nlmeans = sign_diff * MAX(sign_diff * diff_after_nlmeans - delta, 0.0f);
@@ -1676,28 +1679,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     }
     dt_free_align(guide);
     dt_free_align(nlmeans_output);
+    //if(i != 1)
     add_details_to_upscaled_image(means[i-1], details[i-1], width[i-1], height[i-1]);
     printf("%d add details ok\n", i);
   }
-    dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
-    memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
-    for(size_t k = 0; k < width[0] * height[0] * 4; k++)
-    {
-      out[k] = 1.0f;
-    }
-    const int tmp = MIN(d->checker_scale, NB_SCALES-1)-1;
-    for(size_t k = 0; k < height[tmp]; k++)
-    {
-      for(size_t j = 0; j < width[tmp]; j++)
-      {
-        for(size_t c = 0; c < 4; c++)
-        {
-          out[((k * width[0]) + j) * 4 + c] = means[tmp][((k * width[tmp]) + j) * 4 + c];
-        }
-      }
-    }
-    return;
-
   float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
   prepare_for_nlmeans(means[0], guide, width[0], height[0], wb);
   printf("%d prepare ok\n", 0);
@@ -1706,6 +1691,25 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   //memcpy(out, means[0], width[0] * height[0] * 4 * sizeof(float));
   printf("%d nlmeans ok\n", 0);
   dt_free_align(guide);
+
+    // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
+    // memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
+    // for(size_t k = 0; k < width[0] * height[0] * 4; k++)
+    // {
+    //   out[k] = 1.0f;
+    // }
+    // const int tmp = MIN(d->checker_scale, NB_SCALES-1)-1;
+    // for(size_t k = 0; k < height[tmp]; k++)
+    // {
+    //   for(size_t j = 0; j < width[tmp]; j++)
+    //   {
+    //     for(size_t c = 0; c < 4; c++)
+    //     {
+    //       out[((k * width[0]) + j) * 4 + c] = means[tmp][((k * width[tmp]) + j) * 4 + c];
+    //     }
+    //   }
+    // }
+    // return;
 
   return;
 
