@@ -876,17 +876,9 @@ static inline void get_details_from_mirrored(float *const restrict in, float *co
     }
   }
 }
-#endif
 
-// prepare the image that will be used in non-local means to compute the weights:
-// image will have 4 channels:
-// - 1 "fine details" channel equal to R/wb[0] + G/wb[1] + B/wb[2]
-// - 1 channel that is a 3x3 average on the R channel
-// - 1 channel that is a 3x3 average on the G channel
-// - 1 channel that is a 3x3 average on the B channel
-// on all channels, an anscombe transform (sqrt) is applied.
 __DT_CLONE_TARGETS__
-static inline void prepare_for_nlmeans(float *const restrict in, float *const restrict out, const size_t width, const size_t height, const float wb[3])
+static inline void min_mean_max_denoising(float *const restrict in, float *const restrict out, const size_t width, const size_t height, const float wb[3], const float scale)
 {
   const size_t ch = 4;
   const int radius = 1;
@@ -922,7 +914,102 @@ static inline void prepare_for_nlmeans(float *const restrict in, float *const re
 #ifdef _OPENMP
 #pragma omp parallel for simd collapse(2) default(none) \
   schedule(simd:static) aligned(in, average, out:64) \
-  dt_omp_firstprivate(in, average, out, width, height, ch, wb)
+  dt_omp_firstprivate(in, average, out, width, height, ch, wb, scale)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (j < radius) ? 0 : j - radius;
+      size_t end_convol = j + radius;
+      end_convol = (end_convol < width) ? end_convol : width - 1;
+      const float num_elem = (float)end_convol - (float)begin_convol + 1.0f;
+
+      for(size_t c = 0; c < 3; c++)
+      {
+        float avg = 0.0f;
+        for(size_t jj = begin_convol; jj <= end_convol; jj++)
+        {
+          //out[(i * width + j) * ch + c] += average[(i * width + jj) * ch + c] / num_elem;
+          avg += average[(i * width + jj) * ch + c] / num_elem;
+        }
+        float curr = in[(i * width + j) * ch + c];
+        if(i == 0 || i == height-1 || j == 0 || j == width-1)
+        {
+          out[(i * width + j) * ch + c] = curr;
+        }
+        else if(curr > avg)
+        {
+          // max of mins
+          float min1 = MIN(curr, MIN(in[((i-1) * width + j) * ch + c], in[((i-1) * width + j) * ch + c]));
+          float min2 = MIN(curr, MIN(in[(i * width + j-1) * ch + c], in[(i * width + j+1) * ch + c]));
+          float min3 = MIN(curr, MIN(in[((i-1) * width + j-1) * ch + c], in[((i+1) * width + j+1) * ch + c]));
+          float min4 = MIN(curr, MIN(in[((i-1) * width + j+1) * ch + c], in[((i+1) * width + j-1) * ch + c]));
+          out[(i * width + j) * ch + c] = MAX(MAX(min1, min2), MAX(min3, min4));
+        }
+        else
+        {
+          // min of maxs
+          // max of mins
+          float max1 = MAX(curr, MAX(in[((i-1) * width + j) * ch + c], in[((i-1) * width + j) * ch + c]));
+          float max2 = MAX(curr, MAX(in[(i * width + j-1) * ch + c], in[(i * width + j+1) * ch + c]));
+          float max3 = MAX(curr, MAX(in[((i-1) * width + j-1) * ch + c], in[((i+1) * width + j+1) * ch + c]));
+          float max4 = MAX(curr, MAX(in[((i-1) * width + j+1) * ch + c], in[((i+1) * width + j-1) * ch + c]));
+          out[(i * width + j) * ch + c] = MIN(MIN(max1, max2), MIN(max3, max4));
+        }
+      }
+    }
+  }
+  dt_free_align(average);
+}
+
+#endif
+
+// prepare the image that will be used in non-local means to compute the weights:
+// image will have 4 channels:
+// - 1 "fine details" channel equal to R/wb[0] + G/wb[1] + B/wb[2]
+// - 1 channel that is a 3x3 average on the R channel
+// - 1 channel that is a 3x3 average on the G channel
+// - 1 channel that is a 3x3 average on the B channel
+// on all channels, an anscombe transform (sqrt) is applied.
+__DT_CLONE_TARGETS__
+static inline void prepare_for_nlmeans(float *const restrict in, float *const restrict out, const size_t width, const size_t height, const float wb[3], const float scale)
+{
+  const size_t ch = 4;
+  const int radius = 1;
+  float *const restrict average = dt_alloc_align(64, width * height * ch * sizeof(float));
+  memset(average, 0, width * height * ch * sizeof(float));
+  memset(out, 0, width * height * ch * sizeof(float));
+  // start by doing a 3x3 average of the input
+  // convolve along columns
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, average:64) \
+  dt_omp_firstprivate(in, average, width, height, ch)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (i < radius) ? 0 : i - radius;
+      size_t end_convol = i + radius;
+      end_convol = (end_convol < height) ? end_convol : height - 1;
+      const float num_elem = (float)end_convol - (float)begin_convol + 1.0f;
+
+      for(size_t ii = begin_convol; ii <= end_convol; ii++)
+      {
+        for(size_t c = 0; c < 3; c++)
+        {
+          average[(i * width + j) * ch + c] += in[(ii * width + j) * ch + c] / num_elem;
+        }
+      }
+    }
+  }
+  // convolve along rows and compute first channel and anscombe
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, average, out:64) \
+  dt_omp_firstprivate(in, average, out, width, height, ch, wb, scale)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -943,7 +1030,7 @@ static inline void prepare_for_nlmeans(float *const restrict in, float *const re
       // compute first channel
       for(size_t c = 0; c < 3; c++)
       {
-        out[(i * width + j) * ch] += in[(i * width + j) * ch + c] / wb[c];
+        out[(i * width + j) * ch] += in[(i * width + j) * ch + c] / wb[c] * (scale + 1.0f) / 9.0f;
       }
       // anscombe transform for all channels
       for(size_t c = 0; c < 4; c++)
@@ -956,7 +1043,7 @@ static inline void prepare_for_nlmeans(float *const restrict in, float *const re
 }
 
 __DT_CLONE_TARGETS__
-static inline void nlmeans(float *const restrict guide, float *const restrict in, float *const restrict out, const size_t width, const size_t height, const int scale)
+static inline void nlmeans(float *const restrict guide, float *const restrict in, float *const restrict out, const size_t width, const size_t height, const int scale, const int force)
 {
   //const float force = 4.0f;
   const size_t ch = 4;
@@ -967,6 +1054,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   float *const restrict norm = dt_alloc_align(64, width * height * sizeof(float));
   float *const restrict averaged_min_diffs = dt_alloc_align(64, width * height * sizeof(float));
   memcpy(out, in, width * height * ch * sizeof(float));
+  //memset(out, 0x0, width * height * ch * sizeof(float));
 
   float max_min_diff = 0.0f;
 #ifdef _OPENMP
@@ -1031,11 +1119,11 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
       min_diffs[i * width + j] = min_diff;
       if(min_diff > max_min_diff)
         max_min_diff = min_diff;
-      }
+    }
   }
 
   // local average of min diffs
-  const float sigma = 10.0f / exp2f(scale);
+  const float sigma = 20.0f / exp2f(scale);
   const float min = 0.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
   if(g)
@@ -1043,30 +1131,32 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
     dt_gaussian_blur(g, min_diffs, averaged_min_diffs);
     dt_gaussian_free(g);
   }
-  printf("%d: %.15f\n", scale, averaged_min_diffs[10]);
-  float t[NB_SCALES] = {0.005f, 0.005f, 0.005f, 0.01f, 0.05f, 0.1f, 0.5f, 1.f};
-  float target = t[scale] * 20.0f;// * exp2f(6.0f * scale + 1.0f);// * (scale + 1.0f); // exp2f(-target) = 0.25f;
+  //printf("%d: %.15f\n", scale, averaged_min_diffs[10]);
+  //float t[NB_SCALES] = {0.005f, 0.005f, 0.005f, 0.01f, 0.05f, 0.1f, 0.5f, 1.f};
+  float target = /*t[scale] * */50000.0f * exp2f(-scale);// * exp2f(6.0f * scale + 1.0f);// * (scale + 1.0f); // exp2f(-target) = 0.25f;
   // we want for each pixel that the patch with best similarity
   // gets a weight of at least exp2f(-target) in the weighted mean,
   // knowing that central patch takes a weight of 1.
+  printf("%d\n", force);
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(static) \
-  dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, target)
+dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, force/*, target*/)
 #endif
   for(size_t i = 0; i < width * height; i++)
   {
     if(min_diffs[i] > averaged_min_diffs[i])
-      norm[i] = sqrt(exp2f(min_diffs[i]-20.0f) / target);
+      norm[i] = /*sqrt*/(exp2f(min_diffs[i]-20.0f)/* / target*/);
     else
-      norm[i] = sqrt(exp2f(averaged_min_diffs[i]-20.0f) / target);
+      norm[i] = /*sqrt*/(exp2f(averaged_min_diffs[i]-20.0f)/* / target*/);
   }
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
 
+  const float expscale = exp2f(-MAX((int)scale-2, 0));
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2) default(none) \
   schedule(static) \
-  dt_omp_firstprivate(diff, norm, in, out, width, height, ch, total_neighbors)
+  dt_omp_firstprivate(diff, norm, target, guide, expscale, force, in, out, width, height, ch, total_neighbors)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -1091,8 +1181,9 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 
           size_t index = (i * width + j) * total_neighbors + index_neighbor;
           const float difference = diff[index];
-          const float normalized_difference = difference / (norm[i * width + j] * norm[ii * width + jj]);
-          const float weight = exp2f(-normalized_difference);
+          float normalized_difference = (difference - expscale * force / 10.f * norm[i * width + j]) * target / norm[i * width + j];// (norm[i * width + j] * norm[ii * width + jj]);
+          normalized_difference = MAX(normalized_difference, 0.0f);
+          const float weight = MAX(exp2f(-normalized_difference), 1E-10);
           total_weight += weight;
           for(size_t c = 0; c < 3; c++)
           {
@@ -1103,6 +1194,10 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
       }
       for(size_t c = 0; c < 3; c++)
       {
+        if(total_weight == 0.0f)
+        {
+          printf("%ld, %ld, %f, %f, %f\n", i, j, norm[(i * width + j)], diff[(i * width + j) * total_neighbors], diff[(i * width + j) * total_neighbors + 1]);
+        }
         out[(i * width + j) * ch + c] /= total_weight;
       }
     }
@@ -1149,8 +1244,8 @@ static void amplify_nlmeans_effect(float *const restrict in, float *const restri
         {
           // non local means reduced the difference with lowpassed:
           // diff_after is lower than diff_before.
-          // amplify the effect non local means had.
-          const float amplification = 0.0f * exp2f(-scale);
+          // amplify the effect non local means had
+          const float amplification = 10.0f * exp2f(-15.0f*MAX((int)scale-1, 0));
           delta *= amplification;
           // thresholding
           diff_after_nlmeans = sign_diff * MAX(sign_diff * diff_after_nlmeans - delta, 0.0f);
@@ -1593,6 +1688,7 @@ static void thresholding_and_recompose(float* mean, unsigned widthmean, unsigned
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
+  dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
   float* out = (float*)ovoid;
   float* in = (float*)ivoid;
   if(piece->pipe->type != DT_DEV_PIXELPIPE_FULL && piece->pipe->type != DT_DEV_PIXELPIPE_EXPORT)
@@ -1659,10 +1755,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   for(int i = NB_SCALES-1; i >= 1; i--)
   {
     float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
-    prepare_for_nlmeans(means[i], guide, width[i], height[i], wb);
+    prepare_for_nlmeans(means[i], guide, width[i], height[i], wb, i);
     printf("%d prepare ok\n", i);
     float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
-    nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i);
+    nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i, d->checker_scale);
     if(i != NB_SCALES-1)
       amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
     //memcpy(nlmeans_output, means[i], width[i] * height[i] * 4 * sizeof(float));
@@ -1684,15 +1780,13 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     printf("%d add details ok\n", i);
   }
   float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
-  prepare_for_nlmeans(means[0], guide, width[0], height[0], wb);
+  prepare_for_nlmeans(means[0], guide, width[0], height[0], wb, 0);
   printf("%d prepare ok\n", 0);
-  nlmeans(guide, means[0], out, width[0], height[0], 0);
+  nlmeans(guide, means[0], out, width[0], height[0], 0, d->checker_scale);
   amplify_nlmeans_effect(means[0], details[0], out, width[0], height[0], 0);
   //memcpy(out, means[0], width[0] * height[0] * 4 * sizeof(float));
   printf("%d nlmeans ok\n", 0);
   dt_free_align(guide);
-
-    // dt_iop_blind_denoise_params_t *d = (dt_iop_blind_denoise_params_t *)piece->data;
     // memset(out, 0, width[0] * height[0] * 4 * sizeof(float));
     // for(size_t k = 0; k < width[0] * height[0] * 4; k++)
     // {
@@ -1735,8 +1829,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   return;
   get_details_from_mirrored(in, dwn_mirrored, out, width[0], height[0]);
   guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
-  prepare_for_nlmeans(in, guide, width[0], height[0], wb);
-  nlmeans(guide, in, out, width[0], height[0], 0);
+  prepare_for_nlmeans(in, guide, width[0], height[0], wb, 0);
+  nlmeans(guide, in, out, width[0], height[0], 0, d->checker_scale);
   downscale_bilinear(in, width[0], height[0], dwn_mirrored);
   get_details_from_downscaled(in, dwn_mirrored, det, width[0], height[0]);
   upscale_bilinear(dwn_mirrored, width[0], height[0], out);
@@ -1884,7 +1978,7 @@ void gui_init(dt_iop_module_t *self)
 
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
 
-  g->scale = dt_bauhaus_slider_new_with_range(self, 1, 100, 1, 50, 0);
+  g->scale = dt_bauhaus_slider_new_with_range(self, 1, 2000, 1, 50, 0);
   dt_bauhaus_widget_set_label(g->scale, NULL, _("size"));
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->scale), TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->scale), "value-changed", G_CALLBACK(scale_callback), self);
