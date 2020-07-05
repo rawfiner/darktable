@@ -966,23 +966,80 @@ static inline void min_mean_max_denoising(float *const restrict in, float *const
 #endif
 
 // prepare the image that will be used in non-local means to compute the weights:
-// perform an anscombe transform
+// image will have 4 channels:
+// - 1 "fine details" channel equal to R/wb[0] + G/wb[1] + B/wb[2]
+// - 1 channel that is a 3x3 average on the R channel
+// - 1 channel that is a 3x3 average on the G channel
+// - 1 channel that is a 3x3 average on the B channel
+// on all channels, an anscombe transform (sqrt) is applied.
 __DT_CLONE_TARGETS__
 static inline void prepare_for_nlmeans(float *const restrict in, float *const restrict out, const size_t width, const size_t height, const float wb[3], const float scale)
 {
   const size_t ch = 4;
+  const int radius = 1;
+  float *const restrict average = dt_alloc_align(64, width * height * ch * sizeof(float));
+  memset(average, 0, width * height * ch * sizeof(float));
+  memset(out, 0, width * height * ch * sizeof(float));
+  // start by doing a 3x3 average of the input
+  // convolve along columns
 #ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  schedule(simd:static) aligned(in, out:64) \
-  dt_omp_firstprivate(in, out, width, height, ch, wb, scale)
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, average:64) \
+  dt_omp_firstprivate(in, average, width, height, ch)
 #endif
-  for(size_t i = 0; i < height * width; i++)
+  for(size_t i = 0; i < height; i++)
   {
-    for(size_t c = 0; c < 3; c++)
+    for(size_t j = 0; j < width; j++)
     {
-      out[i * ch + c] = sqrtf(MAX(in[i * ch + c] / wb[c] + 3.f / 8.f, 0.0f));
+      const size_t begin_convol = (i < radius) ? 0 : i - radius;
+      size_t end_convol = i + radius;
+      end_convol = (end_convol < height) ? end_convol : height - 1;
+      const float num_elem = (float)end_convol - (float)begin_convol + 1.0f;
+
+      for(size_t ii = begin_convol; ii <= end_convol; ii++)
+      {
+        for(size_t c = 0; c < 3; c++)
+        {
+          average[(i * width + j) * ch + c] += in[(ii * width + j) * ch + c] / num_elem;
+        }
+      }
     }
   }
+  // convolve along rows and compute first channel and anscombe
+#ifdef _OPENMP
+#pragma omp parallel for simd collapse(2) default(none) \
+  schedule(simd:static) aligned(in, average, out:64) \
+  dt_omp_firstprivate(in, average, out, width, height, ch, wb, scale)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (j < radius) ? 0 : j - radius;
+      size_t end_convol = j + radius;
+      end_convol = (end_convol < width) ? end_convol : width - 1;
+      const float num_elem = (float)end_convol - (float)begin_convol + 1.0f;
+
+      for(size_t jj = begin_convol; jj <= end_convol; jj++)
+      {
+        for(size_t c = 0; c < 3; c++)
+        {
+          out[(i * width + j) * ch + (c + 1)] += average[(i * width + jj) * ch + c] / num_elem;
+        }
+      }
+      // compute first channel
+      for(size_t c = 0; c < 3; c++)
+      {
+        out[(i * width + j) * ch] += in[(i * width + j) * ch + c] / wb[c] * (scale + 1.0f) / 9.0f;
+      }
+      // anscombe transform for all channels
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[(i * width + j) * ch + c] = sqrtf(MAX(out[(i * width + j) * ch + c] + 3.f / 8.f, 0.0f));
+      }
+    }
+  }
+  dt_free_align(average);
 }
 
 __DT_CLONE_TARGETS__
@@ -991,13 +1048,13 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   //const float force = 4.0f;
   const size_t ch = 4;
   const int k = 2;
-  const int p = 1;
   const size_t total_neighbors = (2 * k + 1) * (2 * k + 1) - 1; // central pixel is not counted
   float *const restrict diff = dt_alloc_align(64, width * height * total_neighbors * sizeof(float));
   float *const restrict min_diffs = dt_alloc_align(64, width * height * sizeof(float));
   float *const restrict norm = dt_alloc_align(64, width * height * sizeof(float));
   float *const restrict averaged_min_diffs = dt_alloc_align(64, width * height * sizeof(float));
   memcpy(out, in, width * height * ch * sizeof(float));
+  //memset(out, 0x0, width * height * ch * sizeof(float));
 
   float max_min_diff = 0.0f;
 #ifdef _OPENMP
@@ -1010,91 +1067,55 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   {
     for(size_t j = 0; j < width; j++)
     {
-      const size_t ik_begin = (i < k) ? 0 : i - k;
-      size_t ik_end = i + k;
-      ik_end = (ik_end < height) ? ik_end : height - 1;
+      const size_t ii_begin = (i < k) ? 0 : i - k;
+      size_t ii_end = i + k;
+      ii_end = (ii_end < height) ? ii_end : height - 1;
 
-      const size_t jk_begin = (j < k) ? 0 : j - k;
-      size_t jk_end = j + k;
-      jk_end = (jk_end < width) ? jk_end : width - 1;
+      const size_t jj_begin = (j < k) ? 0 : j - k;
+      size_t jj_end = j + k;
+      jj_end = (jj_end < width) ? jj_end : width - 1;
 
       size_t index_neighbor = 0;
       float min_diff = 99999.f;
       // compute patch difference and find "best" neighbor
       // for this pixel within the group of pixels that are at
       // at a distance of more than 1
-      for(size_t ik = ik_begin; ik <= ik_end; ik++)
+      for(size_t ii = ii_begin; ii <= ii_end; ii++)
       {
-        for(size_t jk = jk_begin; jk <= jk_end; jk++)
+        for(size_t jj = jj_begin; jj <= jj_end; jj++)
         {
-          if(ik == i && jk == j)
+          if(ii == i && jj == j)
             continue;
 
           float diff_tmp = 0.0f;
-          if((ik < p || ik > height-p-1 || jk < p || jk > width-p-1)
-            || (i < p || i > height-p-1 || j < p || j > width-p-1))
+#if 0
+#ifdef _OPENMP
+#pragma omp simd aligned(guide:64) reduction(+:diff_tmp)
+#endif
+#endif
+          for(size_t c = 0; c < ch; c++)
           {
-            for(size_t c = 0; c < 3; c++)
-            {
-              float d_ij_kikj = guide[(i * width + j) * ch + c] - guide[(ik * width + jk) * ch + c];
-              diff_tmp += d_ij_kikj * d_ij_kikj;
-            }
-            diff_tmp /= 3.0;
-          }
-          else
-          {
-            // compute patch difference and find "best" neighbor
-            // for this pixel within the group of pixels that are at
-            // at a distance of more than 1
-            float diff_standard = 0.0f;
-            float diff_rotate_1 = 0.0f;
-            float diff_rotate_minus_1 = 0.0f;
-            assert(p == 1);
-            int index_i[9] = {-1, -1, -1, 0, 0, 0, 1, 1, 1};
-            int index_j[9] = {-1, 0, 1, -1, 0, 1, -1, 0, 1};
-            // indexes for rotated patch around the central pixel:
-            // anti-clockwise rotation
-            int index_i_rotate_1[9] = { 0, -1, -1,  1, 0, -1, 1, 1, 0};
-            int index_j_rotate_1[9] = {-1, -1,  0, -1, 0,  1, 0, 1, 1};
-            // clockwise rotation
-            int index_i_rotate_minus_1[9] = {-1, -1, 0, -1, 0, 1,  0,  1, 1};
-            int index_j_rotate_minus_1[9] = { 0,  1, 1, -1, 0, 1, -1, -1, 0};
-            for(int ip = 0; ip < (2*p+1)*(2*p+1); ip++)
-            {
-              for(size_t c = 0; c < 3; c++)
-              {
-                float d_ij_kikj = guide[((i + index_i[ip]) * width + (j + index_j[ip])) * ch + c] - guide[((ik + index_i[ip]) * width + (jk + index_j[ip])) * ch + c];
-                diff_standard += (d_ij_kikj * d_ij_kikj);
-
-                d_ij_kikj = guide[((i + index_i[ip]) * width + (j + index_j[ip])) * ch + c] - guide[((ik + index_i_rotate_1[ip]) * width + (jk + index_j_rotate_1[ip])) * ch + c];
-                diff_rotate_1 += (d_ij_kikj * d_ij_kikj);
-
-                d_ij_kikj = guide[((i + index_i[ip]) * width + (j + index_j[ip])) * ch + c] - guide[((ik + index_i_rotate_minus_1[ip]) * width + (jk + index_j_rotate_minus_1[ip])) * ch + c];
-                diff_rotate_minus_1 += (d_ij_kikj * d_ij_kikj);
-              }
-            }
-            diff_tmp = MIN(diff_standard, MIN(diff_rotate_1, diff_rotate_minus_1));
-            diff_tmp /= (3.0f * (2 * p + 1) * (2 * p + 1));
+            diff_tmp += (guide[(i * width + j) * ch + c] - guide[(ii * width + jj) * ch + c])
+                      * (guide[(i * width + j) * ch + c] - guide[(ii * width + jj) * ch + c]);
           }
           size_t index = (i * width + j) * total_neighbors + index_neighbor;
+          diff_tmp = MIN(99999.f, diff_tmp);
           diff[index] = diff_tmp;
 
           // find best neighbor for each pixel.
           // we only consider for this pixels which are far enough from our
           // reference pixel, to avoid comparing the pixel with other pixels
           // that may have the same noise issues for instance due to demosaic
-          if((abs((int)ik - (int)i) > 1) || (abs((int)jk - (int)j) > 1))
+          if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
           {
             if(diff_tmp < min_diff)
-            {
               min_diff = diff_tmp;
-            }
           }
           index_neighbor++;
         }
       }
       // it seems averaging the logs of diffs gives much better results (more uniform)
-      min_diff = log2f(min_diff + 1E-10)+20.0f;
+      min_diff = log2f(min_diff)+20.0f;
       min_diffs[i * width + j] = min_diff;
       if(min_diff > max_min_diff)
         max_min_diff = min_diff;
@@ -1112,29 +1133,30 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   }
   //printf("%d: %.15f\n", scale, averaged_min_diffs[10]);
   //float t[NB_SCALES] = {0.005f, 0.005f, 0.005f, 0.01f, 0.05f, 0.1f, 0.5f, 1.f};
-  float target = /*t[scale] * */1.0f * exp2f(-scale);// * exp2f(6.0f * scale + 1.0f);// * (scale + 1.0f); // exp2f(-target) = 0.25f;
+  float target = /*t[scale] * */50000.0f * exp2f(-scale);// * exp2f(6.0f * scale + 1.0f);// * (scale + 1.0f); // exp2f(-target) = 0.25f;
   // we want for each pixel that the patch with best similarity
   // gets a weight of at least exp2f(-target) in the weighted mean,
   // knowing that central patch takes a weight of 1.
+  printf("%d\n", force);
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(static) \
-dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, target)
+dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, force/*, target*/)
 #endif
   for(size_t i = 0; i < width * height; i++)
   {
     if(min_diffs[i] > averaged_min_diffs[i])
-      norm[i] = sqrtf(exp2f(min_diffs[i]-20.0f) / target);
+      norm[i] = /*sqrt*/(exp2f(min_diffs[i]-20.0f)/* / target*/);
     else
-      norm[i] = sqrtf(exp2f(averaged_min_diffs[i]-20.0f) / target);
+      norm[i] = /*sqrt*/(exp2f(averaged_min_diffs[i]-20.0f)/* / target*/);
   }
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
 
-  //const float expscale = exp2f(-MAX((int)scale-2, 0));
+  const float expscale = exp2f(-MAX((int)scale-2, 0));
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2) default(none) \
   schedule(static) \
-  dt_omp_firstprivate(diff, norm, target, guide, in, out, width, height, ch, total_neighbors)
+  dt_omp_firstprivate(diff, norm, target, guide, expscale, force, in, out, width, height, ch, total_neighbors)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -1159,7 +1181,7 @@ dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, target)
 
           size_t index = (i * width + j) * total_neighbors + index_neighbor;
           const float difference = diff[index];
-          float normalized_difference = difference / (norm[i * width + j] * norm[ii * width + jj]);
+          float normalized_difference = (difference - expscale * force / 10.f * norm[i * width + j]) * target / norm[i * width + j];// (norm[i * width + j] * norm[ii * width + jj]);
           normalized_difference = MAX(normalized_difference, 0.0f);
           const float weight = MAX(exp2f(-normalized_difference), 1E-10);
           total_weight += weight;
@@ -1172,6 +1194,10 @@ dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, target)
       }
       for(size_t c = 0; c < 3; c++)
       {
+        if(total_weight == 0.0f)
+        {
+          printf("%ld, %ld, %f, %f, %f\n", i, j, norm[(i * width + j)], diff[(i * width + j) * total_neighbors], diff[(i * width + j) * total_neighbors + 1]);
+        }
         out[(i * width + j) * ch + c] /= total_weight;
       }
     }
@@ -1733,8 +1759,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     printf("%d prepare ok\n", i);
     float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
     nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i, d->checker_scale);
-    //if(i != NB_SCALES-1)
-    //  amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
+    if(i != NB_SCALES-1)
+      amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
     //memcpy(nlmeans_output, means[i], width[i] * height[i] * 4 * sizeof(float));
     printf("%d nlmeans ok\n", i);
     if(i <= NB_DOWNSCALES)
