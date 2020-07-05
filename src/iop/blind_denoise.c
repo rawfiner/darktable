@@ -641,6 +641,8 @@ static inline void get_details_from_downscaled(float *const restrict in, float *
   }
 }
 
+#if 0
+/* deprecated. Prefer the new version. Gives better results */
 __DT_CLONE_TARGETS__
 static inline void add_details_to_upscaled_image(float *const restrict inout, float *const restrict details, const size_t width, const size_t height)
 {
@@ -653,6 +655,34 @@ static inline void add_details_to_upscaled_image(float *const restrict inout, fl
   for(size_t i = 0; i < width * height * ch; i++)
   {
     inout[i] = inout[i] + details[i];
+  }
+}
+#endif
+
+__DT_CLONE_TARGETS__
+static inline void add_details_to_upscaled_image(float *const restrict in /* upscaled image*/, float *const restrict details, float *const restrict out /* undenoised original image */, const size_t width, const size_t height)
+{
+  const size_t ch = 4;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  schedule(simd:static) aligned(details, in, out:64) \
+  dt_omp_firstprivate(details, in, out, width, height, ch)
+#endif
+  for(size_t i = 0; i < width * height * ch; i++)
+  {
+    // compute 2 details: the one we kept previously, and the one by subtracting
+    // the undenoised image with the denoised upscaled image
+    // keep the "smallest" amount of details
+    const float det1 = out[i] - in[i];
+    const float det2 = details[i];
+    if(fabsf(det1) > fabsf(det2))
+    {
+      out[i] = in[i] + det2;
+    }
+    else
+    {
+      out[i] = in[i] + det1;
+    }
   }
 }
 
@@ -1759,24 +1789,26 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     printf("%d prepare ok\n", i);
     float* nlmeans_output = dt_alloc_align(64, sizeof(float) * 4 * width[i] * height[i]);
     nlmeans(guide, means[i], nlmeans_output, width[i], height[i], i, d->checker_scale);
+    dt_free_align(guide);
     if(i != NB_SCALES-1)
       amplify_nlmeans_effect(means[i], details[i], nlmeans_output, width[i], height[i], i);
     //memcpy(nlmeans_output, means[i], width[i] * height[i] * 4 * sizeof(float));
     printf("%d nlmeans ok\n", i);
+    float* upscaled = dt_alloc_align(64, sizeof(float) * 4 * width[i-1] * height[i-1]);
     if(i <= NB_DOWNSCALES)
     {
-      upscale_bilinear(nlmeans_output, width[i-1], height[i-1], means[i-1]);
+      upscale_bilinear(nlmeans_output, width[i-1], height[i-1], upscaled);
       printf("%d upscale bilin ok\n", i);
     }
     else
     {
-      upscale_bilinear_mirrored(nlmeans_output, width[i-1], height[i-1], means[i-1]);
+      upscale_bilinear_mirrored(nlmeans_output, width[i-1], height[i-1], upscaled);
       printf("%d upscale mirrored ok\n", i);
     }
-    dt_free_align(guide);
     dt_free_align(nlmeans_output);
     //if(i != 1)
-    add_details_to_upscaled_image(means[i-1], details[i-1], width[i-1], height[i-1]);
+    add_details_to_upscaled_image(upscaled, details[i-1], means[i-1], width[i-1], height[i-1]);
+    dt_free_align(upscaled);
     printf("%d add details ok\n", i);
   }
   float* guide = dt_alloc_align(64, sizeof(float) * 4 * width[0] * height[0]);
@@ -1834,7 +1866,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   downscale_bilinear(in, width[0], height[0], dwn_mirrored);
   get_details_from_downscaled(in, dwn_mirrored, det, width[0], height[0]);
   upscale_bilinear(dwn_mirrored, width[0], height[0], out);
-  add_details_to_upscaled_image(out, det, width[0], height[0]);
+  //add_details_to_upscaled_image(out, det, width[0], height[0]);
 
 #if 0
   float* var_noise = (float*)malloc(sizeof(float) * 4 * width[0] * height[0]);
