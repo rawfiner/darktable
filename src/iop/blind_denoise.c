@@ -682,6 +682,7 @@ static inline void add_details_to_upscaled_image(float *const restrict in /* ups
     else
     {
       out[i] = in[i] + det1;
+      details[i] = det1;
     }
   }
 }
@@ -1153,7 +1154,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   }
 
   // local average of min diffs
-  const float sigma = 20.0f / exp2f(scale);
+  const float sigma = 200.0f / exp2f(scale);
   const float min = 0.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
   if(g)
@@ -1182,7 +1183,7 @@ dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, force/*,
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
 
-  const float expscale = exp2f(-MAX((int)scale-2, 0));
+  const float expscale = 1.0f;//exp2f(-MAX((int)scale, 0));
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2) default(none) \
   schedule(static) \
@@ -1275,7 +1276,7 @@ static void amplify_nlmeans_effect(float *const restrict in, float *const restri
           // non local means reduced the difference with lowpassed:
           // diff_after is lower than diff_before.
           // amplify the effect non local means had
-          const float amplification = 10.0f * exp2f(-15.0f*MAX((int)scale-1, 0));
+          const float amplification = 40.0f * exp2f(-15.0f*MAX((int)scale-2, 0));
           delta *= amplification;
           // thresholding
           diff_after_nlmeans = sign_diff * MAX(sign_diff * diff_after_nlmeans - delta, 0.0f);
