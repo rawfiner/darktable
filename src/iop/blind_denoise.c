@@ -1124,7 +1124,7 @@ static inline void prepare_for_nlmeans(float *const restrict in, float *const re
       // compute first channel
       for(size_t c = 0; c < 3; c++)
       {
-        out[(i * width + j) * ch] += in[(i * width + j) * ch + c] / wb[c] * (scale + 1.0f) / 9.0f;
+        out[(i * width + j) * ch] += in[(i * width + j) * ch + c] / wb[c]/* * (scale + 1.0f) / 9.0f*/;
       }
       // anscombe transform for all channels
       for(size_t c = 0; c < 4; c++)
@@ -1171,6 +1171,7 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
 
       size_t index_neighbor = 0;
       float min_diff = 99999.f;
+      float second_min_diff = 99999.f;
       // compute patch difference and find "best" neighbor
       // for this pixel within the group of pixels that are at
       // at a distance of more than 1
@@ -1203,21 +1204,26 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
           if((abs((int)ii - (int)i) > 1) || (abs((int)jj - (int)j) > 1))
           {
             if(diff_tmp < min_diff)
+            {
+              second_min_diff = min_diff;
               min_diff = diff_tmp;
+            }
+            else if (diff_tmp < second_min_diff)
+            {
+              second_min_diff = diff_tmp;
+            }
           }
           index_neighbor++;
         }
       }
-      // it seems averaging the logs of diffs gives much better results (more uniform)
-      min_diff = log2f(min_diff)+20.0f;
-      min_diffs[i * width + j] = min_diff;
-      if(min_diff > max_min_diff)
-        max_min_diff = min_diff;
+      min_diffs[i * width + j] = second_min_diff;
+      if(second_min_diff > max_min_diff)
+        max_min_diff = second_min_diff;
     }
   }
 
   // local average of min diffs
-  const float sigma = 200.0f / exp2f(scale);
+  const float sigma = 200.0f;
   const float min = 0.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max_min_diff, &min, sigma, 0);
   if(g)
@@ -1227,30 +1233,29 @@ static inline void nlmeans(float *const restrict guide, float *const restrict in
   }
   //printf("%d: %.15f\n", scale, averaged_min_diffs[10]);
   //float t[NB_SCALES] = {0.005f, 0.005f, 0.005f, 0.01f, 0.05f, 0.1f, 0.5f, 1.f};
-  float target = /*t[scale] * */50000.0f * exp2f(-scale);// * exp2f(6.0f * scale + 1.0f);// * (scale + 1.0f); // exp2f(-target) = 0.25f;
+  float target = /*t[scale] * */100.0f /* exp2f(scale)*/ / force;// * exp2f(6.0f * scale + 1.0f);// * (scale + 1.0f); // exp2f(-target) = 0.25f;
   // we want for each pixel that the patch with best similarity
   // gets a weight of at least exp2f(-target) in the weighted mean,
   // knowing that central patch takes a weight of 1.
   printf("%d\n", force);
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(static) \
-dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, force/*, target*/)
+dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, target, scale)
 #endif
   for(size_t i = 0; i < width * height; i++)
   {
-    if(min_diffs[i] > averaged_min_diffs[i])
-      norm[i] = /*sqrt*/(exp2f(min_diffs[i]-20.0f)/* / target*/);
+    if(scale < 3 && min_diffs[i] > averaged_min_diffs[i])
+      norm[i] = sqrtf(min_diffs[i] * 10.0f / target);
     else
-      norm[i] = /*sqrt*/(exp2f(averaged_min_diffs[i]-20.0f)/* / target*/);
+      norm[i] = sqrtf(averaged_min_diffs[i] / target);
   }
   dt_free_align(min_diffs);
   dt_free_align(averaged_min_diffs);
 
-  const float expscale = 1.0f;//exp2f(-MAX((int)scale, 0));
 #ifdef _OPENMP
 #pragma omp parallel for collapse(2) default(none) \
   schedule(static) \
-  dt_omp_firstprivate(diff, norm, target, guide, expscale, force, in, out, width, height, ch, total_neighbors)
+  dt_omp_firstprivate(diff, norm, target, guide, in, out, width, height, ch, total_neighbors)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -1275,8 +1280,11 @@ dt_omp_firstprivate(min_diffs, averaged_min_diffs, norm, width, height, force/*,
 
           size_t index = (i * width + j) * total_neighbors + index_neighbor;
           const float difference = diff[index];
-          float normalized_difference = (difference - expscale * force / 10.f * norm[i * width + j]) * target / norm[i * width + j];// (norm[i * width + j] * norm[ii * width + jj]);
-          normalized_difference = MAX(normalized_difference, 0.0f);
+          // we use only norm of [i,j] and not multiply with norm of [ii,jj] because
+          // for a bright hot pixel surrounded by dark pixels, norm is very low
+          // for all the dark pixels, and the geometric mean between the 2 norms
+          // gives a result that is too low.
+          float normalized_difference = difference / (norm[i * width + j] * norm[i * width + j]);
           const float weight = MAX(exp2f(-normalized_difference), 1E-10);
           total_weight += weight;
           for(size_t c = 0; c < 3; c++)
@@ -1339,7 +1347,8 @@ static void amplify_nlmeans_effect(float *const restrict in, float *const restri
           // non local means reduced the difference with lowpassed:
           // diff_after is lower than diff_before.
           // amplify the effect non local means had
-          const float amplification = 40.0f * exp2f(-15.0f*MAX((int)scale-2, 0));
+          const float amp[NB_SCALES] = {20.f, 20.f, 12.f, 5.f, 5.f, 1.f, 1.f, 0.1f};
+          const float amplification = 1.0f * amp[scale];
           delta *= amplification;
           // thresholding
           diff_after_nlmeans = sign_diff * MAX(sign_diff * diff_after_nlmeans - delta, 0.0f);
