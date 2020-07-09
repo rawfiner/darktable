@@ -578,6 +578,14 @@ static inline void downscale_bilinear(const float *const restrict in, const size
   }
 }
 
+typedef struct weighted_point_t
+{
+  const float* p;
+  float w;
+} weighted_point_t;
+
+#define SWAP(i,j,c) if(wp[i].p[c] < wp[j].p[c]) {weighted_point_t tmp = wp[j]; wp[j] = wp[i]; wp[i] = tmp;}
+
 __DT_CLONE_TARGETS__
 static inline void upscale_bilinear(float *const restrict in, const size_t width_upscaled, const size_t height_upscaled, float *const restrict upscaled)
 {
@@ -606,20 +614,75 @@ static inline void upscale_bilinear(float *const restrict in, const size_t width
       const float* Q_NE = (float *)in + (i_prev * width_in + j_next) * ch;
       const float* Q_SE = (float *)in + (i_next * width_in + j_next) * ch;
       const float* Q_SW = (float *)in + (i_next * width_in + j_prev) * ch;
-      // if i is even, the closest point is at south, else at north
-      const float w_S = i_even * 0.75f + (1 - i_even) * 0.25f;
-      const float w_N = 1.0f - w_S;
-      // if j is even, the closest point is at east, else at west
-      const float w_E = j_even * 0.75f + (1 - j_even) * 0.25f;
-      const float w_W = 1.0f - w_E;
 
-      float* pixel_out = upscaled + (i * width_upscaled + j) * ch;
-
-    #pragma unroll
-      for(size_t c = 0; c < ch; c++)
+      weighted_point_t wp[4];
+      wp[0].p = Q_NW;
+      wp[1].p = Q_NE;
+      wp[2].p = Q_SE;
+      wp[3].p = Q_SW;
+      if(i_even && j_even)
       {
-        pixel_out[c] = w_S * (w_W * Q_SW[c] + w_E * Q_SE[c]) + w_N * (w_W * Q_NW[c] + w_E * Q_NE[c]);
+        wp[0].w = 4;
+        wp[1].w = 6;
+        wp[2].w = 11;
+        wp[3].w = 6;
       }
+      if(i_even && !j_even)
+      {
+        wp[0].w = 6;
+        wp[1].w = 4;
+        wp[2].w = 6;
+        wp[3].w = 11;
+      }
+      if(!i_even && j_even)
+      {
+        wp[0].w = 6;
+        wp[1].w = 11;
+        wp[2].w = 6;
+        wp[3].w = 4;
+      }
+      if(!i_even && !j_even)
+      {
+        wp[0].w = 11;
+        wp[1].w = 6;
+        wp[2].w = 4;
+        wp[3].w = 6;
+      }
+
+      // weighted median based upscampling
+      float* pixel_out = upscaled + (i * width_upscaled + j) * ch;
+      for(size_t c = 0; c < 3; c++)
+      {
+        SWAP(0, 1, c);
+        SWAP(2, 3, c);
+        SWAP(0, 2, c);
+        SWAP(1, 3, c);
+        SWAP(1, 2, c);
+        // sum of weights is 27
+        int index = 0;
+        float sum = wp[index].w;
+        while(sum < 27.f / 2.f)
+        {
+          index++;
+          sum += wp[index].w;
+        }
+        pixel_out[c] = wp[index].p[c];
+      }
+
+    //   // if i is even, the closest point is at south, else at north
+    //   const float w_S = i_even * 0.75f + (1 - i_even) * 0.25f;
+    //   const float w_N = 1.0f - w_S;
+    //   // if j is even, the closest point is at east, else at west
+    //   const float w_E = j_even * 0.75f + (1 - j_even) * 0.25f;
+    //   const float w_W = 1.0f - w_E;
+    //
+    //   float* pixel_out = upscaled + (i * width_upscaled + j) * ch;
+    //
+    // #pragma unroll
+    //   for(size_t c = 0; c < ch; c++)
+    //   {
+    //     pixel_out[c] = w_S * (w_W * Q_SW[c] + w_E * Q_SE[c]) + w_N * (w_W * Q_NW[c] + w_E * Q_NE[c]);
+    //   }
     }
   }
 }
