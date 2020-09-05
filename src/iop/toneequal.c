@@ -101,6 +101,8 @@
 #include "iop/choleski.h"
 #include "common/iop_group.h"
 
+#include "common/gaussian.h"
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -702,6 +704,67 @@ static inline float pixel_correction(const float exposure,
   return fast_clamp(result, 0.25f, 4.0f);
 }
 
+// MAX_VALUE corresponds to the maximum value we get at +2EV in the mask.
+#define MAX_VALUE 4.0f
+static void eigf(float *const restrict image,
+                  const size_t width, const size_t height,
+                  const int radius, float feathering)
+{
+  // sigma for exposure estimation
+  const size_t num_elem = width * height;
+  const float sigma_exp_estimate = powf(2.0, -1.0f * 5.0f);
+  const float sigma_blur = radius;
+  float *const restrict exp_estimate = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict blur = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict pixel_deviation = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict variance = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+
+  const float min[] = {0.0f};
+  const float max[] = {MAX_VALUE};
+  const float max_var[] = {MAX_VALUE * MAX_VALUE};
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, max, min, sigma_exp_estimate, 0);
+  if(!g) goto clean;
+  dt_gaussian_blur(g, image, exp_estimate);
+  dt_gaussian_free(g);
+  g = dt_gaussian_init(width, height, 1, max, min, sigma_blur, 0);
+  if(!g) goto clean;
+  dt_gaussian_blur(g, image, blur);
+  dt_gaussian_free(g);
+
+  // compute variance
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, blur, pixel_deviation, num_elem) \
+schedule(simd:static) aligned(image, blur, pixel_deviation:64)
+#endif
+  for(size_t k = 0; k < num_elem; k++)
+  {
+    float difference = image[k] - blur[k];
+    pixel_deviation[k] = difference * difference;
+  }
+  g = dt_gaussian_init(width, height, 1, max_var, min, sigma_blur, 0);
+  if(!g) goto clean;
+  dt_gaussian_blur(g, pixel_deviation, variance);
+  dt_gaussian_free(g);
+
+  // compute the exposure-independent guided filter
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, variance, blur, exp_estimate, feathering, num_elem) \
+schedule(simd:static) aligned(image, variance, blur, exp_estimate:64)
+#endif
+  for(size_t k = 0; k < num_elem; k++)
+  {
+    float a = variance[k] / (variance[k] + feathering * exp_estimate[k] * exp_estimate[k] + 1E-6);
+    image[k] = a * image[k] + (1.0f - a) * blur[k];
+  }
+
+clean:
+  if(!exp_estimate) dt_free_align(exp_estimate);
+  if(!blur) dt_free_align(blur);
+  if(!pixel_deviation) dt_free_align(pixel_deviation);
+  if(!variance) dt_free_align(variance);
+}
 
 __DT_CLONE_TARGETS__
 static inline void compute_luminance_mask(const float *const restrict in, float *const restrict luminance,
@@ -737,8 +800,10 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
-      fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
-                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      //TODO add iterations
+      eigf(luminance, width, height, d->radius, d->feathering);
+      //fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
+      //              DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
       break;
     }
 
