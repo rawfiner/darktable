@@ -710,11 +710,12 @@ static inline float pixel_correction(const float exposure,
 #define MIN_VALUE 0.00390625f
 static void eigf(float *const restrict image,
                   const size_t width, const size_t height,
-                  const int radius, float feathering, const int iterations)
+                  const int radius, const float feathering,
+                  const float exp_sigma, const int iterations)
 {
   // sigma for exposure estimation
   const size_t num_elem = width * height;
-  const float sigma_exp_estimate = powf(2.0, -1.0f * 5.0f);
+  const float sigma_exp_estimate = exp_sigma;//powf(2.0, -1.0f * 5.0f);
   float *const restrict exp_estimate = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict blur = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict pixel_deviation = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
@@ -807,7 +808,7 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
       //TODO add iterations
-      eigf(luminance, width, height, d->radius, d->feathering, d->iterations);
+      eigf(luminance, width, height, d->radius, d->feathering, powf(2.0, (d->quantization - 1.0f) * 5.0f), d->iterations);
       //fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
       //              DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
       break;
