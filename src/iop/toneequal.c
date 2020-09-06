@@ -857,6 +857,7 @@ static void eigf(float *const restrict image,
                   const int radius, const float feathering,
                   const float exp_sigma, const int iterations)
 {
+  return;
   int rad = 3;
   while(rad < radius)
   {
@@ -983,6 +984,44 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
+
+      const size_t num_elem = width * height;
+      float *const restrict luminance_blurred = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+      float *const restrict luminance_inverse = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(luminance_inverse, luminance_blurred, luminance, num_elem) \
+schedule(simd:static) aligned(luminance_inverse, luminance_blurred, luminance:64)
+#endif
+      for(size_t k = 0; k < num_elem; k++)
+      {
+        luminance_inverse[k] = 1.0f / (MIN(MAX(luminance[k], 0.00390625f), 1.0f) * 256.f);
+        luminance_blurred[k] = MIN(MAX(luminance[k], 0.00390625f),1.0f);
+      }
+      fast_surface_blur(luminance_blurred, width, height, d->radius, d->feathering, d->iterations,
+                    DT_GF_BLENDING_LINEAR, d->scale, 0, exp2f(-14.0f), 4.0f);
+      fast_surface_blur(luminance_inverse, width, height, d->radius, d->feathering, d->iterations,
+                    DT_GF_BLENDING_LINEAR, d->scale, 0, exp2f(-14.0f), 4.0f);
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(luminance_inverse, num_elem) \
+schedule(simd:static) aligned(luminance_inverse:64)
+#endif
+      for(size_t k = 0; k < num_elem; k++)
+      {
+        luminance_inverse[k] = 1.0f / (MAX(luminance_inverse[k], 0.00390625f) * 256.f);
+      }
+      const float w = d->quantization / 2.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(w, luminance, luminance_inverse, luminance_blurred, num_elem) \
+schedule(simd:static) aligned(luminance, luminance_inverse, luminance_blurred:64)
+#endif
+      for(size_t k = 0; k < num_elem; k++)
+      {
+        luminance[k] = w * luminance_blurred[k] + (1-w) * luminance_inverse[k];
+      }
+
       //TODO add iterations
       eigf(luminance, width, height, d->radius, d->feathering, powf(2.0, (d->quantization - 1.0f) * 5.0f), d->iterations);
       //fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
