@@ -704,6 +704,148 @@ static inline float pixel_correction(const float exposure,
   return fast_clamp(result, 0.25f, 4.0f);
 }
 
+
+// min_max_blur:
+// local minimum and maximum are computed.
+// each pixel equals: p = a * min + (1-a) * max
+// then, the "minimum" image and the "maximum" image are blurred
+// each pixel is replaced by a * blurred_min + (1-a) * blurred_max
+//
+// local minimum and maximum are not computed the standard way:
+// we want something smooth.
+// thus, for each pixel, we consider the differences of all neighbourhing
+// pixels with central pixel, weight them (i.e. attenuate differences from
+// far away pixels), and select the maximum attenuated positive difference,
+// as well as the minimum attenated negative difference.
+// we construct min and max by doing the sum of the central pixel with the
+// maximum attenuated positive difference and the minimum attenated negative
+// difference respectively
+static void min_max_blur(float *const restrict image,
+                          const size_t width, const size_t height,
+                          const int radius)
+{
+  const size_t num_elem = width * height;
+  float *const restrict attenuated_min = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict attenuated_max = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict blurred_min = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict blurred_max = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  const float r2 = radius * radius;
+  const float r4 = r2 * r2;
+  printf("radius %d\n", radius);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, num_elem) \
+schedule(simd:static) aligned(image,:64)
+#endif
+  for(size_t k = 0; k < num_elem; k++)
+  {
+    image[k] = logf(MAX(image[k], 1E-6)) + 8.0f;
+  }
+
+  // vertical min max selection
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, radius, r2, r4, width, height, blurred_min, blurred_max) \
+schedule(simd:static) aligned(image, blurred_min, blurred_max:64)
+#endif
+  for(size_t j = 0; j < width; j++)
+  {
+    for(size_t i = 0; i < height; i++)
+    {
+      const size_t begin_convol = (i < radius) ? 0 : i - radius;
+      size_t end_convol = i + radius;
+      end_convol = (end_convol < height) ? end_convol : height - 1;
+      const size_t index = (i * width + j);
+      float min = 0.0f;
+      float max = 0.0f;
+      for(size_t c = begin_convol; c <= end_convol; c++)
+      {
+        const float dist2 = (c - i) * (c - i);
+        const float dist4 = dist2 * dist2;
+        const float attenuation = 1.0f - 2.0f * dist2 / r2 + dist4 / r4;
+        float diff = (image[c * width + j] - image[index]) * attenuation;
+        if(diff < min) min = diff;
+        if(diff > max) max = diff;
+      }
+      min = min + image[index];
+      max = max + image[index];
+      // we use blurred_min and blurred_max as a temporary buffer
+      // to compute attenuated_min and attenuated_max here
+      blurred_min[index] = min;
+      blurred_max[index] = max;
+    }
+  }
+  // horizontal min max selection
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, radius, r2, r4, width, height, blurred_min, blurred_max, attenuated_min, attenuated_max) \
+schedule(simd:static) aligned(image, blurred_min, blurred_max, attenuated_min, attenuated_max:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (j < radius) ? 0 : j - radius;
+      size_t end_convol = j + radius;
+      end_convol = (end_convol < width) ? end_convol : width - 1;
+      const size_t index = (i * width + j);
+      float min = 0.0f;
+      float max = 0.0f;
+      for(size_t c = begin_convol; c <= end_convol; c++)
+      {
+        const float dist2 = (c - j) * (c - j);
+        const float dist4 = dist2 * dist2;
+        const float attenuation = 1.0f - 2.0f * dist2 / r2 + dist4 / r4;
+        float diff = (blurred_min[i * width + c] - image[index]) * attenuation;
+        if(diff < min) min = diff;
+        diff = (blurred_max[i * width + c] - image[index]) * attenuation;
+        if(diff > max) max = diff;
+      }
+      min = min + image[index];
+      max = max + image[index];
+      attenuated_min[index] = min;
+      attenuated_max[index] = max;
+    }
+  }
+
+  // blur the attenuated min and attenuated max
+  const float min_value[] = {0.0f};
+  const float max_value[] = {10.0f};
+  const float sigma_blur = radius * 0.3f;
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, max_value, min_value, sigma_blur, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, attenuated_min, blurred_min);
+  dt_gaussian_blur(g, attenuated_max, blurred_max);
+  dt_gaussian_free(g);
+
+  // construct the output image from blurred_max and blurred_min
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, num_elem, attenuated_max, attenuated_min, blurred_max, blurred_min) \
+schedule(simd:static) aligned(image, attenuated_max, attenuated_min, blurred_max, blurred_min:64)
+#endif
+  for(size_t k = 0; k < num_elem; k++)
+  {
+    // for each pixel, find a such as:
+    // pixel = (1-a) * attenuated_min + a * attenuated_max
+    // then, replace it by:
+    // pixel = (1-a) * blurred_min + a * blurred_max
+    float a = (image[k] - attenuated_min[k]) / (attenuated_max[k] - attenuated_min[k] + 1E-6);
+    // be sure not to increase contrast
+    if(blurred_min[k] < attenuated_min[k])
+      blurred_min[k] = attenuated_min[k];
+    if(blurred_max[k] > attenuated_max[k])
+      blurred_max[k] = attenuated_max[k];
+    image[k] = expf((1.0f - a) * blurred_min[k] + a * blurred_max[k] - 8.0f);
+  }
+
+  dt_free_align(attenuated_min);
+  dt_free_align(attenuated_max);
+  dt_free_align(blurred_min);
+  dt_free_align(blurred_max);
+}
+
 // MAX_VALUE corresponds to the maximum value we get at 0EV in the mask.
 #define MAX_VALUE 1.0f
 // MIN_VALUE corresponds to the minimum value we get at -8EV in the mask.
@@ -713,6 +855,15 @@ static void eigf(float *const restrict image,
                   const int radius, const float feathering,
                   const float exp_sigma, const int iterations)
 {
+  int rad = 3;
+  while(rad < radius)
+  {
+    min_max_blur(image, width, height, rad);
+    rad = rad * sqrtf(rad);
+  }
+  min_max_blur(image, width, height, 5);
+
+
   // sigma for exposure estimation
   const size_t num_elem = width * height;
   const float sigma_exp_estimate = exp_sigma;//powf(2.0, -1.0f * 5.0f);
