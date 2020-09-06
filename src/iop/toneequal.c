@@ -724,6 +724,7 @@ static void min_max_blur(float *const restrict image,
                           const size_t width, const size_t height,
                           const int radius)
 {
+  return;
   const size_t num_elem = width * height;
   float *const restrict attenuated_min = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict attenuated_max = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
@@ -848,6 +849,7 @@ schedule(simd:static) aligned(image, attenuated_max, attenuated_min, blurred_max
 
 // MAX_VALUE corresponds to the maximum value we get at 0EV in the mask.
 #define MAX_VALUE 1.0f
+#define MAX_LOG_VALUE 8.0f
 // MIN_VALUE corresponds to the minimum value we get at -8EV in the mask.
 #define MIN_VALUE 0.00390625f
 static void eigf(float *const restrict image,
@@ -866,11 +868,12 @@ static void eigf(float *const restrict image,
 
   // sigma for exposure estimation
   const size_t num_elem = width * height;
-  const float sigma_exp_estimate = exp_sigma;//powf(2.0, -1.0f * 5.0f);
+  //const float sigma_exp_estimate = exp_sigma * 10.0f;//powf(2.0, -1.0f * 5.0f);
   float *const restrict exp_estimate = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict blur = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict pixel_deviation = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict variance = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict image_log = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
 
   const float min[] = {MIN_VALUE};
   const float max[] = {MAX_VALUE};
@@ -879,11 +882,32 @@ static void eigf(float *const restrict image,
   for(int i = 0; i < iterations; i++)
   {
     const float sigma_blur = radius * (1.0f + i * sqrt(2));
-    dt_gaussian_t *g = dt_gaussian_init(width, height, 1, max, min, sigma_exp_estimate, 0);
-    if(!g) goto clean;
-    dt_gaussian_blur(g, image, exp_estimate);
-    dt_gaussian_free(g);
-    g = dt_gaussian_init(width, height, 1, max, min, sigma_blur, 0);
+
+    // for exp_estimate, we do the gaussian blur in log space, and convert
+    // back (much better details preservation -> allows wider radius)
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, exp_estimate, num_elem) \
+schedule(simd:static) aligned(image,exp_estimate:64)
+#endif
+    for(size_t k = 0; k < num_elem; k++)
+    {
+      exp_estimate[k] = 1.0f / (MAX(image[k], 0.00390625f) * 256.f);
+    }
+    fast_surface_blur(exp_estimate, width, height, radius / 32.0f, 0.01f, 1,
+                                          DT_GF_BLENDING_LINEAR, 1.0f,
+                                          0.0f, exp2f(-14.0f), 4.0f);
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(exp_estimate, num_elem) \
+schedule(simd:static) aligned(exp_estimate:64)
+#endif
+    for(size_t k = 0; k < num_elem; k++)
+    {
+      exp_estimate[k] = 1.0f / (MAX(exp_estimate[k], 0.00390625f) * 256.f);
+    }
+
+    dt_gaussian_t *g = dt_gaussian_init(width, height, 1, max, min, sigma_blur, 0);
     if(!g) goto clean;
     dt_gaussian_blur(g, image, blur);
     dt_gaussian_free(g);
@@ -912,7 +936,7 @@ schedule(simd:static) aligned(image, variance, blur, exp_estimate:64)
 #endif
     for(size_t k = 0; k < num_elem; k++)
     {
-      float a = variance[k] / (variance[k] + feathering * exp_estimate[k] * exp_estimate[k] + 1E-6);
+      float a = variance[k] / (variance[k] + 100.0f * feathering * exp_estimate[k] * exp_estimate[k] + 1E-6);
       image[k] = a * image[k] + (1.0f - a) * blur[k];
     }
   }
@@ -922,6 +946,7 @@ clean:
   if(!blur) dt_free_align(blur);
   if(!pixel_deviation) dt_free_align(pixel_deviation);
   if(!variance) dt_free_align(variance);
+  if(!image_log) dt_free_align(image_log);
 }
 
 __DT_CLONE_TARGETS__
