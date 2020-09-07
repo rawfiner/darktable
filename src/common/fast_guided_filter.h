@@ -488,7 +488,8 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
       const float pixel = fmaxf(guide[i * width + j], 0.00390625f);
       const float normalized_varg = varg / (pixel * pixel);
       const float epsilon = 1.f;
-      const float alpha = 4.0f;//MAX(log10f(feathering), 0.0f);
+      //const float alpha = 4.0f;//MAX(log10f(feathering)+, 0.0f);
+      const float alpha = MAX(1.0f - log10f(feathering), 0.0f);
       const float w = (epsilon + powf(normalized_varg, alpha)) / epsilon;
       const float a = w * normalized_varg / (normalized_varg + feathering);
       const size_t index = (i * width + j) * 2;
