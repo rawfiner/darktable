@@ -24,6 +24,7 @@
 #include <time.h>
 
 #include "common/darktable.h"
+#include "common/gaussian.h"
 
 /** Note :
  * we use finite-math-only and fast-math because divisions by zero are manually avoided in the code
@@ -376,149 +377,125 @@ static inline void box_average(float *const restrict in,
   if(temp != NULL) dt_free_align(temp);
 }
 
+// adapatation of Anisotropic Guided Filtering
+// from Carlo Noel Ochotorena and Yukihiko Yamashita
+// the main changes are:
+// - use of gaussian blurs instead of box blurs (as proposed in their paper)
+// - normalization of variance by the pixel value squared to be exposure-independent
 static inline void anisotropic_guided_filter(const float *const restrict guide, // I
                                     const float *const restrict mask, //p
                                     float *const restrict ab,
                                     const size_t width, const size_t height,
-                                    const int radius, const float feathering)
+                                    const float sigma, const float feathering)
 {
-  // Compute a box average (filter) on a grey image over a window of size 2*radius + 1
-  // then get the variance of the guide and covariance with its mask
-  // output a and b, the linear blending params
-  // p, the mask is the quantised guide I
-
   // in AniGF, we actually only need the guiding image to compute "a"
 
   const size_t Ndim = width * height;
-  const size_t Ndimch = width * height * 4;
 
-  float *const restrict temp = dt_alloc_sse_ps(Ndimch); // array of structs { { mean_I, mean_p, corr_I, corr_Ip } }
-  float *const restrict guide_x_mask = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_guide = dt_alloc_sse_ps(Ndim);
+  // guide_squared_deviation = (guide - blurred_guide)^2
+  float *const restrict guide_squared_deviation = dt_alloc_sse_ps(Ndim);
+  // guide_variance = blur(guide_squared_deviation)
+  float *const restrict guide_variance = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_mask = dt_alloc_sse_ps(Ndim);
+  float *const restrict a = dt_alloc_sse_ps(Ndim);
+  float *const restrict b = dt_alloc_sse_ps(Ndim);
+  // weight to compute the weighted blur of a and b
   float *const restrict weights = dt_alloc_sse_ps(Ndim);
-  float *const restrict guide_x_guide = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_a = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_b = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_weights = dt_alloc_sse_ps(Ndim);
 
-  // Pre-multiply guide and mask
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(guide, mask, guide_x_mask, guide_x_guide, Ndim, radius) \
-  schedule(simd:static) aligned(guide, mask, guide_x_mask, guide_x_guide:64)
-#endif
-  for(size_t k = 0; k < Ndim; k++)
-  {
-    guide_x_mask[k] = guide[k] * mask[k];
-    guide_x_guide[k] = guide[k] * guide[k];
-  }
-
-  // Convolve box average along columns
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(guide, mask, temp, guide_x_mask, guide_x_guide, width, height, radius) \
-  schedule(simd:static) collapse(2)
-#endif
-  for(size_t i = 0; i < height; i++)
-  {
-    for(size_t j = 0; j < width; j++)
-    {
-      const size_t begin_convol = (i < radius) ? 0 : i - radius;
-      size_t end_convol = i + radius;
-      end_convol = (end_convol < height) ? end_convol : height - 1;
-      const float num_elem = 1.0f / ((float)end_convol - (float)begin_convol + 1.0f);
-      float tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
-
-#ifdef _OPENMP
-#pragma omp simd reduction(+:tmp) aligned(tmp:16) aligned(guide, mask, guide_x_mask, guide_x_guide:64)
-#endif
-      for(size_t c = begin_convol; c <= end_convol; c++)
-      {
-        const size_t index = c * width + j;
-        tmp[0] += guide[index];
-        tmp[1] += mask[index];
-        tmp[2] += guide_x_guide[index];
-        tmp[3] += guide_x_mask[index];
-      }
-
-      const size_t index = (i * width + j) * 4;
-
-#ifdef _OPENMP
-#pragma omp simd aligned(tmp:16) aligned(temp:64)
-#endif
-      for(size_t c = 0; c < 4; c++)
-        temp[index + c] = tmp[c] * num_elem;
-    }
-  }
-
-  if(guide_x_guide != NULL) dt_free_align(guide_x_guide);
-  if(guide_x_mask != NULL) dt_free_align(guide_x_mask);
-
-  // Convolve box average along rows and output result
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ab, mask, guide, weights, temp, width, height, radius, feathering) \
-  schedule(simd:static) collapse(2)
-#endif
-  for(size_t i = 0; i < height; i++)
-  {
-    for(size_t j = 0; j < width; j++)
-    {
-      const size_t begin_convol = (j < radius) ? 0 : j - radius;
-      size_t end_convol = j + radius;
-      end_convol = (end_convol < width) ? end_convol : width - 1;
-      const float num_elem = 1.0f / ((float)end_convol - (float)begin_convol + 1.0f);
-      float tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
-
-      for(size_t c = begin_convol; c <= end_convol; c++)
-      {
-        const size_t index = (i * width + c) * 4;
-#ifdef _OPENMP
-#pragma omp simd aligned(temp:64) aligned(tmp:16) reduction(+:tmp)
-#endif
-        for(size_t k = 0; k < 4; ++k)
-          tmp[k] += temp[index + k];
-      }
-
-#ifdef _OPENMP
-#pragma omp simd aligned(tmp:16) reduction(*:tmp)
-#endif
-      for(size_t c = 0; c < 4; c++)
-        tmp[c] *= num_elem;
-
-      // tmp[0] : guide
-      // tmp[2] : guide^2
-      const float varg = (tmp[2] - tmp[0] * tmp[0]);
-      const float pixel = fmaxf(guide[i * width + j], 0.00390625f);
-      const float normalized_varg = varg / (pixel * pixel);
-      const float epsilon = 1.f;
-      //const float alpha = 4.0f;//MAX(log10f(feathering)+, 0.0f);
-      const float alpha = MAX(1.0f - log10f(feathering), 0.0f);
-      const float w = (epsilon + powf(normalized_varg, alpha)) / epsilon;
-      const float a = w * normalized_varg / (normalized_varg + feathering);
-      const size_t index = (i * width + j) * 2;
-      const float b = w * tmp[1] - a * tmp[0];
-      const float ab_temp[2] DT_ALIGNED_PIXEL = { a, b };
-      weights[i * width + j] = w;
-#ifdef _OPENMP
-#pragma omp simd aligned(ab_temp:16) aligned(ab:64)
-#endif
-      for(size_t c = 0; c < 2; c++)
-        ab[index + c] = ab_temp[c];
-    }
-  }
-  box_average(ab, width, height, 2, radius);
-  box_average(weights, width, height, 1, radius);
+  const float min = 0.0f;
+  const float max = 1.0f;
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max, &min, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, guide, blurred_guide);
+  dt_gaussian_blur(g, mask, blurred_mask);
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(weights, ab, Ndim) \
-schedule(simd:static) aligned(weights, ab:64)
+  dt_omp_firstprivate(guide, blurred_guide, guide_squared_deviation, Ndim) \
+  schedule(simd:static) aligned(guide, blurred_guide, guide_squared_deviation:64)
 #endif
   for(size_t k = 0; k < Ndim; k++)
   {
-    ab[k * 2] /= weights[k];
-    ab[k * 2 + 1] /= weights[k];
+    const float deviation = guide[k] - blurred_guide[k];
+    guide_squared_deviation[k] = deviation * deviation;
   }
-  printf("feather: %f\n", feathering);
-  printf("alpha: %f\n", MAX(log10f(feathering), 0.0f));
-  if(temp != NULL) dt_free_align(temp);
+  dt_gaussian_blur(g, guide_squared_deviation, guide_variance);
+  dt_gaussian_free(g);
+
+  float mina = 10000000.0f;
+  float minb = 10000000.0f;
+  float minw = 10000000.0f;
+  float maxa = 0.0f;
+  float maxb = 0.0f;
+  float maxw = 0.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(guide, blurred_guide, guide_variance, blurred_mask, a, b, weights, Ndim, feathering) \
+  schedule(simd:static) aligned(guide, blurred_guide, guide_variance, blurred_mask, a, b, weights:64) \
+  reduction(max:maxa, maxb, maxw)\
+  reduction(min:mina, minb, minw)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    // we consider any pixel bellow -8EV as -8EV
+    // for variance compensation
+    const float lower_bound = 0.00390625f;
+    const float pixel = fmaxf(guide[k], lower_bound);
+    const float normalized_var_guide = guide_variance[k] / (pixel * pixel);
+    // empirical value
+    const float epsilon = 1.f;
+    // empirical value
+    const float alpha = MIN(MAX(1.0f - log10f(feathering), 0.0f), 2.0f);
+    const float w = (epsilon + powf(normalized_var_guide, alpha)) / epsilon;
+    a[k] = w * normalized_var_guide / (normalized_var_guide + feathering);
+    b[k] = w * blurred_mask[k] - a[k] * blurred_guide[k];
+    weights[k] = w;
+    if(a[k] < mina) mina = a[k];
+    if(b[k] < minb) minb = b[k];
+    if(w < minw) minw = w;
+    if(a[k] > maxa) maxa = a[k];
+    if(b[k] > maxb) maxb = b[k];
+    if(w > maxw) maxw = w;
+  }
+  g = dt_gaussian_init(width, height, 1, &maxa, &mina, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, a, blurred_a);
+  dt_gaussian_free(g);
+  g = dt_gaussian_init(width, height, 1, &maxb, &minb, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, b, blurred_b);
+  dt_gaussian_free(g);
+  g = dt_gaussian_init(width, height, 1, &maxw, &minw, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, weights, blurred_weights);
+  dt_gaussian_free(g);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(ab, blurred_a, blurred_b, blurred_weights, Ndim) \
+  schedule(simd:static) aligned(ab, blurred_a, blurred_b, blurred_weights:64)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float normalize = blurred_weights[k];
+    ab[2 * k] = blurred_a[k] / normalize;
+    ab[2 * k + 1] = blurred_b[k] / normalize;
+  }
+
+  dt_free_align(blurred_guide);
+  dt_free_align(guide_squared_deviation);
+  dt_free_align(guide_variance);
+  dt_free_align(blurred_mask);
+  dt_free_align(a);
+  dt_free_align(b);
+  dt_free_align(weights);
+  dt_free_align(blurred_a);
+  dt_free_align(blurred_b);
+  dt_free_align(blurred_weights);
 }
 
 
@@ -615,9 +592,8 @@ static inline void fast_surface_blur(float *const restrict image,
   // A down-scaling of 4 seems empirically safe and consistent no matter the image zoom level
   // see reference paper above for proof.
   const float scaling = 4.0f;
-  printf("radius %d\n", radius);
   int ds_radius = (radius < 4) ? 1 : radius / scaling;
-  printf("ds_radius %d\n", ds_radius);
+  float ds_sigma = fmaxf((float)radius / scaling, 1);
 
   const size_t ds_height = height / scaling;
   const size_t ds_width = width / scaling;
@@ -652,7 +628,7 @@ static inline void fast_surface_blur(float *const restrict image,
       // 'Anisotropic Guided Filtering'
       // by Carlo Noel Ochotorena and Yukihiko Yamashita
       // adapted to be exposure invariant
-      anisotropic_guided_filter(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_radius,  feathering);
+      anisotropic_guided_filter(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_sigma, feathering);
     }
     else
     {
