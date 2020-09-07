@@ -376,6 +376,150 @@ static inline void box_average(float *const restrict in,
   if(temp != NULL) dt_free_align(temp);
 }
 
+static inline void anisotropic_guided_filter(const float *const restrict guide, // I
+                                    const float *const restrict mask, //p
+                                    float *const restrict ab,
+                                    const size_t width, const size_t height,
+                                    const int radius, const float feathering)
+{
+  // Compute a box average (filter) on a grey image over a window of size 2*radius + 1
+  // then get the variance of the guide and covariance with its mask
+  // output a and b, the linear blending params
+  // p, the mask is the quantised guide I
+
+  // in AniGF, we actually only need the guiding image to compute "a"
+
+  const size_t Ndim = width * height;
+  const size_t Ndimch = width * height * 4;
+
+  float *const restrict temp = dt_alloc_sse_ps(Ndimch); // array of structs { { mean_I, mean_p, corr_I, corr_Ip } }
+  float *const restrict guide_x_mask = dt_alloc_sse_ps(Ndim);
+  float *const restrict weights = dt_alloc_sse_ps(Ndim);
+  float *const restrict guide_x_guide = dt_alloc_sse_ps(Ndim);
+
+  // Pre-multiply guide and mask
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(guide, mask, guide_x_mask, guide_x_guide, Ndim, radius) \
+  schedule(simd:static) aligned(guide, mask, guide_x_mask, guide_x_guide:64)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    guide_x_mask[k] = guide[k] * mask[k];
+    guide_x_guide[k] = guide[k] * guide[k];
+  }
+
+  // Convolve box average along columns
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(guide, mask, temp, guide_x_mask, guide_x_guide, width, height, radius) \
+  schedule(simd:static) collapse(2)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (i < radius) ? 0 : i - radius;
+      size_t end_convol = i + radius;
+      end_convol = (end_convol < height) ? end_convol : height - 1;
+      const float num_elem = 1.0f / ((float)end_convol - (float)begin_convol + 1.0f);
+      float tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
+
+#ifdef _OPENMP
+#pragma omp simd reduction(+:tmp) aligned(tmp:16) aligned(guide, mask, guide_x_mask, guide_x_guide:64)
+#endif
+      for(size_t c = begin_convol; c <= end_convol; c++)
+      {
+        const size_t index = c * width + j;
+        tmp[0] += guide[index];
+        tmp[1] += mask[index];
+        tmp[2] += guide_x_guide[index];
+        tmp[3] += guide_x_mask[index];
+      }
+
+      const size_t index = (i * width + j) * 4;
+
+#ifdef _OPENMP
+#pragma omp simd aligned(tmp:16) aligned(temp:64)
+#endif
+      for(size_t c = 0; c < 4; c++)
+        temp[index + c] = tmp[c] * num_elem;
+    }
+  }
+
+  if(guide_x_guide != NULL) dt_free_align(guide_x_guide);
+  if(guide_x_mask != NULL) dt_free_align(guide_x_mask);
+
+  // Convolve box average along rows and output result
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(ab, mask, guide, weights, temp, width, height, radius, feathering) \
+  schedule(simd:static) collapse(2)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t begin_convol = (j < radius) ? 0 : j - radius;
+      size_t end_convol = j + radius;
+      end_convol = (end_convol < width) ? end_convol : width - 1;
+      const float num_elem = 1.0f / ((float)end_convol - (float)begin_convol + 1.0f);
+      float tmp[4] DT_ALIGNED_PIXEL = { 0.0f }; // = { w_mean_I, w_mean_p, w_corr_I, w_corr_Ip }
+
+      for(size_t c = begin_convol; c <= end_convol; c++)
+      {
+        const size_t index = (i * width + c) * 4;
+#ifdef _OPENMP
+#pragma omp simd aligned(temp:64) aligned(tmp:16) reduction(+:tmp)
+#endif
+        for(size_t k = 0; k < 4; ++k)
+          tmp[k] += temp[index + k];
+      }
+
+#ifdef _OPENMP
+#pragma omp simd aligned(tmp:16) reduction(*:tmp)
+#endif
+      for(size_t c = 0; c < 4; c++)
+        tmp[c] *= num_elem;
+
+      // tmp[0] : guide
+      // tmp[2] : guide^2
+      const float varg = (tmp[2] - tmp[0] * tmp[0]);
+      const float pixel = fmaxf(guide[i * width + j], 0.00390625f);
+      const float normalized_varg = varg / (pixel * pixel);
+      const float epsilon = 1.f;
+      const float alpha = 4.0f;//MAX(log10f(feathering), 0.0f);
+      const float w = (epsilon + powf(normalized_varg, alpha)) / epsilon;
+      const float a = w * normalized_varg / (normalized_varg + feathering);
+      const size_t index = (i * width + j) * 2;
+      const float b = w * tmp[1] - a * tmp[0];
+      const float ab_temp[2] DT_ALIGNED_PIXEL = { a, b };
+      weights[i * width + j] = w;
+#ifdef _OPENMP
+#pragma omp simd aligned(ab_temp:16) aligned(ab:64)
+#endif
+      for(size_t c = 0; c < 2; c++)
+        ab[index + c] = ab_temp[c];
+    }
+  }
+  box_average(ab, width, height, 2, radius);
+  box_average(weights, width, height, 1, radius);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(weights, ab, Ndim) \
+schedule(simd:static) aligned(weights, ab:64)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    ab[k * 2] /= weights[k];
+    ab[k * 2 + 1] /= weights[k];
+  }
+  printf("feather: %f\n", feathering);
+  printf("alpha: %f\n", MAX(log10f(feathering), 0.0f));
+  if(temp != NULL) dt_free_align(temp);
+}
+
 
 __DT_CLONE_TARGETS__
 static inline void apply_linear_blending(float *const restrict image,
@@ -470,7 +614,9 @@ static inline void fast_surface_blur(float *const restrict image,
   // A down-scaling of 4 seems empirically safe and consistent no matter the image zoom level
   // see reference paper above for proof.
   const float scaling = 4.0f;
+  printf("radius %d\n", radius);
   int ds_radius = (radius < 4) ? 1 : radius / scaling;
+  printf("ds_radius %d\n", ds_radius);
 
   const size_t ds_height = height / scaling;
   const size_t ds_width = width / scaling;
@@ -489,6 +635,7 @@ static inline void fast_surface_blur(float *const restrict image,
     goto clean;
   }
 
+  gboolean aniGF = TRUE;
   // Downsample the image for speed-up
   interpolate_bilinear(image, width, height, ds_image, ds_width, ds_height, 1);
 
@@ -498,12 +645,25 @@ static inline void fast_surface_blur(float *const restrict image,
     // (Re)build the mask from the quantized image to help guiding
     quantize(ds_image, ds_mask, ds_width * ds_height, quantization, quantize_min, quantize_max);
 
-    // Perform the patch-wise variance analyse to get
-    // the a and b parameters for the linear blending s.t. mask = a * I + b
-    variance_analyse(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_radius, feathering);
+    if(aniGF)
+    {
+      // anisotropic guided filter from:
+      // 'Anisotropic Guided Filtering'
+      // by Carlo Noel Ochotorena and Yukihiko Yamashita
+      // adapted to be exposure invariant
+      anisotropic_guided_filter(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_radius,  feathering);
+    }
+    else
+    {
+      //"classic" guided filter
 
-    // Compute the patch-wise average of parameters a and b
-    box_average(ds_ab, ds_width, ds_height, 2, ds_radius);
+      // Perform the patch-wise variance analyse to get
+      // the a and b parameters for the linear blending s.t. mask = a * I + b
+      variance_analyse(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_radius,  feathering);
+
+      // Compute the patch-wise average of parameters a and b
+      box_average(ds_ab, ds_width, ds_height, 2, ds_radius);
+    }
 
     if(i != iterations - 1)
     {

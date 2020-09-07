@@ -857,7 +857,6 @@ static void eigf(float *const restrict image,
                   const int radius, const float feathering,
                   const float exp_sigma, const int iterations)
 {
-  return;
   int rad = 3;
   while(rad < radius)
   {
@@ -875,6 +874,7 @@ static void eigf(float *const restrict image,
   float *const restrict pixel_deviation = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict variance = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict image_log = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict all_a = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
 
   const float min[] = {MIN_VALUE};
   const float max[] = {MAX_VALUE};
@@ -883,9 +883,8 @@ static void eigf(float *const restrict image,
   for(int i = 0; i < iterations; i++)
   {
     const float sigma_blur = radius * (1.0f + i * sqrt(2));
+#if 0
 
-    // for exp_estimate, we do the gaussian blur in log space, and convert
-    // back (much better details preservation -> allows wider radius)
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
 dt_omp_firstprivate(image, exp_estimate, num_elem) \
@@ -906,6 +905,17 @@ schedule(simd:static) aligned(exp_estimate:64)
     for(size_t k = 0; k < num_elem; k++)
     {
       exp_estimate[k] = 1.0f / (MAX(exp_estimate[k], 0.00390625f) * 256.f);
+    }
+#endif
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, exp_estimate, num_elem) \
+schedule(simd:static) aligned(image,exp_estimate:64)
+#endif
+    for(size_t k = 0; k < num_elem; k++)
+    {
+      exp_estimate[k] = image[k];
     }
 
     dt_gaussian_t *g = dt_gaussian_init(width, height, 1, max, min, sigma_blur, 0);
@@ -932,14 +942,31 @@ schedule(simd:static) aligned(image, blur, pixel_deviation:64)
     // compute the exposure-independent guided filter
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(image, variance, blur, exp_estimate, feathering, num_elem) \
-schedule(simd:static) aligned(image, variance, blur, exp_estimate:64)
+dt_omp_firstprivate(all_a, variance, blur, exp_estimate, feathering, num_elem) \
+schedule(simd:static) aligned(all_a, variance, blur, exp_estimate:64)
 #endif
     for(size_t k = 0; k < num_elem; k++)
     {
       float a = variance[k] / (variance[k] + 100.0f * feathering * exp_estimate[k] * exp_estimate[k] + 1E-6);
+      all_a[k] = a;
+      //image[k] = a * image[k] + (1.0f - a) * blur[k];
+    }
+    g = dt_gaussian_init(width, height, 1, max, min, sigma_blur, 0);
+    if(!g) goto clean;
+    dt_gaussian_blur(g, all_a, variance);
+    dt_gaussian_free(g);
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, blur, variance, num_elem) \
+schedule(simd:static) aligned(variance, image, blur:64)
+#endif
+    for(size_t k = 0; k < num_elem; k++)
+    {
+      float a = variance[k];
       image[k] = a * image[k] + (1.0f - a) * blur[k];
     }
+
+
   }
 
 clean:
@@ -984,7 +1011,11 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
+      fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
+                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      return;
 
+      // test with 2 surface blurs with I and 1/I
       const size_t num_elem = width * height;
       float *const restrict luminance_blurred = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
       float *const restrict luminance_inverse = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
@@ -1011,21 +1042,21 @@ schedule(simd:static) aligned(luminance_inverse:64)
       {
         luminance_inverse[k] = 1.0f / (MAX(luminance_inverse[k], 0.00390625f) * 256.f);
       }
-      const float w = d->quantization / 2.0f;
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(w, luminance, luminance_inverse, luminance_blurred, num_elem) \
+dt_omp_firstprivate(luminance, luminance_inverse, luminance_blurred, num_elem) \
 schedule(simd:static) aligned(luminance, luminance_inverse, luminance_blurred:64)
 #endif
       for(size_t k = 0; k < num_elem; k++)
       {
+        float logl = MIN(MAX(logf(luminance[k] + 1E-6), -8.0f), 0.0f);
+        float distlb = fabs(logl - 0.0f);
+        float distli = fabs(logl + 8.0f);
+        float w = distli / (distli + distlb + 1E-6);
         luminance[k] = w * luminance_blurred[k] + (1-w) * luminance_inverse[k];
       }
 
-      //TODO add iterations
       eigf(luminance, width, height, d->radius, d->feathering, powf(2.0, (d->quantization - 1.0f) * 5.0f), d->iterations);
-      //fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
-      //              DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
       break;
     }
 
