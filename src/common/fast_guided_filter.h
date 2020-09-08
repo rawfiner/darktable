@@ -407,7 +407,7 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
   float *const restrict blurred_weights = dt_alloc_sse_ps(Ndim);
 
   const float min = 0.0f;
-  const float max = 1.0f;
+  const float max = 8.0f;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max, &min, sigma, 0);
   if(!g) return;
   dt_gaussian_blur(g, guide, blurred_guide);
@@ -449,7 +449,7 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
     // empirical value
     const float epsilon = 1.f;
     // empirical value
-    const float alpha = MIN(MAX(1.0f - log10f(feathering), 0.0f), 2.0f);
+    const float alpha = 2.0f;
     const float w = (epsilon + powf(normalized_var_guide, alpha)) / epsilon;
     a[k] = w * normalized_var_guide / (normalized_var_guide + feathering);
     b[k] = w * blurred_mask[k] - a[k] * blurred_guide[k];
@@ -579,6 +579,116 @@ schedule(simd:static) aligned(image, out:64)
   }
 }
 
+static inline size_t get_dimension_for_min_max_downscaling(size_t dimension, size_t radius)
+{
+  if(radius <= 2)
+    return dimension;
+  return 2 * (size_t)((float)dimension / (float)radius);
+}
+
+// downscaling based on the preservation of local minimum and maximum
+static inline void downscaling_with_min_max_heuristic(float *const restrict image, const size_t width, const size_t height, float *const restrict ds_image, size_t ds_width, size_t ds_height, size_t radius)
+{
+  if(radius <= 2)
+  {
+    memcpy(ds_image, image, width * height);
+    return;
+  }
+  float *const restrict ds_horiz = dt_alloc_sse_ps(dt_round_size_sse(ds_width * height));
+  // downscale in 2 phase:
+  // horizontal downscaling, then vertical downscaling
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(image, ds_horiz, width, height, ds_width, radius) \
+  schedule(simd:static) aligned(image, ds_horiz:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    size_t jdest = 0;
+    for(size_t j = 0; j < width-radius; j+=radius)
+    {
+      size_t index = i * width + j;
+      float min = image[index];
+      float max = image[index];
+      float index_min = index;
+      float index_max = index;
+      for(size_t jj = 1; jj < radius; jj++)
+      {
+        size_t index_jj = index + jj;
+        float current_pixel = image[index_jj];
+        if(current_pixel < min)
+        {
+          min = current_pixel;
+          index_min = index_jj;
+        }
+        if(current_pixel > max)
+        {
+          max = current_pixel;
+          index_max = index_jj;
+        }
+      }
+      // keep the order of min and max in the image
+      if(index_min < index_max)
+      {
+        ds_horiz[i * ds_width + jdest] = min;
+        ds_horiz[i * ds_width + jdest + 1] = max;
+      }
+      else
+      {
+        ds_horiz[i * ds_width + jdest] = max;
+        ds_horiz[i * ds_width + jdest + 1] = min;
+      }
+      jdest += 2;
+    }
+  }
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(ds_horiz, ds_image, ds_width, height, ds_height, radius) \
+  schedule(simd:static) aligned(ds_horiz, ds_image:64)
+#endif
+  for(size_t j = 0; j < ds_width; j++)
+  {
+    size_t idest = 0;
+    for(size_t i = 0; i < height-radius; i+=radius)
+    {
+      size_t index = i * ds_width + j;
+      float min = ds_horiz[index];
+      float max = ds_horiz[index];
+      float index_min = index;
+      float index_max = index;
+      for(size_t ii = 1; ii < radius; ii++)
+      {
+        size_t index_ii = index + ii * ds_width;
+        float current_pixel = ds_horiz[index_ii];
+        if(current_pixel < min)
+        {
+          min = current_pixel;
+          index_min = index_ii;
+        }
+        if(current_pixel > max)
+        {
+          max = current_pixel;
+          index_max = index_ii;
+        }
+      }
+      // keep the order of min and max in the ds_horiz
+      if(index_min < index_max)
+      {
+        ds_image[idest * ds_width + j] = min;
+        ds_image[(idest + 1) * ds_width + j] = max;
+      }
+      else
+      {
+        ds_image[idest * ds_width + j] = max;
+        ds_image[(idest + 1) * ds_width + j] = min;
+      }
+      idest += 2;
+    }
+  }
+  dt_free_align(ds_horiz);
+}
+
+
 
 __DT_CLONE_TARGETS__
 static inline void fast_surface_blur(float *const restrict image,
@@ -595,8 +705,9 @@ static inline void fast_surface_blur(float *const restrict image,
   int ds_radius = (radius < 4) ? 1 : radius / scaling;
   float ds_sigma = fmaxf((float)radius / scaling, 1);
 
-  const size_t ds_height = height / scaling;
-  const size_t ds_width = width / scaling;
+  const size_t radius_downscaling = 2 * (size_t)scaling;
+  const size_t ds_height = get_dimension_for_min_max_downscaling(height, radius_downscaling);
+  const size_t ds_width = get_dimension_for_min_max_downscaling(width, radius_downscaling);
 
   const size_t num_elem_ds = ds_width * ds_height;
   const size_t num_elem = width * height;
@@ -615,6 +726,11 @@ static inline void fast_surface_blur(float *const restrict image,
   gboolean aniGF = TRUE;
   // Downsample the image for speed-up
   interpolate_bilinear(image, width, height, ds_image, ds_width, ds_height, 1);
+
+  if(aniGF)
+  {
+    downscaling_with_min_max_heuristic(image, width, height, ds_image, ds_width, ds_height, radius_downscaling);
+  }
 
   // Iterations of filter models the diffusion, sort of
   for(int i = 0; i < iterations; ++i)
