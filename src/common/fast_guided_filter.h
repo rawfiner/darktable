@@ -583,7 +583,7 @@ static inline size_t get_dimension_for_min_max_downscaling(size_t dimension, siz
 {
   if(radius <= 2)
     return dimension;
-  return 2 * (size_t)((float)dimension / (float)radius);
+  return 2 * (size_t)((float)dimension / (float)radius + 1);
 }
 
 // downscaling based on the preservation of local minimum and maximum
@@ -605,14 +605,15 @@ static inline void downscaling_with_min_max_heuristic(float *const restrict imag
   for(size_t i = 0; i < height; i++)
   {
     size_t jdest = 0;
-    for(size_t j = 0; j < width-radius; j+=radius)
+    for(size_t j = 0; j < width; j+=radius)
     {
       size_t index = i * width + j;
       float min = image[index];
       float max = image[index];
       float index_min = index;
       float index_max = index;
-      for(size_t jj = 1; jj < radius; jj++)
+      const size_t last = MIN(radius, width - 1 - j);
+      for(size_t jj = 1; jj < last; jj++)
       {
         size_t index_jj = index + jj;
         float current_pixel = image[index_jj];
@@ -649,14 +650,15 @@ static inline void downscaling_with_min_max_heuristic(float *const restrict imag
   for(size_t j = 0; j < ds_width; j++)
   {
     size_t idest = 0;
-    for(size_t i = 0; i < height-radius; i+=radius)
+    for(size_t i = 0; i < height; i+=radius)
     {
       size_t index = i * ds_width + j;
       float min = ds_horiz[index];
       float max = ds_horiz[index];
       float index_min = index;
       float index_max = index;
-      for(size_t ii = 1; ii < radius; ii++)
+      const size_t last = MIN(radius, height - 1 - i);
+      for(size_t ii = 1; ii < last; ii++)
       {
         size_t index_ii = index + ii * ds_width;
         float current_pixel = ds_horiz[index_ii];
