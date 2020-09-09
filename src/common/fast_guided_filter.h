@@ -583,97 +583,15 @@ static inline size_t get_dimension_for_min_max_downscaling(size_t dimension, siz
 {
   if(radius <= 2)
     return dimension;
-  return 2 * (size_t)((float)dimension / (float)radius + 1);
-}
-
-// upsampling that uses the coefs stored during downsampling
-// expects a 2 channels image (ab)
-static inline void interpolate_ab_from_min_max(float *const restrict ds_ab, size_t ds_width, size_t ds_height, float *const restrict ab, size_t width, size_t height, size_t radius, float *const restrict coefs_step_h, float *const restrict coefs_step_v)
-{
-  const size_t ch = 2;
-  // we redo the process done during minmax downsampling backward
-  if(radius <= 2)
-  {
-    memcpy(ab, ds_ab, width * height * ch);
-    return;
-  }
-  float *const restrict ds_ab_horiz = dt_alloc_sse_ps(dt_round_size_sse(ds_width * height));
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(ds_ab_horiz, ds_ab, ds_width, height, ds_height, radius, coefs_step_v, ch) \
-  schedule(simd:static) aligned(ds_ab_horiz, ds_ab, coefs_step_v:64)
-#endif
-  for(size_t j = 0; j < ds_width; j++)
-  {
-    size_t idest = 0;
-    for(size_t i = 0; i < height; i+=radius)
-    {
-      size_t index = i * ds_width + j;
-      float min_a = ds_ab[(idest * ds_width + j) * ch];
-      float max_a = ds_ab[((idest + 1) * ds_width + j) * ch];
-      float min_b = ds_ab[(idest * ds_width + j) * ch + 1];
-      float max_b = ds_ab[((idest + 1) * ds_width + j) * ch + 1];
-      if(max_b < min_b)
-      {
-        float tmp = min_b;
-        min_b = max_b;
-        max_b = tmp;
-        tmp = min_a;
-        min_a = max_a;
-        max_a = tmp;
-      }
-      const size_t last = MIN(radius, height - 1 - i);
-      for(size_t ii = 0; ii < last; ii++)
-      {
-        size_t index_ii = index + ii * ds_width;
-        float coef = coefs_step_v[index_ii];
-        ds_ab_horiz[index_ii * ch] = coef * max_a + (1.0f - coef) * min_a;
-        ds_ab_horiz[index_ii * ch + 1] = coef * max_b + (1.0f - coef) * min_b;
-      }
-      idest += 2;
-    }
-  }
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(ds_ab_horiz, ab, width, height, ds_width, radius, coefs_step_h, ch) \
-  schedule(simd:static) aligned(ds_ab_horiz, ab, coefs_step_h:64)
-#endif
-  for(size_t i = 0; i < height; i++)
-  {
-    size_t jdest = 0;
-    for(size_t j = 0; j < width; j+=radius)
-    {
-      size_t index = i * width + j;
-      float min_a = ds_ab_horiz[(i * ds_width + jdest) * ch];
-      float max_a = ds_ab_horiz[((i + 1) * ds_width + jdest) * ch];
-      float min_b = ds_ab_horiz[(i * ds_width + jdest) * ch + 1];
-      float max_b = ds_ab_horiz[((i + 1) * ds_width + jdest) * ch + 1];
-      if(max_b < min_b)
-      {
-        float tmp = min_b;
-        min_b = max_b;
-        max_b = tmp;
-        tmp = min_a;
-        min_a = max_a;
-        max_a = tmp;
-      }
-      const size_t last = MIN(radius, width - 1 - j);
-      for(size_t jj = 0; jj < last; jj++)
-      {
-        size_t index_jj = index + jj;
-        float coef = coefs_step_h[index_jj];
-        ab[index_jj * ch] = coef * max_a + (1.0f - coef) * min_a;
-        ab[index_jj * ch + 1] = coef * max_b + (1.0f - coef) * min_b;
-      }
-      jdest += 2;
-    }
-  }
-  dt_free_align(ds_ab_horiz);
+  if(dimension % radius == 0)
+    return 2 * (size_t)((float)dimension / (float)radius);
+  else
+    return 2 * (size_t)((float)dimension / (float)radius + 1);
 }
 
 // downscaling based on the preservation of local minimum and maximum
 // coefs allow to reconstruct the image from the downsampled image
-static inline void downscaling_with_min_max_heuristic(float *const restrict image, const size_t width, const size_t height, float *const restrict ds_image, size_t ds_width, size_t ds_height, size_t radius, float *const restrict coefs_step_h, float *const restrict coefs_step_v)
+static inline void downscaling_with_min_max_heuristic(float *const restrict image, const size_t width, const size_t height, float *const restrict ds_image, size_t ds_width, size_t ds_height, size_t radius)
 {
   if(radius <= 2)
   {
@@ -685,8 +603,8 @@ static inline void downscaling_with_min_max_heuristic(float *const restrict imag
   // horizontal downscaling, then vertical downscaling
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, ds_horiz, width, height, ds_width, radius, coefs_step_h) \
-  schedule(simd:static) aligned(image, ds_horiz, coefs_step_h:64)
+  dt_omp_firstprivate(image, ds_horiz, width, height, ds_width, radius) \
+  schedule(simd:static) aligned(image, ds_horiz:64)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -725,21 +643,13 @@ static inline void downscaling_with_min_max_heuristic(float *const restrict imag
         ds_horiz[i * ds_width + jdest] = max;
         ds_horiz[i * ds_width + jdest + 1] = min;
       }
-      for(size_t jj = 0; jj < last; jj++)
-      {
-        size_t index_jj = index + jj;
-        float current_pixel = image[index_jj];
-        float a = (current_pixel - min) / MAX(max - min, 1E-6);
-        coefs_step_h[index_jj] = a;
-        // current_pixel can be reconstructed perfectly from min max and a
-      }
       jdest += 2;
     }
   }
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(ds_horiz, ds_image, ds_width, height, ds_height, radius, coefs_step_v) \
-  schedule(simd:static) aligned(ds_horiz, ds_image, coefs_step_v:64)
+  dt_omp_firstprivate(ds_horiz, ds_image, ds_width, height, ds_height, radius) \
+  schedule(simd:static) aligned(ds_horiz, ds_image:64)
 #endif
   for(size_t j = 0; j < ds_width; j++)
   {
@@ -778,14 +688,6 @@ static inline void downscaling_with_min_max_heuristic(float *const restrict imag
         ds_image[idest * ds_width + j] = max;
         ds_image[(idest + 1) * ds_width + j] = min;
       }
-      for(size_t ii = 0; ii < last; ii++)
-      {
-        size_t index_ii = index + ii * ds_width;
-        float current_pixel = ds_horiz[index_ii];
-        float a = (current_pixel - min) / MAX(max - min, 1E-6);
-        coefs_step_v[index_ii] = a;
-        // current_pixel can be reconstructed perfectly from min max and a
-      }
       idest += 2;
     }
   }
@@ -810,12 +712,14 @@ static inline void fast_surface_blur(float *const restrict image,
   float ds_sigma = fmaxf((float)radius / scaling, 1);
 
   const size_t radius_downscaling = 2 * (size_t)scaling;
+  printf("radius: %ld\n", radius_downscaling);
   const size_t ds_height = get_dimension_for_min_max_downscaling(height, radius_downscaling);
   const size_t ds_width = get_dimension_for_min_max_downscaling(width, radius_downscaling);
 
   const size_t num_elem_ds = ds_width * ds_height;
   const size_t num_elem = width * height;
 
+  float *const restrict image_8 = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
   float *const restrict ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
@@ -831,11 +735,13 @@ static inline void fast_surface_blur(float *const restrict image,
   // Downsample the image for speed-up
   interpolate_bilinear(image, width, height, ds_image, ds_width, ds_height, 1);
 
-  float *const restrict coefs_step_h = dt_alloc_sse_ps(dt_round_size_sse(width * height));
-  float *const restrict coefs_step_v = dt_alloc_sse_ps(dt_round_size_sse(ds_width * height));
   if(aniGF)
   {
-    downscaling_with_min_max_heuristic(image, width, height, ds_image, ds_width, ds_height, radius_downscaling, coefs_step_h, coefs_step_v);
+    size_t width_8 = (width / 8) * 8;
+    size_t height_8 = (height / 8) * 8;
+    printf("%ld, %ld, %ld, %ld\n", width, width_8, height, height_8);
+    interpolate_bilinear(image, width, height, image_8, width_8, height_8, 1);
+    downscaling_with_min_max_heuristic(image_8, width_8, height_8, ds_image, ds_width, ds_height, radius_downscaling);
   }
 
   // Iterations of filter models the diffusion, sort of
@@ -892,6 +798,5 @@ clean:
   if(ds_ab) dt_free_align(ds_ab);
   if(ds_mask) dt_free_align(ds_mask);
   if(ds_image) dt_free_align(ds_image);
-//  if(coefs_step_h) dt_free_align(coefs_step_h);
-//  if(coefs_step_v) dt_free_align(coefs_step_v);
+  if(image_8) dt_free_align(image_8);
 }
