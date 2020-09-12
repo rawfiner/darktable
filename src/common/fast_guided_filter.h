@@ -711,28 +711,29 @@ static void interpolate_a_from_min_max(const float *const restrict ds_ab, const 
 #endif
   for(size_t i = 0; i < height; i++)
   {
-    size_t ds_i = MIN((size_t)(i / radius_h), ds_height - 2);
+    size_t ds_i = MAX(MIN((size_t)(i / radius_h), ds_height - 2), 1) - 1;
     for(size_t j = 0; j < width; j++)
     {
-      size_t ds_j = MIN((size_t)(j / radius_w), ds_width - 2);
+      size_t ds_j = MAX(MIN((size_t)(j / radius_w), ds_width - 2), 1) - 1;
       const float current_pixel = fmaxf(image[i * width + j], 1E-6);
-      const float ds_pixel_1 = fmaxf(ds_image[ds_i * ds_width + ds_j], 1E-6);
-      const float ds_pixel_2 = fmaxf(ds_image[(ds_i + 1) * ds_width + ds_j], 1E-6);
-      const float ds_pixel_3 = fmaxf(ds_image[ds_i * ds_width + ds_j + 1], 1E-6);
-      const float ds_pixel_4 = fmaxf(ds_image[(ds_i + 1) * ds_width + ds_j + 1], 1E-6);
-      const float weight_1 = fminf(current_pixel / ds_pixel_1, ds_pixel_1 / current_pixel);
-      const float weight_2 = fminf(current_pixel / ds_pixel_2, ds_pixel_2 / current_pixel);
-      const float weight_3 = fminf(current_pixel / ds_pixel_3, ds_pixel_3 / current_pixel);
-      const float weight_4 = fminf(current_pixel / ds_pixel_4, ds_pixel_4 / current_pixel);
-      const float sum_weights = weight_1 + weight_2 + weight_3 + weight_4;
-      const float ds_a_1 = ds_ab[(ds_i * ds_width + ds_j) * 2];
-      const float ds_a_2 = ds_ab[((ds_i + 1) * ds_width + ds_j) * 2];
-      const float ds_a_3 = ds_ab[(ds_i * ds_width + ds_j + 1) * 2];
-      const float ds_a_4 = ds_ab[((ds_i + 1) * ds_width + ds_j + 1) * 2];
-      ab[(i * width + j) * 2] = (weight_1 * ds_a_1
-                              +  weight_2 * ds_a_2
-                              +  weight_3 * ds_a_3
-                              +  weight_4 * ds_a_4) / sum_weights;
+      float sum_weights = 0.f;
+      ab[(i * width + j) * 2] = 0.f;
+      //ab[(i * width + j) * 2 + 1] = 0.f;
+      for(size_t ds_ii = ds_i; ds_ii < ds_i + 3; ds_ii++)
+      {
+        for(size_t ds_jj = ds_j; ds_jj < ds_j + 3; ds_jj++)
+        {
+          const float ds_pixel = fmaxf(ds_image[ds_ii * ds_width + ds_jj], 1E-6);
+          const float weight = fminf(current_pixel / ds_pixel, ds_pixel / current_pixel);
+          sum_weights += weight;
+          const float ds_a = ds_ab[(ds_ii * ds_width + ds_jj) * 2];
+          ab[(i * width + j) * 2] += weight * ds_a;
+        //  const float ds_b = ds_ab[(ds_ii * ds_width + ds_jj) * 2 + 1];
+        //  ab[(i * width + j) * 2 + 1] += weight * ds_b;
+        }
+      }
+      ab[(i * width + j) * 2] /= sum_weights;
+      //ab[(i * width + j) * 2 + 1] /= sum_weights;
     }
   }
 }
