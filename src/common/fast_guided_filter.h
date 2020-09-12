@@ -445,11 +445,11 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
     // for variance compensation
     const float lower_bound = 0.00390625f;
     const float pixel = fmaxf(guide[k], lower_bound);
-    const float normalized_var_guide = guide_variance[k] / (pixel * pixel);
+    const float normalized_var_guide = guide_variance[k] / (pixel * blurred_guide[k]);
     // empirical value
     const float epsilon = 1.f;
     // empirical value
-    const float alpha = 2.0f;
+    const float alpha = 1.f;
     const float w = (epsilon + powf(normalized_var_guide, alpha)) / epsilon;
     a[k] = w * normalized_var_guide / (normalized_var_guide + feathering);
     b[k] = w * blurred_mask[k] - a[k] * blurred_guide[k];
@@ -694,7 +694,48 @@ static inline void downscaling_with_min_max_heuristic(float *const restrict imag
   dt_free_align(ds_horiz);
 }
 
-
+// function that interpolates "a" channel in a guided way using
+// the original image and the downsampled image
+static void interpolate_a_from_min_max(const float *const restrict ds_ab, const float *const restrict ds_image, const size_t ds_width, const size_t ds_height, float *const restrict ab, const float *const restrict image, const size_t width, const size_t height)
+{
+  // width / radius = ds_width / 2
+  const float radius_w = (float)width / (float)ds_width;
+  const float radius_h = (float)height / (float)ds_height;
+  // for each output pixel
+  // find the 4 pixels in the downscaled image that corresponds
+  // to the radius x radius block of pixel our pixel belongs to
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(image, ds_image, ab, ds_ab, ds_width, ds_height, width, height, radius_w, radius_h) \
+  schedule(simd:static) aligned(image, ds_image, ab, ds_ab:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    size_t ds_i = MIN((size_t)(i / radius_h), ds_height - 2);
+    for(size_t j = 0; j < width; j++)
+    {
+      size_t ds_j = MIN((size_t)(j / radius_w), ds_width - 2);
+      const float current_pixel = fmaxf(image[i * width + j], 1E-6);
+      const float ds_pixel_1 = fmaxf(ds_image[ds_i * ds_width + ds_j], 1E-6);
+      const float ds_pixel_2 = fmaxf(ds_image[(ds_i + 1) * ds_width + ds_j], 1E-6);
+      const float ds_pixel_3 = fmaxf(ds_image[ds_i * ds_width + ds_j + 1], 1E-6);
+      const float ds_pixel_4 = fmaxf(ds_image[(ds_i + 1) * ds_width + ds_j + 1], 1E-6);
+      const float weight_1 = fminf(current_pixel / ds_pixel_1, ds_pixel_1 / current_pixel);
+      const float weight_2 = fminf(current_pixel / ds_pixel_2, ds_pixel_2 / current_pixel);
+      const float weight_3 = fminf(current_pixel / ds_pixel_3, ds_pixel_3 / current_pixel);
+      const float weight_4 = fminf(current_pixel / ds_pixel_4, ds_pixel_4 / current_pixel);
+      const float sum_weights = weight_1 + weight_2 + weight_3 + weight_4;
+      const float ds_a_1 = ds_ab[(ds_i * ds_width + ds_j) * 2];
+      const float ds_a_2 = ds_ab[((ds_i + 1) * ds_width + ds_j) * 2];
+      const float ds_a_3 = ds_ab[(ds_i * ds_width + ds_j + 1) * 2];
+      const float ds_a_4 = ds_ab[((ds_i + 1) * ds_width + ds_j + 1) * 2];
+      ab[(i * width + j) * 2] = (weight_1 * ds_a_1
+                              +  weight_2 * ds_a_2
+                              +  weight_3 * ds_a_3
+                              +  weight_4 * ds_a_4) / sum_weights;
+    }
+  }
+}
 
 __DT_CLONE_TARGETS__
 static inline void fast_surface_blur(float *const restrict image,
@@ -777,15 +818,42 @@ static inline void fast_surface_blur(float *const restrict image,
     }
   }
 
-//  if(aniGF)
-//  {
-//    interpolate_ab_from_min_max(ds_ab, ds_width, ds_height, ab, width, height, radius_downscaling, coefs_step_h, coefs_step_v);
-//  }
-//  else
-//  {
-    // Upsample the blending parameters a and b
+  if(aniGF)
+  {
+    // for(int k = 0; k < height; k++)
+    //    for(int k2 = 0; k2 < width; k2++)
+    //      image[k * width + k2] = ds_ab[(MIN(k / 4, ds_height-1) * ds_width + MIN(k2 / 4, ds_width-1)) * 2];
+    //   return;
+
+    // WARNING: ds_image is not what we want if we have several iterations
     interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
-//  }
+    interpolate_a_from_min_max(ds_ab, ds_image, ds_width, ds_height, ab, image, width, height);
+    // normalize a
+    float max = 0.0f;
+    for(int k = 0; k < width * height; k++)
+      if(ab[2 * k] > max)
+        max = ab[2 * k];
+    printf("max: %f\n", 1.0f);
+
+    //for(int k = 0; k < width * height; k++)
+    //  ab[2 * k] /= max;
+    // copy a to output for debugging
+    //for(int k = 0; k < width * height; k++)
+    //  image[k] = ab[2 * k];
+    //return;
+    // for(int k = 0; k < height; k++)
+    //     for(int k2 = 0; k2 < width; k2++)
+    //       image[k * width + k2] = ds_image[MIN(k / 4, ds_height-1) * ds_width + MIN(k2 / 4, ds_width-1)];
+    // compute b from full size image (avoids artefacts due to bilin interpolation)
+
+    // copy b to ab
+  }
+  else
+  {
+    // Upsample the blending parameters a and b
+    //TODO do a new blur from full sized image for b.
+    interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
+  }
 
   // Finally, blend the guided image
   if(filter == DT_GF_BLENDING_LINEAR)
