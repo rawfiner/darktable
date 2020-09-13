@@ -445,7 +445,7 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
     // for variance compensation
     const float lower_bound = 0.00390625f;
     const float pixel = fmaxf(guide[k], lower_bound);
-    const float normalized_var_guide = guide_variance[k] / (pixel * blurred_guide[k]);
+    const float normalized_var_guide = guide_variance[k] / (pixel * pixel);
     // empirical value
     const float epsilon = 1.f;
     // empirical value
@@ -701,6 +701,8 @@ static void interpolate_a_from_min_max(const float *const restrict ds_ab, const 
   // width / radius = ds_width / 2
   const float radius_w = (float)width / (float)ds_width;
   const float radius_h = (float)height / (float)ds_height;
+  printf("rad : %f, %f\n", radius_w, radius_h);
+  const int rad = 1;
   // for each output pixel
   // find the 4 pixels in the downscaled image that corresponds
   // to the radius x radius block of pixel our pixel belongs to
@@ -711,31 +713,110 @@ static void interpolate_a_from_min_max(const float *const restrict ds_ab, const 
 #endif
   for(size_t i = 0; i < height; i++)
   {
-    size_t ds_i = MAX(MIN((size_t)(i / radius_h), ds_height - 2), 1) - 1;
+    size_t ds_i = MAX(MIN((size_t)fmaxf(roundf((i + 0.5f) / radius_h - 0.5f), 0.f), ds_height - 2 * rad - 1), rad) - rad;
     for(size_t j = 0; j < width; j++)
     {
-      size_t ds_j = MAX(MIN((size_t)(j / radius_w), ds_width - 2), 1) - 1;
+      size_t ds_j = MAX(MIN((size_t)((j + 0.5f) / radius_w - 0.5f), ds_width - 2 * rad - 1), rad) - rad;
       const float current_pixel = fmaxf(image[i * width + j], 1E-6);
-      float sum_weights = 0.f;
+      float sum_weights_a = 0.f;
+      float sum_weights_b = 0.f;
       ab[(i * width + j) * 2] = 0.f;
-      //ab[(i * width + j) * 2 + 1] = 0.f;
-      for(size_t ds_ii = ds_i; ds_ii < ds_i + 3; ds_ii++)
+      ab[(i * width + j) * 2 + 1] = 0.f;
+      for(size_t ds_ii = ds_i; ds_ii < ds_i + 1 + 2 * rad; ds_ii++)
       {
-        for(size_t ds_jj = ds_j; ds_jj < ds_j + 3; ds_jj++)
+        for(size_t ds_jj = ds_j; ds_jj < ds_j + 1 + 2 * rad; ds_jj++)
         {
+          const float dist = sqrtf(fabs((ds_ii - ds_i - rad - 1) * (ds_ii - ds_i - rad)) + fabs((ds_jj - ds_j - rad) * (ds_jj - ds_j - rad - 1)));
           const float ds_pixel = fmaxf(ds_image[ds_ii * ds_width + ds_jj], 1E-6);
-          const float weight = fminf(current_pixel / ds_pixel, ds_pixel / current_pixel);
-          sum_weights += weight;
+          float weight_a = fminf(current_pixel / ds_pixel, ds_pixel / current_pixel);
+          weight_a *= 1.f / (0.5f + dist);
+          weight_a *= weight_a;
+          sum_weights_a += weight_a;
           const float ds_a = ds_ab[(ds_ii * ds_width + ds_jj) * 2];
-          ab[(i * width + j) * 2] += weight * ds_a;
-        //  const float ds_b = ds_ab[(ds_ii * ds_width + ds_jj) * 2 + 1];
-        //  ab[(i * width + j) * 2 + 1] += weight * ds_b;
+          ab[(i * width + j) * 2] += weight_a * ds_a;
+          const float ds_b = ds_ab[(ds_ii * ds_width + ds_jj) * 2 + 1];
+          float weight_b = weight_a;//fminf(current_pixel / fmaxf(ds_b, 1E-6), fmaxf(ds_b, 1E-6) / current_pixel);
+          //weight_b *= 1.f / (0.5f + dist);
+          ab[(i * width + j) * 2 + 1] += weight_b * ds_b;
+          sum_weights_b += weight_b;
         }
       }
-      ab[(i * width + j) * 2] /= sum_weights;
-      //ab[(i * width + j) * 2 + 1] /= sum_weights;
+      ab[(i * width + j) * 2] /= sum_weights_a;
+      ab[(i * width + j) * 2 + 1] /= sum_weights_b;
     }
   }
+  float *const restrict blurred_a = dt_alloc_sse_ps(dt_round_size_sse(width * height));
+  float *const restrict blurred_b = dt_alloc_sse_ps(dt_round_size_sse(width * height));
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      if(i == 0 || i == height - 1 || j == 0 || j == width - 1)
+      {
+        blurred_a[i * width + j] = ab[(i * width + j) * 2];
+        blurred_b[i * width + j] = ab[(i * width + j) * 2 + 1];
+      }
+      else
+      {
+        blurred_a[i * width + j] = ab[(i * width + j) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[(i * width + (j-1)) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[(i * width + (j+1)) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[((i-1) * width + j) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[((i-1) * width + (j-1)) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[((i-1) * width + (j+1)) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[((i+1) * width + j) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[((i+1) * width + (j-1)) * 2];
+        blurred_a[i * width + j] += 0.7f * ab[((i+1) * width + (j+1)) * 2];
+        blurred_a[i * width + j] /= 6.6f;
+        blurred_b[i * width + j] = ab[(i * width + j) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[(i * width + (j-1)) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[(i * width + (j+1)) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[((i-1) * width + j) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[((i-1) * width + (j-1)) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[((i-1) * width + (j+1)) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[((i+1) * width + j) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[((i+1) * width + (j-1)) * 2 + 1];
+        blurred_b[i * width + j] += 0.7f * ab[((i+1) * width + (j+1)) * 2 + 1];
+        blurred_b[i * width + j] /= 6.6f;
+    }
+    }
+  }
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      if(i == 0 || i == height - 1 || j == 0 || j == width - 1)
+      {
+        ab[(i * width + j) * 2] = blurred_a[i * width + j];
+        ab[(i * width + j) * 2 + 1] = blurred_b[i * width + j];
+      }
+      else
+      {
+        ab[(i * width + j) * 2] = blurred_a[i * width + j];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[i * width + (j-1)];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[i * width + (j+1)];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[(i-1) * width + j];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[(i-1) * width + (j-1)];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[(i-1) * width + (j+1)];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[(i+1) * width + j];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[(i+1) * width + (j-1)];
+        ab[(i * width + j) * 2] += 0.7f * blurred_a[(i+1) * width + (j+1)];
+        ab[(i * width + j) * 2] /= 6.6f;
+        ab[(i * width + j) * 2 + 1] = blurred_b[i * width + j];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[i * width + (j-1)];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[i * width + (j+1)];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[(i-1) * width + j];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[(i-1) * width + (j-1)];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[(i-1) * width + (j+1)];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[(i+1) * width + j];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[(i+1) * width + (j-1)];
+        ab[(i * width + j) * 2 + 1] += 0.7f * blurred_b[(i+1) * width + (j+1)];
+        ab[(i * width + j) * 2 + 1] /= 6.6f;
+      }
+    }
+  }
+  dt_free_align(blurred_a);
+  dt_free_align(blurred_b);
 }
 
 __DT_CLONE_TARGETS__
@@ -760,8 +841,11 @@ static inline void fast_surface_blur(float *const restrict image,
 
   const size_t num_elem_ds = ds_width * ds_height;
   const size_t num_elem = width * height;
+  const size_t width_8 = (roundf((float)width / 8.f)) * 8;
+  const size_t height_8 = (roundf((float)height / 8.f)) * 8;
+  const size_t num_elem_8 = width_8 * height_8;
 
-  float *const restrict image_8 = dt_alloc_sse_ps(dt_round_size_sse(num_elem));
+  float *const restrict image_8 = dt_alloc_sse_ps(dt_round_size_sse(num_elem_8));
   float *const restrict ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
@@ -779,8 +863,6 @@ static inline void fast_surface_blur(float *const restrict image,
 
   if(aniGF)
   {
-    size_t width_8 = (width / 8) * 8;
-    size_t height_8 = (height / 8) * 8;
     printf("%ld, %ld, %ld, %ld\n", width, width_8, height, height_8);
     interpolate_bilinear(image, width, height, image_8, width_8, height_8, 1);
     downscaling_with_min_max_heuristic(image_8, width_8, height_8, ds_image, ds_width, ds_height, radius_downscaling);
@@ -823,25 +905,30 @@ static inline void fast_surface_blur(float *const restrict image,
   {
     // for(int k = 0; k < height; k++)
     //    for(int k2 = 0; k2 < width; k2++)
-    //      image[k * width + k2] = ds_ab[(MIN(k / 4, ds_height-1) * ds_width + MIN(k2 / 4, ds_width-1)) * 2];
-    //   return;
+    //      image[k * width + k2] = ds_image[MIN(k / 4, ds_height-1) * ds_width + MIN(k2 / 4, ds_width-1)];
+
+    //for(int k = 0; k < height; k++)
+    //  for(int k2 = 0; k2 < width; k2++)
+    //    image[k * width + k2] = ds_ab[(MIN(k / 4, ds_height-1) * ds_width + MIN(k2 / 4, ds_width-1)) * 2];
+    //return;
 
     // WARNING: ds_image is not what we want if we have several iterations
-    interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
+    //interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
+
     interpolate_a_from_min_max(ds_ab, ds_image, ds_width, ds_height, ab, image, width, height);
     // normalize a
-    float max = 0.0f;
-    for(int k = 0; k < width * height; k++)
-      if(ab[2 * k] > max)
-        max = ab[2 * k];
-    printf("max: %f\n", 1.0f);
+    // float max = 0.0f;
+    // for(int k = 0; k < width * height; k++)
+    //   if(ab[2 * k] > max)
+    //     max = ab[2 * k];
+    // printf("max: %f\n", 1.0f);
 
     //for(int k = 0; k < width * height; k++)
     //  ab[2 * k] /= max;
     // copy a to output for debugging
-    //for(int k = 0; k < width * height; k++)
+    // for(int k = 0; k < width * height; k++)
     //  image[k] = ab[2 * k];
-    //return;
+    // return;
     // for(int k = 0; k < height; k++)
     //     for(int k2 = 0; k2 < width; k2++)
     //       image[k * width + k2] = ds_image[MIN(k / 4, ds_height-1) * ds_width + MIN(k2 / 4, ds_width-1)];
