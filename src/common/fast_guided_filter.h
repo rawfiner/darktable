@@ -434,8 +434,8 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
   float maxw = 0.0f;
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(guide, blurred_guide, guide_variance, blurred_mask, a, b, weights, Ndim, feathering) \
-  schedule(simd:static) aligned(guide, blurred_guide, guide_variance, blurred_mask, a, b, weights:64) \
+  dt_omp_firstprivate(guide, blurred_guide, guide_variance, guide_squared_deviation, blurred_mask, a, b, weights, Ndim, feathering) \
+  schedule(simd:static) aligned(guide, blurred_guide, guide_variance, guide_squared_deviation, blurred_mask, a, b, weights:64) \
   reduction(max:maxa, maxb, maxw)\
   reduction(min:mina, minb, minw)
 #endif
@@ -445,7 +445,7 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
     // for variance compensation
     const float lower_bound = 0.00390625f;
     const float pixel = fmaxf(guide[k], lower_bound);
-    const float normalized_var_guide = guide_variance[k] / (pixel * pixel);
+    const float normalized_var_guide = guide_squared_deviation[k] / (pixel * pixel);
     // empirical value
     const float epsilon = 1.f;
     // empirical value
