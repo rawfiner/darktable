@@ -979,9 +979,9 @@ clean:
 
 #define LOOP_CORE do{ \
             float current_pixel = image[i * width + j];\
-            float weight = fminf(current_pixel / fmaxf(blur, noise_threshold), blur / fmaxf(current_pixel, noise_threshold));\
-            weight *= weight;\
-            weight *= weight;\
+            float weight = fminf(fminf(current_pixel / fmaxf(previous, noise_threshold), previous / fmaxf(current_pixel, noise_threshold)), fminf(current_pixel / fmaxf(blur, noise_threshold), blur / fmaxf(current_pixel, noise_threshold)));\
+            previous = current_pixel;\
+            weight = powf(weight, feather);\
             blur = weight * blur + wp * blurred_image[i * width + j];\
             blur /= (weight + wp);\
             blurred_image[i * width + j] = blur;\
@@ -989,22 +989,24 @@ clean:
 
 static void rbf_core(float *const restrict image, float *const restrict blurred_image,
                   const size_t width, const size_t height,
-                  const float noise_threshold, const float wp, const int order)
+                  const float noise_threshold, const float wp, const float feather, const int order)
 {
+  int table_order[4][4] = {{0, 1, 2, 3}, {1, 0, 3, 2}, {2, 3, 0, 1}, {3, 2, 1, 0}};
   for(int k = 0; k < 4; k++)
   {
-    switch(k ^ order)
+    switch(table_order[order][k])
     {
       case 0:
       // left-right pass
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold) \
+  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
   schedule(simd:static) aligned(image, blurred_image:64)
 #endif
       for(size_t i = 0; i < height; i++)
       {
         float blur = blurred_image[i * width];
+        float previous = image[i * width];
         for(size_t j = 1; j < width; j++)
         {
           LOOP_CORE;
@@ -1015,12 +1017,13 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
       // right-left pass
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold) \
+  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
   schedule(simd:static) aligned(image, blurred_image:64)
 #endif
       for(size_t i = 0; i < height; i++)
       {
         float blur = blurred_image[i * width + width - 1];
+        float previous = image[i * width + width - 1];
         for(int64_t j = width - 2; j >= 0; j--)
         {
           LOOP_CORE;
@@ -1031,12 +1034,13 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
       // top-down pass
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold) \
+  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
   schedule(simd:static) aligned(image, blurred_image:64)
 #endif
       for(size_t j = 0; j < width; j++)
       {
         float blur = blurred_image[j];
+        float previous = image[j];
         for(size_t i = 0; i < height; i++)
         {
           LOOP_CORE;
@@ -1047,12 +1051,13 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
       // down-top pass
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold) \
+  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
   schedule(simd:static) aligned(image, blurred_image:64)
 #endif
       for(size_t j = 0; j < width; j++)
       {
         float blur = blurred_image[(height - 1) * width + j];
+        float previous = image[(height - 1) * width + j];
         for(int64_t i = height - 2; i >= 0; i--)
         {
           LOOP_CORE;
@@ -1067,27 +1072,63 @@ static void rbf(float *const restrict image,
                   const int radius, const float feathering,
                   const int iterations)
 {
-  float *const restrict blurred_image = dt_alloc_sse_ps(width * height);
-  const float noise_threshold = 0.03f;
-  const float wp = 1.f / feathering;
+  float *const restrict blurred_image_0 = dt_alloc_sse_ps(width * height);
+  float *const restrict blurred_image_1 = dt_alloc_sse_ps(width * height);
+  float *const restrict blurred_image_2 = dt_alloc_sse_ps(width * height);
+  float *const restrict blurred_image_3 = dt_alloc_sse_ps(width * height);
+  const float noise_threshold = 1E-6;
+  const float wp_ref = 1.f / fmaxf((float)radius, 0.5f);
   for(int k = 0; k < iterations; k++)
   {
-    memcpy(blurred_image, image, width * height * sizeof(float));
-    rbf_core(image, blurred_image, width, height, noise_threshold, wp, 0);
-    rbf_core(image, blurred_image, width, height, noise_threshold, 3.33f * wp, 2);
-    rbf_core(image, blurred_image, width, height, noise_threshold, 10.0f * wp, 0);
+    float wp = wp_ref * 1.f / ((k + 1) * (k + 1));
+    const float feather = feathering / powf(0.7, fabs(log10f(wp)));
+    memcpy(blurred_image_0, image, width * height * sizeof(float));
+    memcpy(blurred_image_1, image, width * height * sizeof(float));
+    memcpy(blurred_image_2, image, width * height * sizeof(float));
+    memcpy(blurred_image_3, image, width * height * sizeof(float));
+    rbf_core(image, blurred_image_0, width, height, noise_threshold, wp, feather, 0);
+    rbf_core(image, blurred_image_0, width, height, noise_threshold, 2.f * wp, feather, 2);
+    rbf_core(image, blurred_image_1, width, height, noise_threshold, wp, feather, 1);
+    rbf_core(image, blurred_image_1, width, height, noise_threshold, 2.f * wp, feather, 3);
+    rbf_core(image, blurred_image_2, width, height, noise_threshold, wp, feather, 2);
+    rbf_core(image, blurred_image_2, width, height, noise_threshold, 2.f * wp, feather, 0);
+    rbf_core(image, blurred_image_3, width, height, noise_threshold, wp, feather, 3);
+    rbf_core(image, blurred_image_3, width, height, noise_threshold, 2.f * wp, feather, 1);
+    //rbf_core(image, blurred_image, width, height, noise_threshold, 2.5f * wp, 2);
+    //rbf_core(image, blurred_image, width, height, noise_threshold, 5.f * wp, 1);
+    //rbf_core(image, blurred_image, width, height, noise_threshold, 10.f * wp, 3);
 
   #ifdef _OPENMP
   #pragma omp parallel for simd default(none) \
-    dt_omp_firstprivate(image, blurred_image, width, height) \
-    schedule(simd:static) aligned(image, blurred_image:64)
+    dt_omp_firstprivate(image, blurred_image_0, blurred_image_1, blurred_image_2, blurred_image_3, width, height) \
+    schedule(simd:static) aligned(image, blurred_image_0, blurred_image_1, blurred_image_2, blurred_image_3:64)
   #endif
     for(size_t i = 0; i < width * height; i++)
     {
-      image[i] = blurred_image[i];
+      float current_pixel = image[i];
+      float blurred_pixel_0 = blurred_image_0[i];
+      float blurred_pixel_1 = blurred_image_1[i];
+      float blurred_pixel_2 = blurred_image_2[i];
+      float blurred_pixel_3 = blurred_image_3[i];
+      float w_0 = 1.f + 0.f * fminf(blurred_pixel_0 / fmaxf(current_pixel, noise_threshold),
+                            current_pixel / fmaxf(blurred_pixel_0, noise_threshold));
+      float w_1 = 1.f + 0.f * fminf(blurred_pixel_1 / fmaxf(current_pixel, noise_threshold),
+                            current_pixel / fmaxf(blurred_pixel_1, noise_threshold));
+      float w_2 = 1.f + 0.f * fminf(blurred_pixel_2 / fmaxf(current_pixel, noise_threshold),
+                            current_pixel / fmaxf(blurred_pixel_2, noise_threshold));
+      float w_3 = 1.f + 0.f * fminf(blurred_pixel_3 / fmaxf(current_pixel, noise_threshold),
+                            current_pixel / fmaxf(blurred_pixel_3, noise_threshold));
+      float total_w = w_0 + w_1 + w_2 + w_3;
+      image[i] = (w_0 * blurred_pixel_0
+                + w_1 * blurred_pixel_1
+                + w_2 * blurred_pixel_2
+                + w_3 * blurred_pixel_3) / total_w;
     }
   }
-  dt_free_align(blurred_image);
+  dt_free_align(blurred_image_0);
+  dt_free_align(blurred_image_1);
+  dt_free_align(blurred_image_2);
+  dt_free_align(blurred_image_3);
 }
 
 __DT_CLONE_TARGETS__
@@ -1124,7 +1165,7 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
-      rbf(luminance, width, height, d->radius, d->feathering, d->iterations);
+      rbf(luminance, width, height, d->radius, 1.f / d->feathering, d->iterations);
       return;
       fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
                     DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
