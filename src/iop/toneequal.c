@@ -978,7 +978,9 @@ clean:
 }
 
 #define LOOP_CORE(current_pixel, previous, blur, weight) do{ \
-            weight = fminf(fminf(current_pixel / fmaxf(previous, noise_threshold), previous / fmaxf(current_pixel, noise_threshold)), fminf(current_pixel / fmaxf(blur, noise_threshold), blur / fmaxf(current_pixel, noise_threshold)));\
+            weight = fminf(current_pixel / fmaxf(blur, noise_threshold), blur / fmaxf(current_pixel, noise_threshold));\
+            weight *= weight; \
+            weight = fminf(fminf(current_pixel / fmaxf(previous, noise_threshold), previous / fmaxf(current_pixel, noise_threshold)), weight);\
             weight = powf(weight, feather);\
 } while(0)
 
@@ -989,143 +991,51 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
   // we need 2 buffers: 1 per direction
   float *const restrict blurred_image_2 = dt_alloc_sse_ps(width * height);
   memcpy(blurred_image_2, blurred_image, width * height * sizeof(float));
-  for(int k = 0; k < 2; k++)
-  {
-    switch(k ^ order)
-    {
-      case 0:
+  float *const restrict blurred_image_3 = dt_alloc_sse_ps(width * height);
+  memcpy(blurred_image_3, blurred_image, width * height * sizeof(float));
+  float *const restrict blurred_image_4 = dt_alloc_sse_ps(width * height);
+  memcpy(blurred_image_4, blurred_image, width * height * sizeof(float));
       // left-right pass and right-left pass
 #if 0
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
-  schedule(simd:static) aligned(image, blurred_image:64)
+dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
+schedule(simd:static) aligned(image, blurred_image:64)
 #endif
 #endif
-      for(size_t j = 1; j < width; j++)
-      {
-        int i_t = 0;
-        int i_c = 0;
-        int i_b = 1;
-        float blur_t = blurred_image[i_t * width + j - 1];
-        float blur_c = blurred_image[i_c * width + j - 1];
-        float blur_b = blurred_image[i_b * width + j - 1];
-        float previous_t = image[i_t * width + j - 1];
-        float previous_c = image[i_c * width + j - 1];
-        float previous_b = image[i_b * width + j - 1];
-        for(size_t i = 0; i < height; i++)
-        {
-          float w_t, w_c, w_b;
-          float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_t, blur_t, w_t);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_b, blur_b, w_b);
-          float blur = w_t * blur_t + w_c * blur_c + w_b * blur_b
-                     + wp * blurred_image[i * width + j];
-          blur /= (w_t + w_c + w_b + wp);
-          blurred_image[i * width + j] = blur;
-          // slide
-          blur_t = blur_c;
-          blur_c = blur_b;
-          previous_t = previous_c;
-          previous_c = previous_b;
-          i_b = MIN(i + 1, height - 2) + 1;
-          blur_b = blurred_image[i_b * width + j - 1];
-          previous_b = image[i_b * width + j - 1];
-        }
-      }
-      // right-left pass
-#if 0
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image_2, width, height, wp, noise_threshold, feather) \
-  schedule(simd:static) aligned(image, blurred_image_2:64)
-#endif
-#endif
-      for(int64_t j = width - 2; j >= 0; j--)
-      {
-        int i_t = 0;
-        int i_c = 0;
-        int i_b = 1;
-        float blur_t = blurred_image_2[i_t * width + j + 1];
-        float blur_c = blurred_image_2[i_c * width + j + 1];
-        float blur_b = blurred_image_2[i_b * width + j + 1];
-        float previous_t = image[i_t * width + j + 1];
-        float previous_c = image[i_c * width + j + 1];
-        float previous_b = image[i_b * width + j + 1];
-        for(size_t i = 0; i < height; i++)
-        {
-          float w_t, w_c, w_b;
-          float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_t, blur_t, w_t);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_b, blur_b, w_b);
-          float blur = w_t * blur_t + w_c * blur_c + w_b * blur_b
-                     + wp * blurred_image_2[i * width + j];
-          blur /= (w_t + w_c + w_b + wp);
-          blurred_image_2[i * width + j] = blur;
-          // slide
-          blur_t = blur_c;
-          blur_c = blur_b;
-          previous_t = previous_c;
-          previous_c = previous_b;
-          i_b = MIN(i + 1, height - 2) + 1;
-          blur_b = blurred_image_2[i_b * width + j + 1];
-          previous_b = image[i_b * width + j + 1];
-        }
-      }
-      break;
-      case 1:
-      // top-down pass and down-top pass
-#if 0
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
-  schedule(simd:static) aligned(image, blurred_image:64)
-#endif
-#endif
-      for(size_t i = 1; i < height; i++)
-      {
-        int j_l = 0;
-        int j_r = 1;
-        float blur_l = blurred_image[(i - 1) * width + j_l];
-        float blur_c = blurred_image[(i - 1) * width + 0];
-        float blur_r = blurred_image[(i - 1) * width + j_r];
-        float previous_l = image[(i - 1) * width + j_l];
-        float previous_c = image[(i - 1) * width + 0];
-        float previous_r = image[(i - 1) * width + j_r];
-        for(size_t j = 0; j < width; j++)
-        {
-          float w_l, w_c, w_r;
-          float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_l, blur_l, w_l);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_r, blur_r, w_r);
-          float blur = w_l * blur_l + w_c * blur_c + w_r * blur_r
-                     + wp * blurred_image[i * width + j];
-          blur /= (w_l + w_c + w_r + wp);
-          blurred_image[i * width + j] = blur;
-          // slide
-          blur_l = blur_c;
-          blur_c = blur_r;
-          previous_l = previous_c;
-          previous_c = previous_r;
-          j_r = MIN(j + 1, width - 2) + 1;
-          blur_r = blurred_image[(i - 1) * width + j_r];
-          previous_r = image[(i - 1) * width + j_r];
-        }
-      }
-      // down-top pass
-      for(int64_t i = height - 2; i >= 0; i--)
-      {
-        int j_l = 0;
-        int j_r = 1;
-        float blur_l = blurred_image_2[(i + 1) * width + j_l];
-        float blur_c = blurred_image_2[(i + 1) * width + 0];
-        float blur_r = blurred_image_2[(i + 1) * width + j_r];
-        float previous_l = image[(i + 1) * width + j_l];
-        float previous_c = image[(i + 1) * width + 0];
-        float previous_r = image[(i + 1) * width + j_r];
+  for(size_t j = 1; j < width; j++)
+  {
+    int i_t = 0;
+    int i_c = 0;
+    int i_b = 1;
+    float blur_t = blurred_image[i_t * width + j - 1];
+    float blur_c = blurred_image[i_c * width + j - 1];
+    float blur_b = blurred_image[i_b * width + j - 1];
+    float previous_t = image[i_t * width + j - 1];
+    float previous_c = image[i_c * width + j - 1];
+    float previous_b = image[i_b * width + j - 1];
+    for(size_t i = 0; i < height; i++)
+    {
+      float w_t, w_c, w_b;
+      float current_pixel = image[i * width + j];
+      LOOP_CORE(current_pixel, previous_t, blur_t, w_t);
+      LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
+      LOOP_CORE(current_pixel, previous_b, blur_b, w_b);
+      float blur = w_t * blur_t + w_c * blur_c + w_b * blur_b
+                 + wp * blurred_image[i * width + j];
+      blur /= (w_t + w_c + w_b + wp);
+      blurred_image[i * width + j] = blur;
+      // slide
+      blur_t = blur_c;
+      blur_c = blur_b;
+      previous_t = previous_c;
+      previous_c = previous_b;
+      i_b = MIN(i + 1, height - 2) + 1;
+      blur_b = blurred_image[i_b * width + j - 1];
+      previous_b = image[i_b * width + j - 1];
+    }
+  }
+  // right-left pass
 #if 0
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -1133,49 +1043,145 @@ dt_omp_firstprivate(image, blurred_image_2, width, height, wp, noise_threshold, 
 schedule(simd:static) aligned(image, blurred_image_2:64)
 #endif
 #endif
-        for(size_t j = 0; j < width; j++)
-        {
-          float w_l, w_c, w_r;
-          float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_l, blur_l, w_l);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_r, blur_r, w_r);
-          float blur = w_l * blur_l + w_c * blur_c + w_r * blur_r
-                     + wp * blurred_image_2[i * width + j];
-          blur /= (w_l + w_c + w_r + wp);
-          blurred_image_2[i * width + j] = blur;
-          // slide
-          blur_l = blur_c;
-          blur_c = blur_r;
-          previous_l = previous_c;
-          previous_c = previous_r;
-          j_r = MIN(j + 1, width - 2) + 1;
-          blur_r = blurred_image_2[(i + 1) * width + j_r];
-          previous_r = image[(i + 1) * width + j_r];
-        }
-      }
-    }
-    // merge the 2 passes, to form either a horizontal blur, either a vertical blur
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(image, blurred_image, blurred_image_2, width, height, wp, noise_threshold, feather) \
-schedule(simd:static) aligned(image, blurred_image, blurred_image_2:64)
-#endif
-    for(size_t i = 0; i < width * height; i++)
+  for(int64_t j = width - 2; j >= 0; j--)
+  {
+    int i_t = 0;
+    int i_c = 0;
+    int i_b = 1;
+    float blur_t = blurred_image_2[i_t * width + j + 1];
+    float blur_c = blurred_image_2[i_c * width + j + 1];
+    float blur_b = blurred_image_2[i_b * width + j + 1];
+    float previous_t = image[i_t * width + j + 1];
+    float previous_c = image[i_c * width + j + 1];
+    float previous_b = image[i_b * width + j + 1];
+    for(size_t i = 0; i < height; i++)
     {
-      float blur_1 = blurred_image[i];
-      float blur_2 = blurred_image_2[i];
-      float ref = image[i];
-      float weight_1 = fminf(ref / fmaxf(blur_1, noise_threshold), blur_1 / fmaxf(ref, noise_threshold));
-      float weight_2 = fminf(ref / fmaxf(blur_2, noise_threshold), blur_2 / fmaxf(ref, noise_threshold));
-      weight_1 *= weight_1;
-      weight_2 *= weight_2;
-      float res = (weight_1 * blur_1 + weight_2 * blur_2) / (weight_1 + weight_2);
-      blurred_image[i] = res;
-      blurred_image_2[i] = res;
+      float w_t, w_c, w_b;
+      float current_pixel = image[i * width + j];
+      LOOP_CORE(current_pixel, previous_t, blur_t, w_t);
+      LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
+      LOOP_CORE(current_pixel, previous_b, blur_b, w_b);
+      float blur = w_t * blur_t + w_c * blur_c + w_b * blur_b
+                 + wp * blurred_image_2[i * width + j];
+      blur /= (w_t + w_c + w_b + wp);
+      blurred_image_2[i * width + j] = blur;
+      // slide
+      blur_t = blur_c;
+      blur_c = blur_b;
+      previous_t = previous_c;
+      previous_c = previous_b;
+      i_b = MIN(i + 1, height - 2) + 1;
+      blur_b = blurred_image_2[i_b * width + j + 1];
+      previous_b = image[i_b * width + j + 1];
     }
   }
+  // top-down pass and down-top pass
+#if 0
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, blurred_image_3, width, height, wp, noise_threshold, feather) \
+schedule(simd:static) aligned(image, blurred_image_3:64)
+#endif
+#endif
+  for(size_t i = 1; i < height; i++)
+  {
+    int j_l = 0;
+    int j_r = 1;
+    float blur_l = blurred_image_3[(i - 1) * width + j_l];
+    float blur_c = blurred_image_3[(i - 1) * width + 0];
+    float blur_r = blurred_image_3[(i - 1) * width + j_r];
+    float previous_l = image[(i - 1) * width + j_l];
+    float previous_c = image[(i - 1) * width + 0];
+    float previous_r = image[(i - 1) * width + j_r];
+    for(size_t j = 0; j < width; j++)
+    {
+      float w_l, w_c, w_r;
+      float current_pixel = image[i * width + j];
+      LOOP_CORE(current_pixel, previous_l, blur_l, w_l);
+      LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
+      LOOP_CORE(current_pixel, previous_r, blur_r, w_r);
+      float blur = w_l * blur_l + w_c * blur_c + w_r * blur_r
+                 + wp * blurred_image_3[i * width + j];
+      blur /= (w_l + w_c + w_r + wp);
+      blurred_image_3[i * width + j] = blur;
+      // slide
+      blur_l = blur_c;
+      blur_c = blur_r;
+      previous_l = previous_c;
+      previous_c = previous_r;
+      j_r = MIN(j + 1, width - 2) + 1;
+      blur_r = blurred_image_3[(i - 1) * width + j_r];
+      previous_r = image[(i - 1) * width + j_r];
+    }
+  }
+  // down-top pass
+  for(int64_t i = height - 2; i >= 0; i--)
+  {
+    int j_l = 0;
+    int j_r = 1;
+    float blur_l = blurred_image_4[(i + 1) * width + j_l];
+    float blur_c = blurred_image_4[(i + 1) * width + 0];
+    float blur_r = blurred_image_4[(i + 1) * width + j_r];
+    float previous_l = image[(i + 1) * width + j_l];
+    float previous_c = image[(i + 1) * width + 0];
+    float previous_r = image[(i + 1) * width + j_r];
+#if 0
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, blurred_image_4, width, height, wp, noise_threshold, feather) \
+schedule(simd:static) aligned(image, blurred_image_4:64)
+#endif
+#endif
+    for(size_t j = 0; j < width; j++)
+    {
+      float w_l, w_c, w_r;
+      float current_pixel = image[i * width + j];
+      LOOP_CORE(current_pixel, previous_l, blur_l, w_l);
+      LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
+      LOOP_CORE(current_pixel, previous_r, blur_r, w_r);
+      float blur = w_l * blur_l + w_c * blur_c + w_r * blur_r
+                 + wp * blurred_image_4[i * width + j];
+      blur /= (w_l + w_c + w_r + wp);
+      blurred_image_4[i * width + j] = blur;
+      // slide
+      blur_l = blur_c;
+      blur_c = blur_r;
+      previous_l = previous_c;
+      previous_c = previous_r;
+      j_r = MIN(j + 1, width - 2) + 1;
+      blur_r = blurred_image_4[(i + 1) * width + j_r];
+      previous_r = image[(i + 1) * width + j_r];
+    }
+  }
+  // merge the 4 passes
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(image, blurred_image, blurred_image_2, blurred_image_3, blurred_image_4, width, height, wp, noise_threshold, feather) \
+schedule(simd:static) aligned(image, blurred_image, blurred_image_2, blurred_image_3, blurred_image_4:64)
+#endif
+  for(size_t i = 0; i < width * height; i++)
+  {
+    float blur_1 = blurred_image[i];
+    float blur_2 = blurred_image_2[i];
+    float blur_3 = blurred_image_3[i];
+    float blur_4 = blurred_image_4[i];
+    float ref = image[i];
+    float weight_1 = fminf(ref / fmaxf(blur_1, noise_threshold), blur_1 / fmaxf(ref, noise_threshold));
+    float weight_2 = fminf(ref / fmaxf(blur_2, noise_threshold), blur_2 / fmaxf(ref, noise_threshold));
+    float weight_3 = fminf(ref / fmaxf(blur_3, noise_threshold), blur_3 / fmaxf(ref, noise_threshold));
+    float weight_4 = fminf(ref / fmaxf(blur_4, noise_threshold), blur_4 / fmaxf(ref, noise_threshold));
+    weight_1 *= weight_1;
+    weight_2 *= weight_2;
+    weight_3 *= weight_3;
+    weight_4 *= weight_4;
+    float res = (weight_1 * blur_1 + weight_2 * blur_2 + weight_3 * blur_3 + weight_4 * blur_4
+    ) / (weight_1 + weight_2 + weight_3 + weight_4);
+    blurred_image[i] = res;
+    // blurred_image_2[i] = res;
+  }
   dt_free_align(blurred_image_2);
+  dt_free_align(blurred_image_3);
+  dt_free_align(blurred_image_4);
 }
 
 static void rbf(float *const restrict image,
@@ -1198,9 +1204,9 @@ static void rbf(float *const restrict image,
     memcpy(blurred_image_2, image, width * height * sizeof(float));
     memcpy(blurred_image_3, image, width * height * sizeof(float));
     rbf_core(image, blurred_image_0, width, height, noise_threshold, wp, feather, 0);
-    rbf_core(image, blurred_image_0, width, height, noise_threshold, 10.f * wp, feather, 0);
-    rbf_core(image, blurred_image_1, width, height, noise_threshold, wp, feather, 1);
-    rbf_core(image, blurred_image_1, width, height, noise_threshold, 10.f * wp, feather, 1);
+    //rbf_core(image, blurred_image_0, width, height, noise_threshold, 10.f * wp, feather, 0);
+    //rbf_core(image, blurred_image_1, width, height, noise_threshold, wp, feather, 1);
+    //rbf_core(image, blurred_image_1, width, height, noise_threshold, 10.f * wp, feather, 1);
 
     // rbf_core(image, blurred_image_2, width, height, noise_threshold, wp, feather, 0);
     // rbf_core(image, blurred_image_2, width, height, noise_threshold, 2.f * wp, feather, 1);
@@ -1219,8 +1225,8 @@ static void rbf(float *const restrict image,
     {
       float current_pixel = image[i];
       float blurred_pixel_0 = blurred_image_0[i];
-      // image[i] = blurred_pixel_0;
-      // continue;
+      image[i] = blurred_pixel_0;
+      continue;
       float blurred_pixel_1 = blurred_image_1[i];
       float w_0 = fminf(blurred_pixel_0 / fmaxf(current_pixel, noise_threshold),
                             current_pixel / fmaxf(blurred_pixel_0, noise_threshold));
