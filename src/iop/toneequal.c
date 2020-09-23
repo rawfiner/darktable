@@ -977,20 +977,25 @@ clean:
   if(!image_log) dt_free_align(image_log);
 }
 
-#define LOOP_CORE(current_pixel, previous, blur, weight) do{ \
-            weight = fminf(fminf(current_pixel / fmaxf(previous, noise_threshold), previous / fmaxf(current_pixel, noise_threshold)), fminf(current_pixel / fmaxf(blur, noise_threshold), blur / fmaxf(current_pixel, noise_threshold)));\
-            weight = powf(weight, feather);\
+#define LOOP_CORE(current_pixel, previous, blur, weight, feather) do{ \
+              weight = fminf(current_pixel / fmaxf(blur, noise_threshold), blur / fmaxf(current_pixel, noise_threshold));\
+              weight *= weight; \
+              weight = fminf(fminf(current_pixel / fmaxf(previous, noise_threshold), previous / fmaxf(current_pixel, noise_threshold)), weight);\
+              weight = powf(weight, feather);\
+              weight = 2.f * weight - weight * weight;\
 } while(0)
 
 static void rbf_core(float *const restrict image, float *const restrict blurred_image,
                   const size_t width, const size_t height,
-                  const float noise_threshold, const float wp, const float feather, const int order)
+                  const float noise_threshold, const float wp, const float feathering, const int order)
 {
   // we need 2 buffers: 1 per direction
   float *const restrict blurred_image_2 = dt_alloc_sse_ps(width * height);
   memcpy(blurred_image_2, blurred_image, width * height * sizeof(float));
   for(int k = 0; k < 2; k++)
   {
+    const float feather = feathering * (1.f  + k * 3.f);
+    const float feather_c = feather * 0.9f;
     switch(k ^ order)
     {
       case 0:
@@ -998,7 +1003,7 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
 #if 0
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
+  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather, feather_c) \
   schedule(simd:static) aligned(image, blurred_image:64)
 #endif
 #endif
@@ -1017,9 +1022,9 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
         {
           float w_t, w_c, w_b;
           float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_t, blur_t, w_t);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_b, blur_b, w_b);
+          LOOP_CORE(current_pixel, previous_t, blur_t, w_t, feather);
+          LOOP_CORE(current_pixel, previous_c, blur_c, w_c, feather_c);
+          LOOP_CORE(current_pixel, previous_b, blur_b, w_b, feather);
           float blur = w_t * blur_t + w_c * blur_c + w_b * blur_b
                      + wp * blurred_image[i * width + j];
           blur /= (w_t + w_c + w_b + wp);
@@ -1038,7 +1043,7 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
 #if 0
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image_2, width, height, wp, noise_threshold, feather) \
+  dt_omp_firstprivate(image, blurred_image_2, width, height, wp, noise_threshold, feather, feather_c) \
   schedule(simd:static) aligned(image, blurred_image_2:64)
 #endif
 #endif
@@ -1057,9 +1062,9 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
         {
           float w_t, w_c, w_b;
           float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_t, blur_t, w_t);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_b, blur_b, w_b);
+          LOOP_CORE(current_pixel, previous_t, blur_t, w_t, feather);
+          LOOP_CORE(current_pixel, previous_c, blur_c, w_c, feather_c);
+          LOOP_CORE(current_pixel, previous_b, blur_b, w_b, feather);
           float blur = w_t * blur_t + w_c * blur_c + w_b * blur_b
                      + wp * blurred_image_2[i * width + j];
           blur /= (w_t + w_c + w_b + wp);
@@ -1080,7 +1085,7 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
 #if 0
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather) \
+  dt_omp_firstprivate(image, blurred_image, width, height, wp, noise_threshold, feather, feather_c) \
   schedule(simd:static) aligned(image, blurred_image:64)
 #endif
 #endif
@@ -1098,9 +1103,9 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
         {
           float w_l, w_c, w_r;
           float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_l, blur_l, w_l);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_r, blur_r, w_r);
+          LOOP_CORE(current_pixel, previous_l, blur_l, w_l, feather);
+          LOOP_CORE(current_pixel, previous_c, blur_c, w_c, feather_c);
+          LOOP_CORE(current_pixel, previous_r, blur_r, w_r, feather);
           float blur = w_l * blur_l + w_c * blur_c + w_r * blur_r
                      + wp * blurred_image[i * width + j];
           blur /= (w_l + w_c + w_r + wp);
@@ -1129,7 +1134,7 @@ static void rbf_core(float *const restrict image, float *const restrict blurred_
 #if 0
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(image, blurred_image_2, width, height, wp, noise_threshold, feather) \
+dt_omp_firstprivate(image, blurred_image_2, width, height, wp, noise_threshold, feather, feather_c) \
 schedule(simd:static) aligned(image, blurred_image_2:64)
 #endif
 #endif
@@ -1137,9 +1142,9 @@ schedule(simd:static) aligned(image, blurred_image_2:64)
         {
           float w_l, w_c, w_r;
           float current_pixel = image[i * width + j];
-          LOOP_CORE(current_pixel, previous_l, blur_l, w_l);
-          LOOP_CORE(current_pixel, previous_c, blur_c, w_c);
-          LOOP_CORE(current_pixel, previous_r, blur_r, w_r);
+          LOOP_CORE(current_pixel, previous_l, blur_l, w_l, feather);
+          LOOP_CORE(current_pixel, previous_c, blur_c, w_c, feather_c);
+          LOOP_CORE(current_pixel, previous_r, blur_r, w_r, feather);
           float blur = w_l * blur_l + w_c * blur_c + w_r * blur_r
                      + wp * blurred_image_2[i * width + j];
           blur /= (w_l + w_c + w_r + wp);
@@ -1158,7 +1163,7 @@ schedule(simd:static) aligned(image, blurred_image_2:64)
     // merge the 2 passes, to form either a horizontal blur, either a vertical blur
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(image, blurred_image, blurred_image_2, width, height, wp, noise_threshold, feather) \
+dt_omp_firstprivate(image, blurred_image, blurred_image_2, width, height, wp, noise_threshold, feather, feather_c) \
 schedule(simd:static) aligned(image, blurred_image, blurred_image_2:64)
 #endif
     for(size_t i = 0; i < width * height; i++)
@@ -1168,8 +1173,8 @@ schedule(simd:static) aligned(image, blurred_image, blurred_image_2:64)
       float ref = image[i];
       float weight_1 = fminf(ref / fmaxf(blur_1, noise_threshold), blur_1 / fmaxf(ref, noise_threshold));
       float weight_2 = fminf(ref / fmaxf(blur_2, noise_threshold), blur_2 / fmaxf(ref, noise_threshold));
-      weight_1 *= weight_1;
-      weight_2 *= weight_2;
+      // weight_1 *= weight_1;
+      // weight_2 *= weight_2;
       float res = (weight_1 * blur_1 + weight_2 * blur_2) / (weight_1 + weight_2);
       blurred_image[i] = res;
       blurred_image_2[i] = res;
@@ -1198,9 +1203,10 @@ static void rbf(float *const restrict image,
     memcpy(blurred_image_2, image, width * height * sizeof(float));
     memcpy(blurred_image_3, image, width * height * sizeof(float));
     rbf_core(image, blurred_image_0, width, height, noise_threshold, wp, feather, 0);
-    rbf_core(image, blurred_image_0, width, height, noise_threshold, 10.f * wp, feather, 0);
-    rbf_core(image, blurred_image_1, width, height, noise_threshold, wp, feather, 1);
-    rbf_core(image, blurred_image_1, width, height, noise_threshold, 10.f * wp, feather, 1);
+    rbf_core(image, blurred_image_0, width, height, noise_threshold, 3.f * wp, feather, 1);
+    rbf_core(image, blurred_image_0, width, height, noise_threshold, 9.f * wp, feather, 0);
+    //rbf_core(image, blurred_image_1, width, height, noise_threshold, wp, feather, 1);
+    //rbf_core(image, blurred_image_1, width, height, noise_threshold, 10.f * wp, feather, 1);
 
     // rbf_core(image, blurred_image_2, width, height, noise_threshold, wp, feather, 0);
     // rbf_core(image, blurred_image_2, width, height, noise_threshold, 2.f * wp, feather, 1);
@@ -1219,8 +1225,8 @@ static void rbf(float *const restrict image,
     {
       float current_pixel = image[i];
       float blurred_pixel_0 = blurred_image_0[i];
-      // image[i] = blurred_pixel_0;
-      // continue;
+      image[i] = blurred_pixel_0;
+      continue;
       float blurred_pixel_1 = blurred_image_1[i];
       float w_0 = fminf(blurred_pixel_0 / fmaxf(current_pixel, noise_threshold),
                             current_pixel / fmaxf(blurred_pixel_0, noise_threshold));
