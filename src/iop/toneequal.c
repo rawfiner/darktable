@@ -1183,6 +1183,132 @@ schedule(simd:static) aligned(image, blurred_image, blurred_image_2:64)
   dt_free_align(blurred_image_2);
 }
 
+#define LOOP_CORE(current_pixel, previous, blur, weight, feather) do{ \
+              weight = fminf(current_pixel / fmaxf(blur, noise_threshold), blur / fmaxf(current_pixel, noise_threshold));\
+              weight *= weight; \
+              weight = fminf(fminf(current_pixel / fmaxf(previous, noise_threshold), previous / fmaxf(current_pixel, noise_threshold)), weight);\
+              weight = powf(weight, feather);\
+              weight = 2.f * weight - weight * weight;\
+} while(0)
+
+
+static void rbf2_core(float *const restrict image, float *const restrict blurred_image,
+                  float *const restrict avg_in, float *const restrict avg_out,
+                  const size_t width, const size_t height,
+                  const float wp, const float feathering, const size_t radius)
+{
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(image, blurred_image, avg_in, avg_out, width, height, wp, feathering, radius) \
+  schedule(simd:static) aligned(image, blurred_image, avg_in, avg_out:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const float noise_threshold = 1E-6;
+      float sum_weights = 0.0f;
+      int nb_elem = 0;
+      const float center_px = image[i * width + j];
+      float out = 0.0f;
+      float mean = 0.0f;
+      for(size_t ii = MAX(i,radius)-radius; ii <= MIN(i+radius,height-1); ii+=radius)
+      {
+        for(size_t jj = MAX(j,radius)-radius; jj <= MIN(j+radius,width-1); jj+=radius)
+        {
+          const float px = image[ii * width + jj];
+          float weight = wp;
+          if(ii != i || jj != j)
+          {
+            weight = fminf(center_px / fmaxf(px, noise_threshold), px / fmaxf(center_px, px));
+            weight = powf(weight, feathering);
+          }
+          out += weight * px;
+          sum_weights += weight;
+          mean += avg_in[ii * width + jj];
+          nb_elem++;
+        }
+      }
+      mean /= nb_elem;
+      avg_out[i * width + j] = mean;
+      out /= sum_weights;
+      // make sure we go toward the mean (avoid sharpening edges and creating
+      // false edges)
+      if(mean < center_px)
+      {
+        out = MIN(center_px, out);
+      }
+      else
+      {
+        out = MAX(center_px, out);
+      }
+      blurred_image[i * width + j] = out;
+    }
+  }
+}
+
+static void rbf2(float *const restrict image,
+                  const size_t width, const size_t height,
+                  const int radius, const float feathering,
+                  const int iterations)
+{
+  const size_t nb_rec_calls = ceilf(MAX(log2f(radius), 1.f));
+  const float wp = 1.f / fmaxf((float)radius, 0.5f);
+  float *const restrict image_2 = dt_alloc_sse_ps(width * height);
+  float ** avgs = malloc(sizeof(float*) * (nb_rec_calls + 1));
+  for(size_t k = 0; k < nb_rec_calls+1; k++)
+  {
+    avgs[k] = dt_alloc_sse_ps(width * height);
+  }
+  memcpy(avgs[0], image, width * height * sizeof(float));
+  size_t rad = 1;
+  for(size_t k = 0; k < nb_rec_calls; k++)
+  {
+  //   avg_3x3(avgs[k], avgs[k+1], width, height, rad);
+  //   rad = (rad << 1) + 1;
+  // }
+
+
+    // we use image and image_2 alternately as input and output
+    if((k & 1) == 0)
+    {
+      rbf2_core(image, image_2, avgs[k], avgs[k+1], width, height, wp, feathering * (k+1), rad);
+    }
+    else
+    {
+      rbf2_core(image_2, image, avgs[k], avgs[k+1], width, height, wp, feathering * (k+1), rad);
+    }
+    rad = (rad << 1) + 1;
+  }
+  if((nb_rec_calls & 1) == 1)
+  {
+    memcpy(image, image_2, width * height * sizeof(float));
+  }
+  for(size_t k = 0; k < nb_rec_calls-1; k++)
+  {
+    rad = (rad - 1) >> 1;
+    // we use image and image_2 alternately as input and output
+    if((k & 1) == 0)
+    {
+      rbf2_core(image, image_2, avgs[nb_rec_calls-2-k], avgs[nb_rec_calls-2-k+1], width, height, wp, feathering * (nb_rec_calls-1-k), rad);
+    }
+    else
+    {
+      rbf2_core(image_2, image, avgs[nb_rec_calls-2-k], avgs[nb_rec_calls-2-k+1], width, height, wp, feathering * (nb_rec_calls-1-k), rad);
+    }
+  }
+  if((nb_rec_calls & 1) == 0)
+  {
+    memcpy(image, image_2, width * height * sizeof(float));
+  }
+  dt_free_align(image_2);
+  for(size_t k = 0; k < nb_rec_calls+1; k++)
+  {
+    dt_free_align(avgs[k]);
+  }
+  free(avgs);
+}
+
 static void rbf(float *const restrict image,
                   const size_t width, const size_t height,
                   const int radius, const float feathering,
@@ -1281,6 +1407,8 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
+      rbf2(luminance, width, height, d->radius, 1.f / d->feathering, d->iterations);
+      return;
       rbf(luminance, width, height, d->radius, 1.f / d->feathering, d->iterations);
       return;
       fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
