@@ -443,17 +443,21 @@ static inline void anisotropic_guided_filter(const float *const restrict guide, 
   {
     // we consider any pixel bellow -8EV as -8EV
     // for variance compensation
-    const float lower_bound = 0.00390625f;
+    const float lower_bound = 1E-6;
     const float pixel = fmaxf(guide[k], lower_bound);
     const float normalized_var_guide = guide_squared_deviation[k] / (pixel * pixel);
     // // empirical value
-    // const float epsilon = 0.000001f;
+    //const float epsilon = 0.000001f;
+    //const float epsilon = 100000.f;
     // // empirical value
-    // const float alpha = 0.2f;
+    //const float alpha = 1.f;
+    //const float alpha = 64.f;
     float w = 1.f / MAX(pixel, 1E-6);
-    //w *= w;
-    // w *= epsilon / (epsilon + powf(normalized_var_guide, alpha));
-    a[k] = w * normalized_var_guide / (normalized_var_guide + feathering);
+    w *= w;
+    //w *= epsilon / (epsilon + powf(normalized_var_guide, alpha));
+    a[k] = normalized_var_guide / (normalized_var_guide + feathering);
+    //a[k] = powf(a[k], alpha);
+    a[k] *= w;
     b[k] = w * blurred_mask[k] - a[k] * blurred_guide[k];
     weights[k] = w;
     if(a[k] < mina) mina = a[k];
@@ -836,18 +840,12 @@ static inline void fast_surface_blur(float *const restrict image,
   int ds_radius = (radius < 4) ? 1 : radius / scaling;
   float ds_sigma = fmaxf((float)radius / scaling, 1);
 
-  const size_t radius_downscaling = 2 * (size_t)scaling;
-  printf("radius: %ld\n", radius_downscaling);
-  const size_t ds_height = get_dimension_for_min_max_downscaling(height, radius_downscaling);
-  const size_t ds_width = get_dimension_for_min_max_downscaling(width, radius_downscaling);
+  const size_t ds_height = height / scaling;
+  const size_t ds_width = width / scaling;
 
   const size_t num_elem_ds = ds_width * ds_height;
   const size_t num_elem = width * height;
-  const size_t width_8 = (roundf((float)width / 8.f)) * 8;
-  const size_t height_8 = (roundf((float)height / 8.f)) * 8;
-  const size_t num_elem_8 = width_8 * height_8;
 
-  float *const restrict image_8 = dt_alloc_sse_ps(dt_round_size_sse(num_elem_8));
   float *const restrict ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
   float *const restrict ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
@@ -871,7 +869,7 @@ static inline void fast_surface_blur(float *const restrict image,
   // }
 
   // Iterations of filter models the diffusion, sort of
-  for(int i = 0; i < iterations; ++i)
+  for(int i = 0; i < iterations; i++)
   {
     // (Re)build the mask from the quantized image to help guiding
     quantize(ds_image, ds_mask, ds_width * ds_height, quantization, quantize_min, quantize_max);
@@ -882,7 +880,7 @@ static inline void fast_surface_blur(float *const restrict image,
       // 'Anisotropic Guided Filtering'
       // by Carlo Noel Ochotorena and Yukihiko Yamashita
       // adapted to be exposure invariant
-      anisotropic_guided_filter(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_sigma / (i + 1), feathering);
+      anisotropic_guided_filter(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_sigma, feathering * radius * sqrt(radius) / 40.0f);
     }
     else
     {
@@ -955,5 +953,4 @@ clean:
   if(ds_ab) dt_free_align(ds_ab);
   if(ds_mask) dt_free_align(ds_mask);
   if(ds_image) dt_free_align(ds_image);
-  if(image_8) dt_free_align(image_8);
 }
