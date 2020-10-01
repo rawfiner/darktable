@@ -1192,58 +1192,87 @@ schedule(simd:static) aligned(image, blurred_image, blurred_image_2:64)
 } while(0)
 
 
-static void rbf2_core(float *const restrict image, float *const restrict blurred_image,
-                  float *const restrict avg_in, float *const restrict avg_out,
+static void avg_var_3x3(float *const restrict avg_in, float *const restrict avg_out,
+                  float *const restrict var_out,
                   const size_t width, const size_t height,
-                  const float wp, const float feathering, const size_t radius)
+                  const size_t radius, const float feathering)
 {
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(image, blurred_image, avg_in, avg_out, width, height, wp, feathering, radius) \
-  schedule(simd:static) aligned(image, blurred_image, avg_in, avg_out:64)
+  dt_omp_firstprivate(avg_in, avg_out, var_out, width, height, radius, feathering) \
+  schedule(simd:static) aligned(avg_in, avg_out, var_out:64)
 #endif
   for(size_t i = 0; i < height; i++)
   {
     for(size_t j = 0; j < width; j++)
     {
-      const float noise_threshold = 1E-6;
-      float sum_weights = 0.0f;
       int nb_elem = 0;
-      const float center_px = image[i * width + j];
-      float out = 0.0f;
+      float mean = 0.0f;
+      float var = 0.0f;
+      for(size_t ii = MAX(i,radius)-radius; ii <= MIN(i+radius,height-1); ii+=radius)
+      {
+        for(size_t jj = MAX(j,radius)-radius; jj <= MIN(j+radius,width-1); jj+=radius)
+        {
+          float elem = avg_in[ii * width + jj];
+          var += elem * elem;
+          mean += elem;
+          nb_elem++;
+        }
+      }
+      mean /= nb_elem;
+      var /= nb_elem;
+      var = (var - mean * mean) * nb_elem / (nb_elem - 1);
+      if(var < 0.f) var = 0.f;
+      avg_out[i * width + j] = mean;
+      var_out[i * width + j] = powf(var + 1.f, feathering) - 1.f;
+    }
+  }
+}
+
+static void avg_3x3(float *const restrict avg_in, float *const restrict avg_out,
+                  const size_t width, const size_t height,
+                  const size_t radius)
+{
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(avg_in, avg_out, width, height, radius) \
+  schedule(simd:static) aligned(avg_in, avg_out:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      int nb_elem = 0;
       float mean = 0.0f;
       for(size_t ii = MAX(i,radius)-radius; ii <= MIN(i+radius,height-1); ii+=radius)
       {
         for(size_t jj = MAX(j,radius)-radius; jj <= MIN(j+radius,width-1); jj+=radius)
         {
-          const float px = image[ii * width + jj];
-          float weight = wp;
-          if(ii != i || jj != j)
-          {
-            weight = fminf(center_px / fmaxf(px, noise_threshold), px / fmaxf(center_px, px));
-            weight = powf(weight, feathering);
-          }
-          out += weight * px;
-          sum_weights += weight;
           mean += avg_in[ii * width + jj];
           nb_elem++;
         }
       }
       mean /= nb_elem;
       avg_out[i * width + j] = mean;
-      out /= sum_weights;
-      // make sure we go toward the mean (avoid sharpening edges and creating
-      // false edges)
-      if(mean < center_px)
-      {
-        out = MIN(center_px, out);
-      }
-      else
-      {
-        out = MAX(center_px, out);
-      }
-      blurred_image[i * width + j] = out;
     }
+  }
+}
+
+static void tolog(float *const restrict in, float *const restrict out,
+                  const size_t width, const size_t height, const float min_log)
+{
+  for(size_t k = 0; k < width * height; k++)
+  {
+    out[k] = log2f(MAX(in[k], exp2f(-min_log))) + min_log;
+  }
+}
+
+static void revert_tolog(float *const restrict in, float *const restrict out,
+                  const size_t width, const size_t height, const float min_log)
+{
+  for(size_t k = 0; k < width * height; k++)
+  {
+    out[k] = exp2f(in[k] - min_log);
   }
 }
 
@@ -1253,60 +1282,63 @@ static void rbf2(float *const restrict image,
                   const int iterations)
 {
   const size_t nb_rec_calls = ceilf(MAX(log2f(radius), 1.f));
-  const float wp = 1.f / fmaxf((float)radius, 0.5f);
-  float *const restrict image_2 = dt_alloc_sse_ps(width * height);
   float ** avgs = malloc(sizeof(float*) * (nb_rec_calls + 1));
+  float * var = dt_alloc_sse_ps(width * height);
+  float * blurred_var = dt_alloc_sse_ps(width * height);
+  printf("feather %f\n", feathering);
+
   for(size_t k = 0; k < nb_rec_calls+1; k++)
   {
     avgs[k] = dt_alloc_sse_ps(width * height);
   }
-  memcpy(avgs[0], image, width * height * sizeof(float));
+  tolog(image, avgs[0], width, height, 10);
   size_t rad = 1;
-  for(size_t k = 0; k < nb_rec_calls; k++)
+  avg_var_3x3(avgs[0], avgs[1], var, width, height, rad, feathering);
+  rad = (rad << 1) + 1;
+  for(size_t k = 1; k < nb_rec_calls; k++)
   {
-  //   avg_3x3(avgs[k], avgs[k+1], width, height, rad);
-  //   rad = (rad << 1) + 1;
-  // }
-
-
-    // we use image and image_2 alternately as input and output
-    if((k & 1) == 0)
-    {
-      rbf2_core(image, image_2, avgs[k], avgs[k+1], width, height, wp, feathering * (k+1), rad);
-    }
-    else
-    {
-      rbf2_core(image_2, image, avgs[k], avgs[k+1], width, height, wp, feathering * (k+1), rad);
-    }
+    avg_3x3(avgs[k], avgs[k+1], width, height, rad);
     rad = (rad << 1) + 1;
   }
-  if((nb_rec_calls & 1) == 1)
+  const float max = powf(50 * 50 /*20EV range*/, feathering);
+  const float min = 0.0f;
+  dt_gaussian_t* g = dt_gaussian_init(width, height, 1, &max, &min, 10.f, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, var, blurred_var);
+  dt_gaussian_free(g);
+  //memcpy(blurred_var, var, width * height * sizeof(float));
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(avgs, blurred_var, width, height, nb_rec_calls) \
+  schedule(simd:static)
+#endif
+  for(size_t k = 0; k < width * height; k++)
   {
-    memcpy(image, image_2, width * height * sizeof(float));
-  }
-  for(size_t k = 0; k < nb_rec_calls-1; k++)
-  {
-    rad = (rad - 1) >> 1;
-    // we use image and image_2 alternately as input and output
-    if((k & 1) == 0)
+    float v = blurred_var[k];
+    float center = nb_rec_calls-1 - MAX(MIN(log2f(v + 0.0001f) * 2, nb_rec_calls-1), 0);
+    float sum = 0.0f;
+    float sum_w = 0.0f;
+    for(size_t c = 0; c < nb_rec_calls; c++)
     {
-      rbf2_core(image, image_2, avgs[nb_rec_calls-2-k], avgs[nb_rec_calls-2-k+1], width, height, wp, feathering * (nb_rec_calls-1-k), rad);
+      float avg = avgs[c][k];
+      float w = 1.f / ((center - c) * (center - c) + 0.5f);
+      //if(c == 0) w += 5.0f;
+      sum += w * avg;
+      sum_w += w;
     }
-    else
-    {
-      rbf2_core(image_2, image, avgs[nb_rec_calls-2-k], avgs[nb_rec_calls-2-k+1], width, height, wp, feathering * (nb_rec_calls-1-k), rad);
-    }
+    sum /= sum_w;
+    avgs[0][k] = sum;
   }
-  if((nb_rec_calls & 1) == 0)
-  {
-    memcpy(image, image_2, width * height * sizeof(float));
-  }
-  dt_free_align(image_2);
+  revert_tolog(avgs[0], image, width, height, 10);
+
   for(size_t k = 0; k < nb_rec_calls+1; k++)
   {
     dt_free_align(avgs[k]);
   }
   free(avgs);
+  dt_free_align(var);
+  dt_free_align(blurred_var);
 }
 
 static void rbf(float *const restrict image,
@@ -1407,6 +1439,58 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
+      fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
+                    DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      return;
+#define NB 3
+      float* gf[NB];
+      float ref_feathering = d->feathering * 1000.0f;
+      float ev[NB];
+      const float ev_max = 2.0f;
+      const float ev_min = -8.0f;
+      const float ev_range = ev_max - ev_min;
+      ev[0] = ev_max - (ev_range / NB) / 2.0f;
+      for(int k = 1; k < NB; k++)
+      {
+        ev[k] = ev[k-1] - (ev_range / NB);
+      }
+      for(int k = 0; k < NB; k++)
+      {
+        float comp = exp2f(ev[k]);
+        float feathering = ref_feathering * comp * comp;
+        gf[k] = dt_alloc_sse_ps(width * height);
+        memcpy(gf[k], luminance, width * height * sizeof(float));
+        fast_surface_blur(gf[k], width, height, d->radius, feathering, d->iterations, DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      }
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(width, height, luminance, ev, gf) \
+  schedule(simd:static)
+#endif
+      for(size_t i = 0; i < width * height; i++)
+      {
+        float log = log2f(MAX(luminance[i], 1E-6));
+        int k;
+        for(k = 0; k < NB; k++)
+        {
+          if(log > ev[k])
+            break;
+        }
+        // ev[k-1] > log > ev[k]
+        int k_prev = MAX(k-1, 0);
+        k = MIN(k, NB-1);
+        float dist_up = MAX(fabs(log - ev[k_prev]), 0.0001f);
+        float dist_down = MAX(fabs(log - ev[k]), 0.0001f);
+        float w_up = 1.f / dist_up;
+        float w_down = 1.f / dist_down;
+        float total_w = w_up + w_down;
+        luminance[i] = (w_up * gf[k_prev][i] + w_down * gf[k][i]) / total_w;
+      }
+      for(int k = 0; k < NB; k++)
+      {
+        dt_free_align(gf[k]);
+      }
+      return;
       rbf2(luminance, width, height, d->radius, 1.f / d->feathering, d->iterations);
       return;
       rbf(luminance, width, height, d->radius, 1.f / d->feathering, d->iterations);
