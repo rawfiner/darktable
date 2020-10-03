@@ -16,6 +16,8 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#pragma once
+
 #include "common/fast_guided_filter.h"
 #include "common/gaussian.h"
 
@@ -67,3 +69,167 @@
  * The implementation EIGF uses downscaling to speed-up the filtering,
  * just like what is done in fast_guided_filter.h
 **/
+
+static inline void exposure_independent_guided_filter(const float *const restrict guide, // I
+                                    const float *const restrict mask, //p
+                                    float *const restrict ab,
+                                    const size_t width, const size_t height,
+                                    const float sigma, const float feathering)
+{
+  // We also use gaussian blurs instead of the square blurs of the guided filter
+  const size_t Ndim = width * height;
+  float *const restrict blurred_guide = dt_alloc_sse_ps(Ndim);
+  // guide_x_guide = (guide - blurred_guide)^2
+  float *const restrict guide_x_guide = dt_alloc_sse_ps(Ndim);
+  // guide_variance = blur(guide_x_guide)
+  float *const restrict guide_variance = dt_alloc_sse_ps(Ndim);
+  float *const restrict guide_x_mask = dt_alloc_sse_ps(Ndim);
+  // guide_mask_covariance = blur(guide_x_mask)
+  float *const restrict guide_mask_covariance = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_mask = dt_alloc_sse_ps(Ndim);
+  float *const restrict a = dt_alloc_sse_ps(Ndim);
+  float *const restrict b = dt_alloc_sse_ps(Ndim);
+  // weight to compute the weighted blur of a and b
+  float *const restrict weights = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_a = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_b = dt_alloc_sse_ps(Ndim);
+  float *const restrict blurred_weights = dt_alloc_sse_ps(Ndim);
+
+  float ming = 10000000.0f;
+  float maxg = 0.0f;
+  float minm = 10000000.0f;
+  float maxm = 0.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(guide, mask, Ndim) \
+  schedule(simd:static) aligned(guide, mask:64) \
+  reduction(max:maxg, maxm)\
+  reduction(min:ming, minm)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float pixelg = guide[k];
+    const float pixelm = mask[k];
+    if(pixelg < ming) ming = pixelg;
+    if(pixelg > maxg) maxg = pixelg;
+    if(pixelm < minm) minm = pixelm;
+    if(pixelm > maxm) maxm = pixelm;
+  }
+
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &maxg, &ming, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, guide, blurred_guide);
+  dt_gaussian_free(g);
+
+  g = dt_gaussian_init(width, height, 1, &maxm, &minm, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, mask, blurred_mask);
+  dt_gaussian_free(g);
+
+  float mingg = 10000000.0f;
+  float maxgg = 0.0f;
+  float mingm = 10000000.0f;
+  float maxgm = 0.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(guide, mask, blurred_guide, blurred_mask, guide_x_guide, guide_x_mask, Ndim) \
+  schedule(simd:static) aligned(guide, mask, blurred_guide, blurred_mask, guide_x_guide, guide_x_mask:64) \
+  reduction(max:maxgg, maxgm)\
+  reduction(min:mingg, mingm)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float deviation = guide[k] - blurred_guide[k];
+    const float squared_deviation = deviation * deviation;
+    guide_x_guide[k] = squared_deviation;
+    if(squared_deviation < mingg) mingg = squared_deviation;
+    if(squared_deviation > maxgg) maxgg = squared_deviation;
+    const float cov = (guide[k] - blurred_guide[k]) * (mask[k] - blurred_mask[k]);
+    guide_x_mask[k] = cov;
+    if(cov < mingm) mingm = cov;
+    if(cov > maxgm) maxgm = cov;
+  }
+
+  g = dt_gaussian_init(width, height, 1, &maxgg, &mingg, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, guide_x_guide, guide_variance);
+  dt_gaussian_free(g);
+
+  g = dt_gaussian_init(width, height, 1, &maxgm, &mingm, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, guide_x_mask, guide_mask_covariance);
+  dt_gaussian_free(g);
+
+  float mina = 10000000.0f;
+  float minb = 10000000.0f;
+  float minw = 10000000.0f;
+  float maxa = 0.0f;
+  float maxb = 0.0f;
+  float maxw = 0.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(guide, mask, blurred_guide, guide_variance, blurred_mask, guide_mask_covariance, a, b, weights, Ndim, feathering) \
+  schedule(simd:static) aligned(guide, mask, blurred_guide, guide_variance, blurred_mask, guide_mask_covariance, a, b, weights:64) \
+  reduction(max:maxa, maxb, maxw)\
+  reduction(min:mina, minb, minw)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float pixelg = fmaxf(guide[k], 1E-6);
+    const float pixelm = fmaxf(mask[k], 1E-6);
+    const float normalized_var_guide = guide_variance[k] / (pixelg * pixelg);
+    const float normalized_covar = guide_mask_covariance[k] / (pixelg * pixelm);
+    // empirical weight
+    float w = 1.f / pixelg;
+    w *= w;
+    a[k] = w * normalized_covar / (normalized_var_guide + feathering);
+    b[k] = w * blurred_mask[k] - a[k] * blurred_guide[k];
+    weights[k] = w;
+    if(a[k] < mina) mina = a[k];
+    if(b[k] < minb) minb = b[k];
+    if(w < minw) minw = w;
+    if(a[k] > maxa) maxa = a[k];
+    if(b[k] > maxb) maxb = b[k];
+    if(w > maxw) maxw = w;
+  }
+
+  g = dt_gaussian_init(width, height, 1, &maxa, &mina, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, a, blurred_a);
+  dt_gaussian_free(g);
+
+  g = dt_gaussian_init(width, height, 1, &maxb, &minb, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, b, blurred_b);
+  dt_gaussian_free(g);
+
+  g = dt_gaussian_init(width, height, 1, &maxw, &minw, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, weights, blurred_weights);
+  dt_gaussian_free(g);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(ab, blurred_a, blurred_b, blurred_weights, Ndim) \
+  schedule(simd:static) aligned(ab, blurred_a, blurred_b, blurred_weights:64)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float normalize = blurred_weights[k];
+    ab[2 * k] = blurred_a[k] / normalize;
+    ab[2 * k + 1] = blurred_b[k] / normalize;
+  }
+
+  dt_free_align(blurred_guide);
+  dt_free_align(guide_x_guide);
+  dt_free_align(guide_variance);
+  dt_free_align(guide_x_mask);
+  dt_free_align(guide_mask_covariance);
+  dt_free_align(blurred_mask);
+  dt_free_align(a);
+  dt_free_align(b);
+  dt_free_align(weights);
+  dt_free_align(blurred_a);
+  dt_free_align(blurred_b);
+  dt_free_align(blurred_weights);
+}
