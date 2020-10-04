@@ -175,11 +175,11 @@ dt_omp_firstprivate(guide, mask, Ndim) \
 #endif
   for(size_t k = 0; k < Ndim; k++)
   {
-    const float pixelg = fmaxf(guide[k], 1E-6);
-    const float pixelm = fmaxf(mask[k], 1E-6);
+    // allow max 3EV below average for normalization (avoid noise issues)
+    const float pixelg = fmaxf(guide[k], fmaxf(blurred_guide[k] * 0.125f, 1E-6));
+    const float pixelm = fmaxf(mask[k], fmaxf(blurred_mask[k] * 0.125f, 1E-6));
     const float normalized_var_guide = guide_variance[k] / (pixelg * pixelg);
     const float normalized_covar = guide_mask_covariance[k] / (pixelg * pixelm);
-    // empirical weight
     float w = 1.f / pixelg;
     w *= w;
     a[k] = w * normalized_covar / (normalized_var_guide + feathering);
