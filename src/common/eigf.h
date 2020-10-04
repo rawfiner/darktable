@@ -233,3 +233,70 @@ dt_omp_firstprivate(guide, mask, Ndim) \
   dt_free_align(blurred_b);
   dt_free_align(blurred_weights);
 }
+
+__DT_CLONE_TARGETS__
+static inline void fast_eigf_surface_blur(float *const restrict image,
+                                      const size_t width, const size_t height,
+                                      const int radius, float feathering, const int iterations,
+                                      const dt_iop_guided_filter_blending_t filter, const float scale,
+                                      const float quantization, const float quantize_min, const float quantize_max)
+{
+  // Works in-place on a grey image
+  // mostly similar with fast_surface_blur from fast_guided_filter.h
+
+  // A down-scaling of 4 seems empirically safe and consistent no matter the image zoom level
+  // see reference paper above for proof.
+  const float scaling = 4.0f;
+  const float ds_sigma = fmaxf((float)radius / scaling / 2.0f, 1.0f);
+
+  const size_t ds_height = height / scaling;
+  const size_t ds_width = width / scaling;
+
+  const size_t num_elem_ds = ds_width * ds_height;
+  const size_t num_elem = width * height;
+
+  float *const restrict ds_image = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
+  float *const restrict ds_mask = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds));
+  float *const restrict ds_ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem_ds * 2));
+  float *const restrict ab = dt_alloc_sse_ps(dt_round_size_sse(num_elem * 2));
+
+  if(!ds_image || !ds_mask || !ds_ab || !ab)
+  {
+    dt_control_log(_("fast exposure independent guided filter failed to allocate memory, check your RAM settings"));
+    goto clean;
+  }
+
+  // Downsample the image for speed-up
+  interpolate_bilinear(image, width, height, ds_image, ds_width, ds_height, 1);
+
+  // empirical formula to have consistent smoothing when increasing the radius
+  const float adapted_feathering = feathering * radius * sqrt(radius) / 40.0f;
+  // Iterations of filter models the diffusion, sort of
+  for(int i = 0; i < iterations; i++)
+  {
+    // (Re)build the mask from the quantized image to help guiding
+    quantize(ds_image, ds_mask, ds_width * ds_height, quantization, quantize_min, quantize_max);
+    exposure_independent_guided_filter(ds_mask, ds_image, ds_ab, ds_width, ds_height, ds_sigma, adapted_feathering);
+
+    if(i != iterations - 1)
+    {
+      // Process the intermediate filtered image
+      apply_linear_blending(ds_image, ds_ab, num_elem_ds);
+    }
+  }
+
+  // Upsample the blending parameters a and b
+  interpolate_bilinear(ds_ab, ds_width, ds_height, ab, width, height, 2);
+
+  // Finally, blend the guided image
+  if(filter == DT_GF_BLENDING_LINEAR)
+    apply_linear_blending(image, ab, num_elem);
+  else if(filter == DT_GF_BLENDING_GEOMEAN)
+    apply_linear_blending_w_geomean(image, ab, num_elem);
+
+clean:
+  if(ab) dt_free_align(ab);
+  if(ds_ab) dt_free_align(ds_ab);
+  if(ds_mask) dt_free_align(ds_mask);
+  if(ds_image) dt_free_align(ds_image);
+}
