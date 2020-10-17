@@ -51,20 +51,10 @@
  * we get strong bright halos.
  * These are due to the spatial averaging of "a" and "b" that is performed at
  * the end of the filter, especially due to the spatial averaging of "b".
- * However, removing completely this averaging gives results which are not
- * smoothed enough.
- * Hence, we use a weighted averaging of "a" and "b" to overcome this problem.
- * We weight each "a" and "b" by 1 / pixel_value^2, which gives much less
- * halos problems, and gives a smooth result.
- * Weighting by 1 / pixel_value^2 is empirical.
- * It was found to work well, while weighting by 1/pixel_value gives sometimes
- * worse results.
- * The idea of using a weighted averaging here comes from:
- * C. N. Ochotorena and Y. Yamashita, "Anisotropic Guided Filtering," in IEEE Transactions on Image Processing, vol. 29, pp. 1397-1412, 2020, doi: 10.1109/TIP.2019.2941326.
- * although we don't use the same weighting system (their weight is based
- * on variance, ours is based on the pixel value).
- * We tried a mixed weight using their weight in combination to ours, but
- * it did not improve the result.
+ * We decided to remove this final spatial averaging, as it is very hard
+ * to keep it without having either large unsmoothed regions or halos.
+ * Although the filter may blur a bit less without it, it remains sufficiently
+ * good at smoothing the image, and there are much less halos.
  *
  * The implementation EIGF uses downscaling to speed-up the filtering,
  * just like what is done in fast_guided_filter.h
@@ -87,13 +77,6 @@ static inline void exposure_independent_guided_filter(const float *const restric
   // guide_mask_covariance = blur(guide_x_mask)
   float *const restrict guide_mask_covariance = dt_alloc_sse_ps(Ndim);
   float *const restrict blurred_mask = dt_alloc_sse_ps(Ndim);
-  float *const restrict a = dt_alloc_sse_ps(Ndim);
-  float *const restrict b = dt_alloc_sse_ps(Ndim);
-  // weight to compute the weighted blur of a and b
-  float *const restrict weights = dt_alloc_sse_ps(Ndim);
-  float *const restrict blurred_a = dt_alloc_sse_ps(Ndim);
-  float *const restrict blurred_b = dt_alloc_sse_ps(Ndim);
-  float *const restrict blurred_weights = dt_alloc_sse_ps(Ndim);
 
   float ming = 10000000.0f;
   float maxg = 0.0f;
@@ -160,64 +143,19 @@ dt_omp_firstprivate(guide, mask, Ndim) \
   dt_gaussian_blur(g, guide_x_mask, guide_mask_covariance);
   dt_gaussian_free(g);
 
-  float mina = 10000000.0f;
-  float minb = 10000000.0f;
-  float minw = 10000000.0f;
-  float maxa = 0.0f;
-  float maxb = 0.0f;
-  float maxw = 0.0f;
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(guide, mask, blurred_guide, guide_variance, blurred_mask, guide_mask_covariance, a, b, weights, Ndim, feathering) \
-  schedule(simd:static) aligned(guide, mask, blurred_guide, guide_variance, blurred_mask, guide_mask_covariance, a, b, weights:64) \
-  reduction(max:maxa, maxb, maxw)\
-  reduction(min:mina, minb, minw)
+  dt_omp_firstprivate(guide, mask, blurred_guide, guide_variance, blurred_mask, guide_mask_covariance, ab, Ndim, feathering) \
+  schedule(simd:static) aligned(guide, mask, blurred_guide, guide_variance, blurred_mask, guide_mask_covariance, ab:64)
 #endif
   for(size_t k = 0; k < Ndim; k++)
   {
-    // allow max 3EV below average for normalization (avoid noise issues)
-    const float pixelg = fmaxf(guide[k], fmaxf(blurred_guide[k] * 0.125f, 1E-6));
-    const float pixelm = fmaxf(mask[k], fmaxf(blurred_mask[k] * 0.125f, 1E-6));
-    const float normalized_var_guide = guide_variance[k] / (pixelg * pixelg);
-    const float normalized_covar = guide_mask_covariance[k] / (pixelg * pixelm);
-    float w = 1.f / pixelg;
-    w *= w;
-    a[k] = w * normalized_covar / (normalized_var_guide + feathering);
-    b[k] = w * blurred_mask[k] - a[k] * blurred_guide[k];
-    weights[k] = w;
-    if(a[k] < mina) mina = a[k];
-    if(b[k] < minb) minb = b[k];
-    if(w < minw) minw = w;
-    if(a[k] > maxa) maxa = a[k];
-    if(b[k] > maxb) maxb = b[k];
-    if(w > maxw) maxw = w;
-  }
-
-  g = dt_gaussian_init(width, height, 1, &maxa, &mina, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur(g, a, blurred_a);
-  dt_gaussian_free(g);
-
-  g = dt_gaussian_init(width, height, 1, &maxb, &minb, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur(g, b, blurred_b);
-  dt_gaussian_free(g);
-
-  g = dt_gaussian_init(width, height, 1, &maxw, &minw, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur(g, weights, blurred_weights);
-  dt_gaussian_free(g);
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(ab, blurred_a, blurred_b, blurred_weights, Ndim) \
-  schedule(simd:static) aligned(ab, blurred_a, blurred_b, blurred_weights:64)
-#endif
-  for(size_t k = 0; k < Ndim; k++)
-  {
-    const float normalize = blurred_weights[k];
-    ab[2 * k] = blurred_a[k] / normalize;
-    ab[2 * k + 1] = blurred_b[k] / normalize;
+    const float normg = fmaxf(blurred_guide[k] * guide[k], 1E-6);
+    const float normm = fmaxf(blurred_mask[k] * mask[k], 1E-6);
+    const float normalized_var_guide = guide_variance[k] / normg;
+    const float normalized_covar = guide_mask_covariance[k] / sqrtf(normg * normm);
+    ab[2 * k] = normalized_covar / (normalized_var_guide + feathering);
+    ab[2 * k + 1] = blurred_mask[k] - ab[2 * k] * blurred_guide[k];
   }
 
   dt_free_align(blurred_guide);
@@ -226,12 +164,6 @@ dt_omp_firstprivate(guide, mask, Ndim) \
   dt_free_align(guide_x_mask);
   dt_free_align(guide_mask_covariance);
   dt_free_align(blurred_mask);
-  dt_free_align(a);
-  dt_free_align(b);
-  dt_free_align(weights);
-  dt_free_align(blurred_a);
-  dt_free_align(blurred_b);
-  dt_free_align(blurred_weights);
 }
 
 __DT_CLONE_TARGETS__
@@ -246,8 +178,8 @@ static inline void fast_eigf_surface_blur(float *const restrict image,
 
   // A down-scaling of 4 seems empirically safe and consistent no matter the image zoom level
   // see reference paper above for proof.
-  const float scaling = 4.0f;
-  const float ds_sigma = fmaxf((float)radius / scaling / 2.0f, 1.0f);
+  const float scaling = 1.0f;
+  const float ds_sigma = fmaxf((float)radius / scaling, 1.0f);
 
   const size_t ds_height = height / scaling;
   const size_t ds_width = width / scaling;
