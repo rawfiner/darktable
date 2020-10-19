@@ -658,29 +658,33 @@ static inline void compute_correction(const float *const restrict luminance,
                                       const size_t num_elem)
 {
   const float gauss_denom = gaussian_denom(sigma);
+  const int min_ev = -8;
+  const int max_ev = 0;
+  const size_t lut_resolution = 10000; // 10000 points per EV
+  float* restrict lut = dt_alloc_sse_ps(lut_resolution * (max_ev - min_ev) + 1);
+  for(int j = 0; j <= lut_resolution * (max_ev - min_ev); j++)
+  {
+    // build the correction for each pixel
+    // as the sum of the contribution of each luminance channelcorrection
+    float exposure = (float)j / (float)lut_resolution + min_ev;
+    float result = 0.0f;
+    for(int i = 0; i < PIXEL_CHAN; ++i)
+      result += gaussian_func(exposure - centers_ops[i], gauss_denom) * factors[i];
+    // the user-set correction is expected in [-2;+2] EV, so is the interpolated one
+    lut[j] = fast_clamp(result, 0.25f, 4.0f);
+  }
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(static) \
-  dt_omp_firstprivate(correction, num_elem, luminance, factors, centers_ops, gauss_denom)
+  dt_omp_firstprivate(correction, num_elem, luminance, factors, lut)
 #endif
   for(size_t k = 0; k < num_elem; ++k)
   {
-    // build the correction for the current pixel
-    // as the sum of the contribution of each luminance channelcorrection
-    float result = 0.0f;
-
     // The radial-basis interpolation is valid in [-8; 0] EV and can quickely diverge outside
-    const float exposure = fast_clamp(log2f(luminance[k]), -8.0f, 0.0f);
-
-#ifdef _OPENMP
-#pragma omp simd aligned(luminance, centers_ops, factors:64) safelen(PIXEL_CHAN) reduction(+:result)
-#endif
-    for(int i = 0; i < PIXEL_CHAN; ++i)
-      result += gaussian_func(exposure - centers_ops[i], gauss_denom) * factors[i];
-
-    // the user-set correction is expected in [-2;+2] EV, so is the interpolated one
-    correction[k] = fast_clamp(result, 0.25f, 4.0f);
+    const float exposure = fast_clamp(log2f(luminance[k]), min_ev, max_ev);
+    correction[k] = lut[(unsigned)roundf((exposure - min_ev) * lut_resolution)];
   }
+  dt_free_align(lut);
 }
 
 
