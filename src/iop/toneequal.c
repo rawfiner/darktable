@@ -676,7 +676,7 @@ static inline void compute_correction(const float *const restrict luminance,
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) schedule(static) \
-  dt_omp_firstprivate(correction, num_elem, luminance, factors, lut)
+  dt_omp_firstprivate(correction, num_elem, luminance, factors, lut, min_ev, max_ev, lut_resolution)
 #endif
   for(size_t k = 0; k < num_elem; ++k)
   {
@@ -852,8 +852,14 @@ static inline void apply_toneequalizer(const float *const restrict in,
 
   if(correction)
   {
+    clock_t begin = clock();
     compute_correction(luminance, correction, d->factors, d->smoothing, num_elem);
+    clock_t end = clock();
+    printf("compute corr: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+    begin = clock();
     apply_exposure(in, out, roi_in, roi_out, ch, correction);
+    end = clock();
+    printf("apply exposure: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
     dt_free_align(correction);
   }
   else
@@ -1034,7 +1040,10 @@ void toneeq_process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   else
   {
     // no caching path : compute no matter what
+    clock_t begin = clock();
     compute_luminance_mask(in, luminance, width, height, ch, d);
+    clock_t end = clock();
+    printf("lum mask: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
   }
 
   // Display output
