@@ -101,55 +101,167 @@ static inline float fast_clamp(const float value, const float bottom, const floa
 
 
 __DT_CLONE_TARGETS__
+static inline void upscale_bilinear(const float *const restrict in, const size_t width_in, const size_t height_in,
+                                        float *const restrict out, const size_t width_out, const size_t height_out,
+                                        const size_t ch)
+{
+  // Fast upscaling that tries to minimize memory accesses
+  size_t i_out = 0;
+  size_t j_out = 0;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  schedule(simd:static) aligned(in, out:64) \
+  dt_omp_firstprivate(in, out, width_out, height_out, width_in, height_in, ch, i_out, j_out)
+#endif
+  for(size_t i = 0; i < height_in-1; i++)
+  {
+    j_out = 0;
+    size_t y_prev;
+    float y_out = (float)i_out /(float)height_out;
+    float y_in = y_out * (float)height_in;
+    y_prev = (size_t)floorf(y_in);
+    while(y_prev != i)
+    {
+      i_out++;
+      y_out = (float)i_out /(float)height_out;
+      y_in = y_out * (float)height_in;
+      y_prev = (size_t)floorf(y_in);
+    }
+    size_t i_max = i_out;
+    do
+    {
+      i_max++;
+      y_out = (float)i_max /(float)height_out;
+      // Corresponding absolute coordinates of the pixel in input space
+      y_in = y_out * (float)height_in;
+      // Nearest neighbours coordinates in input space
+      y_prev = (size_t)floorf(y_in);
+    } while(y_prev == i);
+
+    for(size_t j = 0; j < width_in-1; j++)
+    {
+      const float* ne = &in[(i * width_in + j + 1) * ch];
+      const float* se = &in[((i + 1) * width_in + j + 1) * ch];
+      const float* nw = &in[(i * width_in + j) * ch];
+      const float* sw = &in[((i + 1) * width_in + j) * ch];
+      // find limits of output pixels that are in this border
+      size_t j_max = j_out;
+      size_t x_prev;
+      float x_out = (float)j_out /(float)width_out;
+      float x_in = x_out * (float)width_in;
+      x_prev = (size_t)floorf(x_in);
+      while(x_prev != j)
+      {
+        j_out++;
+        x_out = (float)j_out /(float)width_out;
+        x_in = x_out * (float)width_in;
+        x_prev = (size_t)floorf(x_in);
+      }
+
+      do
+      {
+        j_max++;
+        x_out = (float)j_max /(float)width_out;
+        // Corresponding absolute coordinates of the pixel in input space
+        x_in = x_out * (float)width_in;
+        // Nearest neighbours coordinates in input space
+         x_prev = (size_t)floorf(x_in);
+      } while(x_prev == j);
+
+      for(size_t c = 0; c < ch; c++)
+      {
+        float swc = sw[c];
+        float sec = se[c];
+        float nec = ne[c];
+        float nwc = nw[c];
+      for(size_t io = i_out; io < MIN(i_max, height_out); io++)
+      {
+        for(size_t jo = j_out; jo < MIN(j_max, width_out); jo++)
+        {
+          x_out = (float)jo /(float)width_out;
+          y_out = (float)io /(float)height_out;
+          // Corresponding absolute coordinates of the pixel in input space
+          x_in = x_out * (float)width_in;
+          y_in = y_out * (float)height_in;
+          const float Dy_next = (float)(i+1) - y_in;
+          const float Dy_prev = 1.f - Dy_next;
+          const float Dx_next = (float)(j+1) - x_in;
+          const float Dx_prev = 1.f - Dx_next;
+
+          float *const pixel_out = (float *)out + (io * width_out + jo) * ch;
+
+            pixel_out[c] = Dy_prev * (swc * Dx_next + sec * Dx_prev) +
+                           Dy_next * (nwc * Dx_next + nec * Dx_prev);
+          }
+        }
+      }
+      j_out = j_max;
+    }
+    i_out = i_max;
+  }
+}
+
+
+__DT_CLONE_TARGETS__
 static inline void interpolate_bilinear(const float *const restrict in, const size_t width_in, const size_t height_in,
                                         float *const restrict out, const size_t width_out, const size_t height_out,
                                         const size_t ch)
 {
   // Fast vectorized bilinear interpolation on ch channels
 #ifdef _OPENMP
-#pragma omp parallel for simd collapse(2) default(none) \
+#pragma omp parallel for simd default(none) \
   schedule(simd:static) aligned(in, out:64) \
   dt_omp_firstprivate(in, out, width_out, height_out, width_in, height_in, ch)
 #endif
   for(size_t i = 0; i < height_out; i++)
   {
+    const float y_out = (float)i /(float)height_out;
+    const float y_in = y_out * (float)height_in;
+
+    size_t y_prev = (size_t)floorf(y_in);
+    size_t y_next = y_prev + 1;
+
+    y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
+    y_next = (y_next < height_in) ? y_next : height_in - 1;
+
+    const size_t Y_prev = y_prev * width_in;
+    const size_t Y_next =  y_next * width_in;
+
+    const float Dy_next = (float)y_next - y_in;
+    const float Dy_prev = 1.f - Dy_next; // because next - prev = 1
+
+    const float *const Q_N = (float *)in + Y_prev * ch;
+    const float *const Q_S = (float *)in + Y_next * ch;
+    const float * outi = (float *)out + i * width_out * ch;
+
     for(size_t j = 0; j < width_out; j++)
     {
       // Relative coordinates of the pixel in output space
       const float x_out = (float)j /(float)width_out;
-      const float y_out = (float)i /(float)height_out;
 
       // Corresponding absolute coordinates of the pixel in input space
       const float x_in = x_out * (float)width_in;
-      const float y_in = y_out * (float)height_in;
 
       // Nearest neighbours coordinates in input space
       size_t x_prev = (size_t)floorf(x_in);
       size_t x_next = x_prev + 1;
-      size_t y_prev = (size_t)floorf(y_in);
-      size_t y_next = y_prev + 1;
 
       x_prev = (x_prev < width_in) ? x_prev : width_in - 1;
       x_next = (x_next < width_in) ? x_next : width_in - 1;
-      y_prev = (y_prev < height_in) ? y_prev : height_in - 1;
-      y_next = (y_next < height_in) ? y_next : height_in - 1;
+
 
       // Nearest pixels in input array (nodes in grid)
-      const size_t Y_prev = y_prev * width_in;
-      const size_t Y_next =  y_next * width_in;
-      const float *const Q_NW = (float *)in + (Y_prev + x_prev) * ch;
-      const float *const Q_NE = (float *)in + (Y_prev + x_next) * ch;
-      const float *const Q_SE = (float *)in + (Y_next + x_next) * ch;
-      const float *const Q_SW = (float *)in + (Y_next + x_prev) * ch;
+      const float *const Q_NW = (float *)Q_N + x_prev * ch;
+      const float *const Q_NE = (float *)Q_N + x_next * ch;
+      const float *const Q_SE = (float *)Q_S + x_next * ch;
+      const float *const Q_SW = (float *)Q_S + x_prev * ch;
 
       // Spatial differences between nodes
-      const float Dy_next = (float)y_next - y_in;
-      const float Dy_prev = 1.f - Dy_next; // because next - prev = 1
       const float Dx_next = (float)x_next - x_in;
       const float Dx_prev = 1.f - Dx_next; // because next - prev = 1
 
       // Interpolate over ch layers
-      float *const pixel_out = (float *)out + (i * width_out + j) * ch;
+      float *const pixel_out = (float *)outi + j * ch;
 
 #pragma unroll
       for(size_t c = 0; c < ch; c++)

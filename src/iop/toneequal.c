@@ -759,10 +759,16 @@ static inline void compute_luminance_mask(const float *const restrict in, float 
 
     case(DT_TONEEQ_EIGF):
     {
+      clock_t begin = clock();
       luminance_mask(in, luminance, width, height, ch, d->method, d->exposure_boost,
                       CONTRAST_FULCRUM, d->contrast_boost);
+      clock_t end = clock();
+      printf("lum mask: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+      begin = clock();
       fast_eigf_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
                     DT_GF_BLENDING_LINEAR, d->scale, d->quantization, exp2f(-14.0f), 4.0f);
+      end = clock();
+      printf("eigf: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
       break;
     }
 
@@ -1034,7 +1040,10 @@ void toneeq_process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
 
     else // make it dummy-proof
     {
+      clock_t begin = clock();
       compute_luminance_mask(in, luminance, width, height, ch, d);
+      clock_t end = clock();
+      printf("compute lum: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
     }
   }
   else
@@ -1043,7 +1052,7 @@ void toneeq_process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
     clock_t begin = clock();
     compute_luminance_mask(in, luminance, width, height, ch, d);
     clock_t end = clock();
-    printf("lum mask: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+    printf("comp lum mask: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
   }
 
   // Display output

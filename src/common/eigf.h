@@ -132,6 +132,67 @@ dt_omp_firstprivate(out, Ndim) \
   dt_free_align(in);
 }
 
+static inline void eigf_variance_analysis_no_mask(const float *const restrict guide, // I
+                                    float *const restrict out,
+                                    const size_t width, const size_t height,
+                                    const float sigma)
+{
+  // We also use gaussian blurs instead of the square blurs of the guided filter
+  const size_t Ndim = width * height;
+  float *const restrict in_blurred = dt_alloc_sse_ps(Ndim);
+  float *const restrict in2 = dt_alloc_sse_ps(Ndim);
+  float *const restrict in2_blurred = dt_alloc_sse_ps(Ndim);
+
+  float ming = 10000000.0f;
+  float maxg = 0.0f;
+  float ming2 = 10000000.0f;
+  float maxg2 = 0.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(guide, in2, Ndim) \
+  schedule(simd:static) aligned(guide, in2:64) \
+  reduction(max:maxg, maxg2)\
+  reduction(min:ming, ming2)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float pixelg = guide[k];
+    const float pixelg2 = pixelg * pixelg;
+    in2[k] = pixelg2;
+    if(pixelg < ming) ming = pixelg;
+    if(pixelg > maxg) maxg = pixelg;
+    if(pixelg2 < ming2) ming2 = pixelg2;
+    if(pixelg2 > maxg2) maxg2 = pixelg2;
+  }
+
+  // faster to use 2 1-channel gaussian blurs than 1 4-channels gaussian blur
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &maxg, &ming, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, guide, in_blurred);
+  dt_gaussian_free(g);
+  g = dt_gaussian_init(width, height, 1, &maxg2, &ming2, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, in2, in2_blurred);
+  dt_gaussian_free(g);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in_blurred, in2_blurred, out, Ndim) \
+  schedule(simd:static) aligned(in_blurred, in2_blurred, out:64)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float avg = in_blurred[k];
+    out[2 * k] = avg;
+    out[2 * k + 1] = in2_blurred[k] - avg * avg;
+  }
+
+  dt_free_align(in_blurred);
+  dt_free_align(in2);
+  dt_free_align(in2_blurred);
+}
+
+
 void eigf_blending(float *const restrict image, const float *const restrict mask,
                   const float *const restrict av, const size_t Ndim,
                   const dt_iop_guided_filter_blending_t filter,
@@ -166,6 +227,38 @@ void eigf_blending(float *const restrict image, const float *const restrict mask
     }
   }
 }
+
+void eigf_blending_no_mask(float *const restrict image,
+                  const float *const restrict av, const size_t Ndim,
+                  const dt_iop_guided_filter_blending_t filter,
+                  const float feathering)
+{
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(image, av, Ndim, feathering, filter) \
+  schedule(simd:static) aligned(image, av:64)
+#endif
+  for(size_t k = 0; k < Ndim; k++)
+  {
+    const float avg_g = av[k * 2];
+    const float var_g = av[k * 2 + 1];
+    const float norm_g = fmaxf(avg_g * image[k], 1E-6);
+    const float normalized_var_guide = var_g / norm_g;
+    const float a = normalized_var_guide / (normalized_var_guide + feathering);
+    const float b = avg_g - a * avg_g;
+    if(filter == DT_GF_BLENDING_LINEAR)
+    {
+      image[k] = fmaxf(image[k] * a + b, MIN_FLOAT);
+    }
+    else
+    {
+      // filter == DT_GF_BLENDING_GEOMEAN
+      image[k] *= fmaxf(image[k] * a + b, MIN_FLOAT);
+      image[k] = sqrtf(image[k]);
+    }
+  }
+}
+
 
 __DT_CLONE_TARGETS__
 static inline void fast_eigf_surface_blur(float *const restrict image,
@@ -206,23 +299,59 @@ static inline void fast_eigf_surface_blur(float *const restrict image,
   // Iterations of filter models the diffusion, sort of
   for(int i = 0; i < iterations; i++)
   {
-    // (Re)build the mask from the quantized image to help guiding
-    quantize(image, mask, width * height, quantization, quantize_min, quantize_max);
-    // Downsample the image for speed-up
+    clock_t begin = clock();
     interpolate_bilinear(image, width, height, ds_image, ds_width, ds_height, 1);
-    interpolate_bilinear(mask, width, height, ds_mask, ds_width, ds_height, 1);
-    eigf_variance_analysis(ds_mask, ds_image, ds_av, ds_width, ds_height, ds_sigma);
-    // Upsample the variances and averages
-    interpolate_bilinear(ds_av, ds_width, ds_height, av, width, height, 4);
-    if(i != iterations - 1)
+    clock_t end = clock();
+    printf("downscale: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+    if(quantization != 0.0f)
     {
-      // Process the intermediate filtered image
-      eigf_blending(image, mask, av, num_elem, DT_GF_BLENDING_LINEAR, adapted_feathering);
+      // (Re)build the mask from the quantized image to help guiding
+      quantize(image, mask, width * height, quantization, quantize_min, quantize_max);
+      // Downsample the image for speed-up
+      interpolate_bilinear(mask, width, height, ds_mask, ds_width, ds_height, 1);
+      eigf_variance_analysis(ds_mask, ds_image, ds_av, ds_width, ds_height, ds_sigma);
+      // Upsample the variances and averages
+            begin = clock();
+      upscale_bilinear(ds_av, ds_width, ds_height, av, width, height, 4);
+            end = clock();
+            printf("upscale: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+
+      if(i != iterations - 1)
+      {
+        // Process the intermediate filtered image
+        eigf_blending(image, mask, av, num_elem, DT_GF_BLENDING_LINEAR, adapted_feathering);
+      }
+      else
+      {
+        // Finally, blend the guided image
+        eigf_blending(image, mask, av, num_elem, filter, adapted_feathering);
+      }
     }
     else
     {
-      // Finally, blend the guided image
-      eigf_blending(image, mask, av, num_elem, filter, adapted_feathering);
+      begin = clock();
+      eigf_variance_analysis_no_mask(ds_image, ds_av, ds_width, ds_height, ds_sigma);
+      end = clock();
+      printf("var: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+      // Upsample the variances and averages
+      begin = clock();
+      interpolate_bilinear(ds_av, ds_width, ds_height, av, width, height, 2);
+      end = clock();
+      printf("upscale: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+      begin = clock();
+      if(i != iterations - 1)
+      {
+        // Process the intermediate filtered image
+        eigf_blending_no_mask(image, av, num_elem, DT_GF_BLENDING_LINEAR, adapted_feathering);
+      }
+      else
+      {
+        // Finally, blend the guided image
+        eigf_blending_no_mask(image, av, num_elem, filter, adapted_feathering);
+      }
+      end = clock();
+      printf("blend: %lf\n", (double)(end - begin)/CLOCKS_PER_SEC);
+
     }
   }
 
