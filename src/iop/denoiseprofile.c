@@ -697,6 +697,164 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
 
 }
 
+static inline size_t get_dimension_for_min_max_downscaling(size_t dimension, size_t radius)
+{
+  if(radius <= 2)
+    return dimension;
+  if(dimension % radius == 0)
+    return 2 * (size_t)((float)dimension / (float)radius);
+  else
+    return 2 * (size_t)((float)dimension / (float)radius + 1);
+}
+
+// downscaling based on the preservation of local minimum and maximum
+// for each sequence of "radius" pixels, we keep only the minimum and maximum,
+// and we put them in the destination image in a way that preserves their
+// order: if minimum is at the right of the maximum in the original image
+// we put minimum at the right of the maximum in the destination image
+// downscaling is performed in 2 steps:
+// (1) horizontal downscaling
+// (2) vertical downscaling
+// coefs allow to reconstruct the image from the downsampled image
+// image[i] = coefs[i] * min_i + (1.0f - coefs[i]) * max_i
+// we need 2 coefs arrays, one to invert perfectly the horizontal downscaling
+// and one to invert perfectly the vertical downscaling.
+// dimensions:
+// - coefs_h: width * height
+// - coefs_v: ds_width * height
+static inline void downscaling_with_min_max_heuristic(const float *const restrict image,
+          const size_t width, const size_t height, float *const restrict ds_image,
+          float *const restrict coefs_h, float *const restrict coefs_v,
+          const size_t ds_width, const size_t ds_height, const size_t radius,
+          const size_t ch)
+{
+  if(radius <= 2)
+  {
+    memcpy(ds_image, image, width * height);
+    return;
+  }
+  float *const restrict ds_horiz = dt_alloc_sse_ps(dt_round_size_sse(ds_width * height * ch));
+  // downscale in 2 phase:
+  // horizontal downscaling, then vertical downscaling
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(image, ds_horiz, coefs_h, width, height, ds_width, radius, ch) \
+  schedule(simd:static) aligned(image, ds_horiz, coefs_h:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    size_t jdest = 0;
+    for(size_t j = 0; j < width; j+=radius)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        size_t index = (i * width + j) * ch + c;
+        float min = image[index];
+        float max = image[index];
+        float index_min = index;
+        float index_max = index;
+        const size_t last = MIN(radius, width - 1 - j);
+        for(size_t jj = 1; jj < last; jj++)
+        {
+          size_t index_jj = index + jj * ch;
+          float current_pixel = image[index_jj];
+          if(current_pixel < min)
+          {
+            min = current_pixel;
+            index_min = index_jj;
+          }
+          if(current_pixel > max)
+          {
+            max = current_pixel;
+            index_max = index_jj;
+          }
+        }
+        // keep the order of min and max in the image
+        if(index_min < index_max)
+        {
+          ds_horiz[i * ds_width + jdest] = min;
+          ds_horiz[i * ds_width + jdest + 1] = max;
+        }
+        else
+        {
+          ds_horiz[i * ds_width + jdest] = max;
+          ds_horiz[i * ds_width + jdest + 1] = min;
+        }
+        // now that we know min and max, compute for each pixel
+        // a weight to be able to reconstruct it perfectly
+        // from downscaled image
+        for(size_t jj = 0; jj < last; jj++)
+        {
+          size_t index_jj = index + jj * ch;
+          float current_pixel = image[index_jj];
+          float coef = (current_pixel - min) / fmaxf(max - min, 1E-6);
+          coefs_v[index_jj] = coef;
+        }
+      }
+      jdest += 2;
+    }
+  }
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(ds_horiz, ds_image, coefs_v, ds_width, height, ds_height, radius, ch) \
+  schedule(simd:static) aligned(ds_horiz, ds_image, coefs_v:64)
+#endif
+  for(size_t j = 0; j < ds_width; j++)
+  {
+    size_t idest = 0;
+    for(size_t i = 0; i < height; i+=radius)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        size_t index = (i * ds_width + j) * ch + c;
+        float min = ds_horiz[index];
+        float max = ds_horiz[index];
+        float index_min = index;
+        float index_max = index;
+        const size_t last = MIN(radius, height - 1 - i);
+        for(size_t ii = 1; ii < last; ii++)
+        {
+          size_t index_ii = index + ii * ds_width;
+          float current_pixel = ds_horiz[index_ii];
+          if(current_pixel < min)
+          {
+            min = current_pixel;
+            index_min = index_ii;
+          }
+          if(current_pixel > max)
+          {
+            max = current_pixel;
+            index_max = index_ii;
+          }
+        }
+        // keep the order of min and max in the ds_horiz
+        if(index_min < index_max)
+        {
+          ds_image[idest * ds_width + j] = min;
+          ds_image[(idest + 1) * ds_width + j] = max;
+        }
+        else
+        {
+          ds_image[idest * ds_width + j] = max;
+          ds_image[(idest + 1) * ds_width + j] = min;
+        }
+        // now that we know min and max, compute for each pixel
+        // a weight to be able to reconstruct it perfectly
+        // from downscaled image
+        for(size_t ii = 0; ii < last; ii++)
+        {
+          size_t index_ii = index + ii * ds_width;
+          float current_pixel = ds_horiz[index_ii];
+          float coef = (current_pixel - min) / fmaxf(max - min, 1E-6);
+          coefs_v[index_ii] = coef;
+        }
+      }
+      idest += 2;
+    }
+  }
+  dt_free_align(ds_horiz);
+}
+
 static inline void precondition(const float *const in, float *const buf, const int wd, const int ht,
                                 const float a[3], const float b[3])
 {
@@ -2894,12 +3052,28 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_denoiseprofile_params_t *d = (dt_iop_denoiseprofile_params_t *)piece->data;
+  const size_t downscale_radius = 4;
+  const size_t width = roi_in->width;
+  const size_t height = roi_in->height;
+  const size_t ds_width = get_dimension_for_min_max_downscaling(width, downscale_radius);
+  const size_t ds_height = get_dimension_for_min_max_downscaling(height, downscale_radius);
+  const size_t ch = piece->colors;
+  float* const ds_image = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
+  float* const coefs_h = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float* const coefs_v = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
+  downscaling_with_min_max_heuristic(ivoid, width, height, ds_image,
+            coefs_h, coefs_v, ds_width, ds_height, downscale_radius, ch);
+
   if(d->mode == MODE_NLMEANS || d->mode == MODE_NLMEANS_AUTO)
     process_nlmeans(self, piece, ivoid, ovoid, roi_in, roi_out);
   else if(d->mode == MODE_WAVELETS || d->mode == MODE_WAVELETS_AUTO)
     process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_decompose, eaw_synthesize);
   else
     process_variance(self, piece, ivoid, ovoid, roi_in, roi_out);
+
+  dt_free_align(ds_image);
+  dt_free_align(coefs_h);
+  dt_free_align(coefs_v);
 }
 
 #if defined(__SSE2__)
