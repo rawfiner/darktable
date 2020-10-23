@@ -772,13 +772,13 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
         // keep the order of min and max in the image
         if(index_min < index_max)
         {
-          ds_horiz[i * ds_width + jdest] = min;
-          ds_horiz[i * ds_width + jdest + 1] = max;
+          ds_horiz[(i * ds_width + jdest) * ch + c] = min;
+          ds_horiz[(i * ds_width + jdest + 1) * ch + c] = max;
         }
         else
         {
-          ds_horiz[i * ds_width + jdest] = max;
-          ds_horiz[i * ds_width + jdest + 1] = min;
+          ds_horiz[(i * ds_width + jdest) * ch + c] = max;
+          ds_horiz[(i * ds_width + jdest + 1) * ch + c] = min;
         }
         // now that we know min and max, compute for each pixel
         // a weight to be able to reconstruct it perfectly
@@ -788,7 +788,7 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
           size_t index_jj = index + jj * ch;
           float current_pixel = image[index_jj];
           float coef = (current_pixel - min) / fmaxf(max - min, 1E-6);
-          coefs_v[index_jj] = coef;
+          coefs_h[index_jj] = coef;
         }
       }
       jdest += 2;
@@ -814,7 +814,7 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
         const size_t last = MIN(radius, height - 1 - i);
         for(size_t ii = 1; ii < last; ii++)
         {
-          size_t index_ii = index + ii * ds_width;
+          size_t index_ii = index + ii * ds_width * ch;
           float current_pixel = ds_horiz[index_ii];
           if(current_pixel < min)
           {
@@ -830,20 +830,20 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
         // keep the order of min and max in the ds_horiz
         if(index_min < index_max)
         {
-          ds_image[idest * ds_width + j] = min;
-          ds_image[(idest + 1) * ds_width + j] = max;
+          ds_image[(idest * ds_width + j) * ch + c] = min;
+          ds_image[((idest + 1) * ds_width + j) * ch + c] = max;
         }
         else
         {
-          ds_image[idest * ds_width + j] = max;
-          ds_image[(idest + 1) * ds_width + j] = min;
+          ds_image[(idest * ds_width + j) * ch + c] = max;
+          ds_image[((idest + 1) * ds_width + j) * ch + c] = min;
         }
         // now that we know min and max, compute for each pixel
         // a weight to be able to reconstruct it perfectly
         // from downscaled image
         for(size_t ii = 0; ii < last; ii++)
         {
-          size_t index_ii = index + ii * ds_width;
+          size_t index_ii = index + ii * ds_width * ch;
           float current_pixel = ds_horiz[index_ii];
           float coef = (current_pixel - min) / fmaxf(max - min, 1E-6);
           coefs_v[index_ii] = coef;
@@ -3052,7 +3052,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_denoiseprofile_params_t *d = (dt_iop_denoiseprofile_params_t *)piece->data;
-  const size_t downscale_radius = 4;
+  const size_t downscale_radius = 8;
   const size_t width = roi_in->width;
   const size_t height = roi_in->height;
   const size_t ds_width = get_dimension_for_min_max_downscaling(width, downscale_radius);
@@ -3064,6 +3064,18 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   downscaling_with_min_max_heuristic(ivoid, width, height, ds_image,
             coefs_h, coefs_v, ds_width, ds_height, downscale_radius, ch);
 
+  float* out = (float*)ovoid;
+  for(size_t i = 0; i < ds_height; i++)
+  {
+    for(size_t j = 0; j < ds_width; j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+        out[(i * width + j) * ch + c] = ds_image[(i * ds_width + j) * ch + c];
+    }
+  }
+
+  return;
+
   if(d->mode == MODE_NLMEANS || d->mode == MODE_NLMEANS_AUTO)
     process_nlmeans(self, piece, ivoid, ovoid, roi_in, roi_out);
   else if(d->mode == MODE_WAVELETS || d->mode == MODE_WAVELETS_AUTO)
@@ -3071,9 +3083,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   else
     process_variance(self, piece, ivoid, ovoid, roi_in, roi_out);
 
-  dt_free_align(ds_image);
-  dt_free_align(coefs_h);
-  dt_free_align(coefs_v);
+  // if(ds_image != NULL) dt_free_align(ds_image);
+  // if(coefs_h != NULL) dt_free_align(coefs_h);
+  // if(coefs_v != NULL) dt_free_align(coefs_v);
 }
 
 #if defined(__SSE2__)
