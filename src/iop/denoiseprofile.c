@@ -3058,9 +3058,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t ds_width = get_dimension_for_min_max_downscaling(width, downscale_radius);
   const size_t ds_height = get_dimension_for_min_max_downscaling(height, downscale_radius);
   const size_t ch = piece->colors;
-  float* const ds_image = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
-  float* const coefs_h = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float* const coefs_v = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
+  float* const ds_image = dt_alloc_align(64, sizeof(float) * ds_width * ds_height * ch);
+  float* const coefs_h = dt_alloc_align(64, sizeof(float) * width * height * ch);
+  float* const coefs_v = dt_alloc_align(64, sizeof(float) * ds_width * height * ch);
   downscaling_with_min_max_heuristic(ivoid, width, height, ds_image,
             coefs_h, coefs_v, ds_width, ds_height, downscale_radius, ch);
 
@@ -3083,9 +3083,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   else
     process_variance(self, piece, ivoid, ovoid, roi_in, roi_out);
 
-  // if(ds_image != NULL) dt_free_align(ds_image);
-  // if(coefs_h != NULL) dt_free_align(coefs_h);
-  // if(coefs_v != NULL) dt_free_align(coefs_v);
+  if(ds_image != NULL) dt_free_align(ds_image);
+  if(coefs_h != NULL) dt_free_align(coefs_h);
+  if(coefs_v != NULL) dt_free_align(coefs_v);
 }
 
 #if defined(__SSE2__)
