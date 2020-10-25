@@ -716,7 +716,7 @@ static inline size_t get_dimension_for_min_max_downscaling(size_t dimension, siz
 // (1) horizontal downscaling
 // (2) vertical downscaling
 // coefs allow to reconstruct the image from the downsampled image
-// image[i] = coefs[i] * min_i + (1.0f - coefs[i]) * max_i
+// image[i] = (1.0f - coefs[i]) * min_i + coefs[i] * max_i
 // we need 2 coefs arrays, one to invert perfectly the horizontal downscaling
 // and one to invert perfectly the vertical downscaling.
 // dimensions:
@@ -730,7 +730,7 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
 {
   if(radius <= 2)
   {
-    memcpy(ds_image, image, width * height);
+    memcpy(ds_image, image, width * height * ch * sizeof(float));
     return;
   }
   float *const restrict ds_horiz = dt_alloc_sse_ps(dt_round_size_sse(ds_width * height * ch));
@@ -753,7 +753,7 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
         float max = image[index];
         float index_min = index;
         float index_max = index;
-        const size_t last = MIN(radius, width - 1 - j);
+        const size_t last = MIN(radius, width - j);
         for(size_t jj = 1; jj < last; jj++)
         {
           size_t index_jj = index + jj * ch;
@@ -811,7 +811,7 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
         float max = ds_horiz[index];
         float index_min = index;
         float index_max = index;
-        const size_t last = MIN(radius, height - 1 - i);
+        const size_t last = MIN(radius, height - i);
         for(size_t ii = 1; ii < last; ii++)
         {
           size_t index_ii = index + ii * ds_width * ch;
@@ -850,6 +850,91 @@ static inline void downscaling_with_min_max_heuristic(const float *const restric
         }
       }
       idest += 2;
+    }
+  }
+  dt_free_align(ds_horiz);
+}
+
+static inline void upscaling_with_min_max_heuristic(const float *const restrict ds_image,
+          const size_t ds_width, const size_t ds_height, float *const restrict image,
+          float *const restrict coefs_h, float *const restrict coefs_v,
+          const size_t width, const size_t height, const size_t radius,
+          const size_t ch)
+{
+  if(radius <= 2)
+  {
+    memcpy(image, ds_image, width * height * ch * sizeof(float));
+    return;
+  }
+  float *const restrict ds_horiz = dt_alloc_sse_ps(dt_round_size_sse(ds_width * height * ch));
+  // upscale in 2 phases:
+  // vertical upscaling, then horizontal upscaling
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(ds_horiz, ds_image, coefs_v, ds_width, height, ds_height, radius, ch) \
+  schedule(simd:static) aligned(ds_horiz, ds_image, coefs_v:64)
+#endif
+  for(size_t j = 0; j < ds_width; j++)
+  {
+    size_t idest = 0;
+    for(size_t i = 0; i < height; i+=radius)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        size_t index = (i * ds_width + j) * ch + c;
+        float min = ds_image[(idest * ds_width + j) * ch + c];
+        float max = ds_image[((idest + 1) * ds_width + j) * ch + c];
+        if(max < min)
+        {
+          float tmp = max;
+          max = min;
+          min = tmp;
+        }
+        const size_t last = MIN(radius, height - i);
+        // now that we know min and max, compute for each pixel
+        // a weight to be able to reconstruct it perfectly
+        // from downscaled image
+        for(size_t ii = 0; ii < last; ii++)
+        {
+          size_t index_ii = index + ii * ds_width * ch;
+          float coef = coefs_v[index_ii];
+          ds_horiz[index_ii] = min * (1.0f - coef) + max * coef;
+        }
+      }
+      idest += 2;
+    }
+  }
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(image, ds_horiz, coefs_h, width, height, ds_width, radius, ch) \
+  schedule(simd:static) aligned(image, ds_horiz, coefs_h:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    size_t jdest = 0;
+    for(size_t j = 0; j < width; j+=radius)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        size_t index = (i * width + j) * ch + c;
+        float min = ds_horiz[(i * ds_width + jdest) * ch + c];
+        float max = ds_horiz[(i * ds_width + jdest + 1) * ch + c];
+        if(max < min)
+        {
+          float tmp = max;
+          max = min;
+          min = tmp;
+        }
+        const size_t last = MIN(radius, width - j);
+        for(size_t jj = 0; jj < last; jj++)
+        {
+          size_t index_jj = index + jj * ch;
+          float coef = coefs_h[index_jj];
+          image[index_jj] = min * (1.0f - coef) + max * coef;
+        }
+      }
+      jdest += 2;
     }
   }
   dt_free_align(ds_horiz);
@@ -3052,7 +3137,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
              void *const ovoid, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
   dt_iop_denoiseprofile_params_t *d = (dt_iop_denoiseprofile_params_t *)piece->data;
-  const size_t downscale_radius = 8;
+  const size_t downscale_radius = 23;
   const size_t width = roi_in->width;
   const size_t height = roi_in->height;
   const size_t ds_width = get_dimension_for_min_max_downscaling(width, downscale_radius);
@@ -3063,7 +3148,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float* const coefs_v = dt_alloc_align(64, sizeof(float) * ds_width * height * ch);
   downscaling_with_min_max_heuristic(ivoid, width, height, ds_image,
             coefs_h, coefs_v, ds_width, ds_height, downscale_radius, ch);
-
+  upscaling_with_min_max_heuristic(ds_image, ds_width, ds_height,
+            ovoid, coefs_h, coefs_v, width, height, downscale_radius, ch);
+  return;
   float* out = (float*)ovoid;
   for(size_t i = 0; i < ds_height; i++)
   {
@@ -3075,7 +3162,6 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   }
 
   return;
-
   if(d->mode == MODE_NLMEANS || d->mode == MODE_NLMEANS_AUTO)
     process_nlmeans(self, piece, ivoid, ovoid, roi_in, roi_out);
   else if(d->mode == MODE_WAVELETS || d->mode == MODE_WAVELETS_AUTO)
