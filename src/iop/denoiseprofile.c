@@ -2160,7 +2160,31 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
                                 const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                 const dt_iop_roi_t *const roi_out)
 {
-  process_nlmeans_cpu(piece,ivoid,ovoid,roi_in,roi_out,nlmeans_denoise_sse2);
+  // process_nlmeans_cpu(piece,ivoid,ovoid,roi_in,roi_out,nlmeans_denoise_sse2);
+  // return;
+  const size_t downscale_radius = 4;
+  const size_t width = roi_in->width;
+  const size_t height = roi_in->height;
+  const size_t ds_width = get_dimension_for_min_max_downscaling(width, downscale_radius);
+  const size_t ds_height = get_dimension_for_min_max_downscaling(height, downscale_radius);
+  const size_t ch = piece->colors;
+  float* const ds_image = dt_alloc_align(64, sizeof(float) * ds_width * ds_height * ch);
+  float* const ds_out = dt_alloc_align(64, sizeof(float) * ds_width * ds_height * ch);
+  float* const coefs_h = dt_alloc_align(64, sizeof(float) * width * height * ch);
+  float* const coefs_v = dt_alloc_align(64, sizeof(float) * ds_width * height * ch);
+  dt_iop_roi_t roi_downscaled;
+  memcpy(&roi_downscaled, roi_in, sizeof(dt_iop_roi_t));
+  roi_downscaled.width = ds_width;
+  roi_downscaled.height = ds_height;
+  downscaling_with_min_max_heuristic(ivoid, width, height, ds_image,
+    coefs_h, coefs_v, ds_width, ds_height, downscale_radius, ch);
+  process_nlmeans_cpu(piece,ds_image,ds_out,&roi_downscaled,&roi_downscaled,nlmeans_denoise_sse2);
+  upscaling_with_min_max_heuristic(ds_out, ds_width, ds_height,
+    ovoid, coefs_h, coefs_v, width, height, downscale_radius, ch);
+  if(ds_image != NULL) dt_free_align(ds_image);
+  if(ds_out != NULL) dt_free_align(ds_out);
+  if(coefs_h != NULL) dt_free_align(coefs_h);
+  if(coefs_v != NULL) dt_free_align(coefs_v);
   return;
 }
 #endif
