@@ -124,6 +124,7 @@ const dt_iop_order_entry_t legacy_order[] = {
   { {38.0f }, "nlmeans", 0},
   { {39.0f }, "globaltonemap", 0},
   { {40.0f }, "shadhi", 0},
+  { {40.5f }, "localcontrastrgb", 0},
   { {41.0f }, "atrous", 0},
   { {42.0f }, "bilat", 0},
   { {43.0f }, "colorzones", 0},
@@ -204,6 +205,7 @@ const dt_iop_order_entry_t v30_order[] = {
                                   //    of further edits (styles etc.)
   { {31.0f }, "defringe", 0},        // desaturate fringes in Lab, so needs properly calibrated colours
                                   //    in order for chromaticity to be meaningful,
+  { {31.5f }, "localcontrastrgb", 0} // frequential operation, needs a signal as scene-referred as possible to avoid halos
   { {32.0f }, "atrous", 0},          // frequential operation, needs a signal as scene-referred as possible to avoid halos
   { {33.0f }, "lowpass", 0},         // same
   { {34.0f }, "highpass", 0},        // same
@@ -661,6 +663,7 @@ GList *dt_ioppr_get_iop_order_list(int32_t imgid, gboolean sorted)
           _insert_before(iop_order_list, "rgbcurve", "colorbalancergb");
           _insert_before(iop_order_list, "ashift", "cacorrectrgb");
           _insert_before(iop_order_list, "graduatednd", "crop");
+          _insert_before(iop_order_list, "atrous", "localcontrastrgb");
         }
       }
       else if(version == DT_IOP_ORDER_LEGACY)

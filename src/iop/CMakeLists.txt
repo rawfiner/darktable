@@ -147,6 +147,7 @@ add_iop(channelmixerrgb "channelmixerrgb.c" "../chart/common.c")
 add_iop(censorize "censorize.c")
 add_iop(colorbalancergb "colorbalancergb.c")
 add_iop(cacorrectrgb "cacorrectrgb.c")
+add_iop(localcontrastrgb "localcontrastrgb.c")
 
 if(Rsvg2_FOUND)
   add_iop(watermark "watermark.c")
