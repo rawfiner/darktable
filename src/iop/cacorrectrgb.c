@@ -29,31 +29,8 @@
 #include <gtk/gtk.h>
 #include <stdlib.h>
 
-// This is an example implementation of an image operation module that does nothing useful.
-// It demonstrates how the different functions work together. To build your own module,
-// take all of the functions that are mandatory, stripping them of comments.
-// Then add only the optional functions that are required to implement the functionality
-// you need. Don't copy default implementations (hint: if you don't need to change or add
-// anything, you probably don't need the copy). Make sure you choose descriptive names
-// for your fields and variables. The ones given here are just examples; rename them.
-//
-// To have your module compile and appear in darkroom, add it to CMakeLists.txt, with
-//  add_iop(useless "useless.c")
-// and to iop_order.c, in the initialisation of legacy_order & v30_order with:
-//  { {XX.0f }, "useless", 0},
-
-// This is the version of the module's parameters,
-// and includes version information about compile-time dt.
-// The first released version should be 1.
 DT_MODULE_INTROSPECTION(1, dt_iop_cacorrectrgb_params_t)
 
-// TODO: some build system to support dt-less compilation and translation!
-
-// Enums used in params_t can have $DESCRIPTIONs that will be used to
-// automatically populate a combobox with dt_bauhaus_combobox_from_params.
-// They are also used in the history changes tooltip.
-// Combobox options will be presented in the same order as defined here.
-// These numbers must not be changed when a new version is introduced.
 typedef enum dt_iop_cacorrectrgb_guide_channel_t
 {
   DT_CACORRECT_RGB_R = 0,    // $DESCRIPTION: "red"
@@ -101,20 +78,136 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
-/** process, all real work is done here. */
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  // this is called for preview and full pipe separately, each with its own pixelpipe piece.
-  // get our data struct:
-  //dt_iop_cacorrectrgb_params_t *d = (dt_iop_cacorrectrgb_params_t *)piece->data;
-  // the total scale is composed of scale before input to the pipeline (iscale),
-  // and the scale of the roi.
-  //const float scale = piece->iscale / roi_in->scale;
-  // how many colors in our buffer?
+  dt_iop_cacorrectrgb_params_t *d = (dt_iop_cacorrectrgb_params_t *)piece->data;
+  const float scale = piece->iscale / roi_in->scale;
   const int ch = piece->colors;
-
   memcpy(ovoid, ivoid, sizeof(float) * ch * roi_out->height * roi_in->width);
+  if(ch != 4 || (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW
+     || (piece->pipe->type & DT_DEV_PIXELPIPE_THUMBNAIL) == DT_DEV_PIXELPIPE_THUMBNAIL)
+  {
+    return;
+  }
+  const size_t width = roi_out->width;
+  const size_t height = roi_out->height;
+  const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
+  const size_t iter = MAX(d->radius / scale, 1);
+  // rpatch is the radius of the patch that is used to compare the
+  // channels and select the best shift
+  const int64_t rpatch = 2;
+  // radius of the local box in which we need to find the minimum and maximum
+  // to compare patches
+  const int64_t radius = iter + rpatch;
+  const float* in = (float*)ivoid;
+  float* out = (float*)ovoid;
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, out, width, height, ch, iter, rpatch, radius, guide) \
+  schedule(static)
+#endif
+  for(size_t i = radius; i < height - radius; i++)
+  {
+    const size_t width_transformed = 2 * radius + 1;
+    float* transformed = malloc(sizeof(float) * width_transformed * width_transformed * ch);
+    for(size_t j = radius; j < width - radius; j++)
+    {
+      // find local maximum and minimum on all channels in
+      // i+-(radius + rpatch), j+-(radius + rpatch)
+      // then, express every pixel as (1 - a) * min + a * max
+      // then, compute b = 2.0f * fabs(a - 0.5f)
+      // we will use these values to compare channels between them.
+      // these values should be close to 1 everywhere except near edges or gradients
+      // TODO optimise this.
+      float max[3] = {0.0f, 0.0f, 0.0f};
+      float min[3] = {1E6f, 1E6f, 1E6f};
+      for(size_t ii = i - radius; ii <= i + radius; ii++)
+      {
+        for(size_t jj = j - radius; jj <= j + radius; jj++)
+        {
+          for(size_t c = 0; c < 3; c++)
+          {
+            const float inc = in[(ii * width + jj) * ch + c];
+            if(inc < min[c]) min[c] = inc;
+            if(inc > max[c]) max[c] = inc;
+          }
+        }
+      }
+      if(max[guide] / fmaxf(min[guide], 1E-6) < 1.5f) continue;
+
+      size_t ri = 0;
+      for(size_t ii = i - radius; ii <= i + radius; ii++)
+      {
+        size_t rj = 0;
+        for(size_t jj = j - radius; jj <= j + radius; jj++)
+        {
+          for(size_t c = 0; c < 3; c++)
+          {
+            const float inc = in[(ii * width + jj) * ch + c];
+            // in = a * max + (1-a) * min
+            float a = (inc - min[c]) / fmaxf(max[c] - min[c], 1E-6);
+            transformed[(ri * width_transformed + rj) * ch + c] = 2.0f * fabs(a - 0.5f);
+          }
+          rj++;
+        }
+        ri++;
+      }
+
+      for(size_t c = 0; c < ch; c++)
+      {
+        if(c == guide || c == 4) continue;
+        // find best shift in transformed image
+        // in transformed image, the center is at coordinate [radius, radius]
+        size_t shft_i = radius;
+        size_t shft_j = radius;
+        for(int k = 0; k < iter; k++)
+        {
+          if(MAX(fabs((int64_t)shft_i - radius), fabs((int64_t)shft_j - radius)) < k) break;
+          // compute alignment score between guide[radius,radius]
+          // and c[shft_ii, shft_jj] with
+          // shft_ii and shft_jj in shft_i+[-1,1] and shft_j+[-1,1].
+          // then, update shft_i and shft_j with the shft_ii and
+          // shft_jj that delivered the best score (i.e. the smaller
+          // mean squared error)
+          // TODO optimise this.
+          float min_error = 1E6f;
+          float best_shft_ii = shft_i;
+          float best_shft_jj = shft_j;
+          for(int shft_ii = shft_i - 1; shft_ii <= shft_i + 1; shft_ii++)
+          {
+            for(int shft_jj = shft_j - 1; shft_jj <= shft_j + 1; shft_jj++)
+            {
+              float error = 0.0f;
+              for(int pi = -rpatch; pi <= rpatch; pi++)
+              {
+                for(int pj = -rpatch; pj <= rpatch; pj++)
+                {
+                  float guide_value = transformed[((radius + pi) * width_transformed + (radius + pj)) * ch + guide];
+                  float channel_value = transformed[((shft_ii + pi) * width_transformed + (shft_jj + pj)) * ch + c];
+                  float diff = guide_value - channel_value;
+                  error += diff * diff;
+                }
+              }
+              if(error < min_error)
+              {
+                min_error = error;
+                best_shft_ii = shft_ii;
+                best_shft_jj = shft_jj;
+              }
+            }
+          }
+          shft_i = best_shft_ii;
+          shft_j = best_shft_jj;
+          if(shft_i == radius && shft_j == radius) break;
+        }
+        // write output channel
+        size_t ci = shft_i + i - radius;
+        size_t cj = shft_j + j - radius;
+        out[(i * width + j) * ch + c] = in[(ci * width + cj) * ch + c];
+      }
+    }
+  }
 }
 
 /** gui setup and update, these are needed. */
