@@ -78,6 +78,187 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
+#if 0
+static void upscale_2x_shift_nn(int* ds_shift, int* shift, const size_t width, const size_t height)
+{
+  // upscale shift using nearest neighbour. Multiply all shifts by 2
+}
+#endif
+
+static void compute_shift(const float* const in, int* shift_h, int* shift_v,
+                          const size_t width, const size_t height,
+                          const size_t ch, const size_t iterations,
+                          const dt_iop_cacorrectrgb_guide_channel_t guide,
+                          float* const out)
+{
+  if(iterations > 2)
+  {
+    // size_t width_ds = width / 2;
+    // size_t height_ds = height / 2;
+    // float *const restrict ds_in = dt_alloc_sse_ps(dt_round_size_sse(width_ds * height_ds * ch));
+    // int *const restrict ds_shift_h = dt_alloc_sse_ps(dt_round_size_sse(width_ds * height_ds * ch));
+    // int *const restrict ds_shift_v = dt_alloc_sse_ps(dt_round_size_sse(width_ds * height_ds * ch));
+    // interpolate_bilinear(in, width, height, ds_in, width_ds, height_ds, ch);
+    // compute_shift(ds_in, ds_shift_h, ds_shift_v, ds_width, ds_height, ch, iterations / 2);
+    // upscale_2x_shift_nn(ds_shift_h, shift_h, width, height);
+    // upscale_2x_shift_nn(ds_shift_v, shift_v, width, height);
+    // dt_free_align(ds_in);
+    // dt_free_align(ds_shift_h);
+    // dt_free_align(ds_shift_v);
+  }
+  const size_t iter = iterations; // MIN(iterations, 2);
+
+  // compute first-order derivatives in horizontal and vertical directions
+  // we will use them for alignment
+  float *const restrict derivative_h = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict derivative_v = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, width, height, ch, derivative_h) \
+  schedule(static)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t c = 0; c < 3; c++)
+    {
+      derivative_h[(i * width) * ch + c] = 0.0f;
+    }
+    for(size_t j = 1; j < width-1; j++)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        derivative_h[(i * width + j) * ch + c] = fabsf(in[(i * width + j - 1) * ch + c]
+                                               + in[(i * width + j + 1) * ch + c]
+                                               - 2.0f * in[(i * width + j) * ch + c]);
+      }
+    }
+    for(size_t c = 0; c < 3; c++)
+    {
+      derivative_h[(i * width + width - 1) * ch + c] = 0.0f;
+    }
+  }
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, width, height, ch, derivative_v) \
+  schedule(static)
+#endif
+  for(size_t j = 0; j < width; j++)
+  {
+    for(size_t c = 0; c < 3; c++)
+    {
+      derivative_v[j * ch + c] = 0.0f;
+    }
+    for(size_t i = 1; i < height - 1; i++)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        derivative_v[(i * width + j) * ch + c] = fabsf(in[((i - 1) * width + j) * ch + c]
+                                               + in[((i + 1) * width + j) * ch + c]
+                                               - 2.0f * in[(i * width + j) * ch + c]);
+      }
+    }
+    for(size_t c = 0; c < 3; c++)
+    {
+      derivative_v[((height - 1) * width + j) * ch + c] = 0.0f;
+    }
+  }
+
+  // find horizontal and vertical shifts
+  // rpatch is the radius of the patch that is used to compare the
+  // channels and select the best shift
+  const int64_t rpatch = 2;
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, width, height, ch, iter, rpatch, guide, derivative_h, derivative_v, shift_h, shift_v, out) \
+  schedule(static)
+#endif
+  for(size_t i = rpatch + iter; i < height - rpatch - iter; i++)
+  {
+    for(size_t j = rpatch + iter; j < width - rpatch - iter; j++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        if(c == guide || c == 4) continue;
+        // find best shift in transformed image
+        // in transformed image, the center is at coordinate [radius, radius]
+        int shft_i = shift_v[(i * width + j) * ch + c];
+        int shft_j = shift_h[(i * width + j) * ch + c];
+        for(int k = 0; k < iter; k++)
+        {
+          // compute alignment score between guide[radius,radius]
+          // and c[shft_ii, shft_jj] with
+          // shft_ii and shft_jj in shft_i+[-1,1] and shft_j+[-1,1].
+          // then, update shft_i and shft_j with the shft_ii and
+          // shft_jj that delivered the best score (i.e. the smaller
+          // mean squared error)
+
+          // to compute alignment, we use a correlation between the derivatives
+          float max_correlation = 0.0f;
+          int best_shft_ii = shft_i;
+          int best_shft_jj = shft_j;
+          for(int shft_ii = shft_i - 1; shft_ii <= shft_i + 1; shft_ii++)
+          {
+            for(int shft_jj = shft_j - 1; shft_jj <= shft_j + 1; shft_jj++)
+            {
+              // use reflective correlation
+              // TODO try with pearson correlation instead
+              float correlation_h = 0.0f;
+              float correlation_v = 0.0f;
+              float hh_g = 0.0f;
+              float hh_c = 0.0f;
+              float vv_g = 0.0f;
+              float vv_c = 0.0f;
+              for(int pi = -rpatch; pi <= rpatch; pi++)
+              {
+                for(int pj = -rpatch; pj <= rpatch; pj++)
+                {
+                  float deriv_h_ij = derivative_h[((i + pi) * width + (j + pj)) * ch + guide];
+                  float deriv_h_shft_ij = derivative_h[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
+                  correlation_h += deriv_h_ij * deriv_h_shft_ij;
+                  hh_g += deriv_h_ij * deriv_h_ij;
+                  hh_c += deriv_h_shft_ij * deriv_h_shft_ij;
+                  float deriv_v_ij = derivative_v[((i + pi) * width + (j + pj)) * ch + guide];
+                  float deriv_v_shft_ij = derivative_v[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
+                  correlation_v += deriv_v_ij * deriv_v_shft_ij;
+                  vv_g += deriv_v_ij * deriv_v_ij;
+                  vv_c += deriv_v_shft_ij * deriv_v_shft_ij;
+                }
+              }
+              correlation_h *= correlation_h;
+              correlation_v *= correlation_v;
+              correlation_h /= fmaxf(hh_g * hh_c, 1E-6);
+              correlation_v /= fmaxf(vv_g * vv_c, 1E-6);
+              float correlation = correlation_h * correlation_v;
+              // printf("%f\n", correlation);
+              if(correlation > max_correlation)
+              {
+                max_correlation = correlation;
+                best_shft_ii = shft_ii;
+                best_shft_jj = shft_jj;
+              }
+            }
+          }
+          shft_i = best_shft_ii;
+          shft_j = best_shft_jj;
+          if(shft_i == i && shft_j == j) break;
+        }
+        shift_v[(i * width + j) * ch + c] = shft_i;
+        shift_h[(i * width + j) * ch + c] = shft_j;
+        //TODO remove this: (only for testing purpose)
+        out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+      }
+    }
+  }
+
+  dt_free_align(derivative_h);
+  dt_free_align(derivative_v);
+#if 0
+  //TODO
+  median_vert(shift_h);
+  median_horiz(shift_v);
+#endif
+}
+
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -94,24 +275,36 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t height = roi_out->height;
   const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
   const size_t iter = MAX(d->radius / scale, 1);
+  const float* in = (float*)ivoid;
+  float* out = (float*)ovoid;
+  float* transformed = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  int* shift_h = calloc(width * height * ch, sizeof(int));
+  int* shift_v = calloc(width * height * ch, sizeof(int));
+
+  compute_shift(in, shift_h, shift_v, width, height, ch, iter, guide, out);
+  dt_free_align(shift_h);
+  dt_free_align(shift_v);
+#if 0
+  //propagate_shift(); // weighted gaussian blur to propagate the shift to apply
+  apply_shift(in, out, shift_map, width, height, ch, iter);
+#endif
+
   // rpatch is the radius of the patch that is used to compare the
   // channels and select the best shift
   const int64_t rpatch = 2;
   // radius of the local box in which we need to find the minimum and maximum
   // to compare patches
   const int64_t radius = iter + rpatch;
-  const float* in = (float*)ivoid;
-  float* out = (float*)ovoid;
+  // radius for min and max search
+  const int64_t radiusm = MIN(20, iter);
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, out, width, height, ch, iter, rpatch, radius, guide) \
+  dt_omp_firstprivate(in, width, height, ch, radiusm, guide, transformed) \
   schedule(static)
 #endif
-  for(size_t i = radius; i < height - radius; i++)
+  for(size_t i = radiusm; i < height - radiusm; i++)
   {
-    const size_t width_transformed = 2 * radius + 1;
-    float* transformed = malloc(sizeof(float) * width_transformed * width_transformed * ch);
-    for(size_t j = radius; j < width - radius; j++)
+    for(size_t j = radiusm; j < width - radiusm; j++)
     {
       // find local maximum and minimum on all channels in
       // i+-(radius + rpatch), j+-(radius + rpatch)
@@ -122,9 +315,9 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
       // TODO optimise this.
       float max[3] = {0.0f, 0.0f, 0.0f};
       float min[3] = {1E6f, 1E6f, 1E6f};
-      for(size_t ii = i - radius; ii <= i + radius; ii++)
+      for(size_t ii = i - radiusm; ii <= i + radiusm; ii++)
       {
-        for(size_t jj = j - radius; jj <= j + radius; jj++)
+        for(size_t jj = j - radiusm; jj <= j + radiusm; jj++)
         {
           for(size_t c = 0; c < 3; c++)
           {
@@ -134,36 +327,36 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
           }
         }
       }
-      if(max[guide] / fmaxf(min[guide], 1E-6) < 1.5f) continue;
-
-      size_t ri = 0;
-      for(size_t ii = i - radius; ii <= i + radius; ii++)
+      for(size_t c = 0; c < 3; c++)
       {
-        size_t rj = 0;
-        for(size_t jj = j - radius; jj <= j + radius; jj++)
-        {
-          for(size_t c = 0; c < 3; c++)
-          {
-            const float inc = in[(ii * width + jj) * ch + c];
-            // in = a * max + (1-a) * min
-            float a = (inc - min[c]) / fmaxf(max[c] - min[c], 1E-6);
-            transformed[(ri * width_transformed + rj) * ch + c] = 2.0f * fabs(a - 0.5f);
-          }
-          rj++;
-        }
-        ri++;
+        const float inc = in[(i * width + j) * ch + c];
+        // in = a * max + (1-a) * min
+        float a = (inc - min[c]) / fmaxf(max[c] - min[c], 1E-6);
+        transformed[(i * width + j) * ch + c] = -2.0f * fabs(a - 0.5f) + 1.0f;
       }
+    }
+  }
 
+
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, out, width, height, ch, iter, rpatch, radius, guide, transformed) \
+  schedule(static)
+#endif
+  for(size_t i = radius; i < height - radius; i++)
+  {
+    for(size_t j = radius; j < width - radius; j++)
+    {
       for(size_t c = 0; c < ch; c++)
       {
         if(c == guide || c == 4) continue;
         // find best shift in transformed image
         // in transformed image, the center is at coordinate [radius, radius]
-        size_t shft_i = radius;
-        size_t shft_j = radius;
+        size_t shft_i = i;
+        size_t shft_j = j;
         for(int k = 0; k < iter; k++)
         {
-          if(MAX(fabs((int64_t)shft_i - radius), fabs((int64_t)shft_j - radius)) < k) break;
+          if(MAX(fabs((int64_t)shft_i - i), fabs((int64_t)shft_j - j)) < k) break;
           // compute alignment score between guide[radius,radius]
           // and c[shft_ii, shft_jj] with
           // shft_ii and shft_jj in shft_i+[-1,1] and shft_j+[-1,1].
@@ -183,8 +376,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
               {
                 for(int pj = -rpatch; pj <= rpatch; pj++)
                 {
-                  float guide_value = transformed[((radius + pi) * width_transformed + (radius + pj)) * ch + guide];
-                  float channel_value = transformed[((shft_ii + pi) * width_transformed + (shft_jj + pj)) * ch + c];
+                  float guide_value = transformed[((i + pi) * width + (j + pj)) * ch + guide];
+                  float channel_value = transformed[((shft_ii + pi) * width + (shft_jj + pj)) * ch + c];
                   float diff = guide_value - channel_value;
                   error += diff * diff;
                 }
@@ -199,15 +392,14 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
           }
           shft_i = best_shft_ii;
           shft_j = best_shft_jj;
-          if(shft_i == radius && shft_j == radius) break;
+          if(shft_i == i && shft_j == j) break;
         }
-        // write output channel
-        size_t ci = shft_i + i - radius;
-        size_t cj = shft_j + j - radius;
-        out[(i * width + j) * ch + c] = in[(ci * width + cj) * ch + c];
+        out[(i * width + j) * ch + c] = in[(shft_i * width + shft_j) * ch + c];
       }
     }
   }
+  free(transformed);
+//#endif
 }
 
 /** gui setup and update, these are needed. */
