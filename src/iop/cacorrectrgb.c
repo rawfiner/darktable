@@ -26,6 +26,7 @@
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
 #include "common/gaussian.h"
+#include "common/fast_guided_filter.h"
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
@@ -79,35 +80,51 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
-#if 0
-static void upscale_2x_shift_nn(int* ds_shift, int* shift, const size_t width, const size_t height)
+static void upscale_2x_shift_nn(int* ds_shift, int* shift, const size_t width, const size_t height, const size_t ch)
 {
   // upscale shift using nearest neighbour. Multiply all shifts by 2
-}
+  size_t ds_width = (width - 1) / 2 + 1;
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(ds_shift, shift, ds_width, width, height, ch) \
+  schedule(static)
 #endif
+  for(size_t i = 0; i < height; i++)
+  {
+    const size_t ds_i = i / 2;
+    for(size_t j = 0; j < width; j++)
+    {
+      const size_t ds_j = j / 2;
+      for(size_t c = 0; c < ch; c++)
+      {
+        shift[(i * width + j) * ch + c] = 2 * ds_shift[(ds_i * ds_width + ds_j) * ch + c];
+      }
+    }
+  }
+}
 
 static void compute_shift(const float* const in, int* shift_h, int* shift_v,
                           const size_t width, const size_t height,
                           const size_t ch, const size_t iterations,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
-                          float* const out)
+                          float* const out, gboolean apply_shift)
 {
   if(iterations > 2)
   {
-    // size_t width_ds = width / 2;
-    // size_t height_ds = height / 2;
-    // float *const restrict ds_in = dt_alloc_sse_ps(dt_round_size_sse(width_ds * height_ds * ch));
-    // int *const restrict ds_shift_h = dt_alloc_sse_ps(dt_round_size_sse(width_ds * height_ds * ch));
-    // int *const restrict ds_shift_v = dt_alloc_sse_ps(dt_round_size_sse(width_ds * height_ds * ch));
-    // interpolate_bilinear(in, width, height, ds_in, width_ds, height_ds, ch);
-    // compute_shift(ds_in, ds_shift_h, ds_shift_v, ds_width, ds_height, ch, iterations / 2);
-    // upscale_2x_shift_nn(ds_shift_h, shift_h, width, height);
-    // upscale_2x_shift_nn(ds_shift_v, shift_v, width, height);
-    // dt_free_align(ds_in);
-    // dt_free_align(ds_shift_h);
-    // dt_free_align(ds_shift_v);
+    size_t ds_width = (width - 1) / 2 + 1;
+    size_t ds_height = (height - 1) / 2 + 1;
+    float *const restrict ds_in = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
+    int *const restrict ds_shift_h = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
+    int *const restrict ds_shift_v = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
+    interpolate_bilinear(in, width, height, ds_in, ds_width, ds_height, ch);
+    compute_shift(ds_in, ds_shift_h, ds_shift_v, ds_width, ds_height, ch, iterations / 2, guide, NULL, FALSE);
+    upscale_2x_shift_nn(ds_shift_h, shift_h, width, height, ch);
+    upscale_2x_shift_nn(ds_shift_v, shift_v, width, height, ch);
+    dt_free_align(ds_in);
+    dt_free_align(ds_shift_h);
+    dt_free_align(ds_shift_v);
   }
-  const size_t iter = iterations; // MIN(iterations, 2);
+  const size_t iter = MIN(iterations, 2);
 
   // compute first-order derivatives in horizontal and vertical directions
   // we will use them for alignment
@@ -161,12 +178,12 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   const int64_t rpatch = 2;
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, width, height, ch, iter, rpatch, guide, average, shift_h, shift_v, out) \
+  dt_omp_firstprivate(in, width, height, ch, iter, iterations, rpatch, guide, average, shift_h, shift_v, apply_shift, out) \
   schedule(static)
 #endif
-  for(size_t i = rpatch + iter; i < height - rpatch - iter; i++)
+  for(size_t i = rpatch + iterations; i < height - rpatch - iterations; i++)
   {
-    for(size_t j = rpatch + iter; j < width - rpatch - iter; j++)
+    for(size_t j = rpatch + iterations; j < width - rpatch - iterations; j++)
     {
       for(size_t c = 0; c < ch; c++)
       {
@@ -208,7 +225,6 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
               }
               correlation *= correlation;
               correlation /= fmaxf(gg * cc, 1E-6);
-              // printf("%f\n", correlation);
               if(correlation > max_correlation)
               {
                 max_correlation = correlation;
@@ -224,7 +240,8 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
         shift_v[(i * width + j) * ch + c] = shft_i;
         shift_h[(i * width + j) * ch + c] = shft_j;
         //TODO remove this: (only for testing purpose)
-        out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+        if(apply_shift)
+          out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
       }
     }
   }
@@ -255,11 +272,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t iter = MAX(d->radius / scale, 1);
   const float* in = (float*)ivoid;
   float* out = (float*)ovoid;
-  float* transformed = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   int* shift_h = calloc(width * height * ch, sizeof(int));
   int* shift_v = calloc(width * height * ch, sizeof(int));
 
-  compute_shift(in, shift_h, shift_v, width, height, ch, iter, guide, out);
+  compute_shift(in, shift_h, shift_v, width, height, ch, iter, guide, out, TRUE);
   dt_free_align(shift_h);
   dt_free_align(shift_v);
   return;
