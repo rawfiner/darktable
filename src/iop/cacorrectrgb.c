@@ -156,7 +156,7 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   }
   const float max[4] = {maxr, maxg, maxb, 0.0f};
   const float min[4] = {minr, ming, minb, 0.0f};
-  const float sigma = iter;
+  float sigma = iter;
   dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
   if(!g) return;
   dt_gaussian_blur_4c(g, in, average);
@@ -178,7 +178,7 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   const int64_t rpatch = 2;
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, width, height, ch, iter, iterations, rpatch, guide, average, shift_h, shift_v, apply_shift, out) \
+  dt_omp_firstprivate(in, width, height, ch, iter, iterations, rpatch, guide, average, shift_h, shift_v, apply_shift) \
   schedule(static)
 #endif
   for(size_t i = rpatch + iterations; i < height - rpatch - iterations; i++)
@@ -188,6 +188,10 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
       for(size_t c = 0; c < ch; c++)
       {
         if(c == guide || c == 4) continue;
+
+        //TODO continue if MAX(average[0], average[1], average[2]) is very
+        // small
+
         // find best shift in transformed image
         // in transformed image, the center is at coordinate [radius, radius]
         int shft_i = shift_v[(i * width + j) * ch + c];
@@ -240,13 +244,145 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
         shift_v[(i * width + j) * ch + c] = shft_i;
         shift_h[(i * width + j) * ch + c] = shft_j;
         //TODO remove this: (only for testing purpose)
-        if(apply_shift)
-          out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+        //if(apply_shift)
+        //  out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
       }
     }
   }
 
+  if(apply_shift)
+  {
+    float *const restrict shifts = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+    float *const restrict weights = dt_alloc_sse_ps(dt_round_size_sse(width * height * 2));
+    float *const restrict blurred_shifts = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+    float *const restrict blurred_weights = dt_alloc_sse_ps(dt_round_size_sse(width * height * 2));
+    const size_t c1 = (guide + 1) % 3;
+    const size_t c2 = (guide + 2) % 3;
+    float maxshift = 0.0f;
+    float minshift = 10000000.0f;
+    float maxw = 0.0f;
+    float minw = 10000000.0f;
+  #ifdef _OPENMP
+  #pragma omp parallel for default(none) \
+    dt_omp_firstprivate(average, weights, shifts, shift_h, shift_v, width, height, ch, guide, c1, c2) \
+    schedule(static) \
+    reduction(max:maxshift, maxw)\
+    reduction(min:minshift, minw)
+  #endif
+    for(size_t i = 0; i < height * width; i++)
+    {
+      // float weight = average[i * ch + guide];
+      // float weight_c1 = fmaxf(weight, average[i * ch + c1]);
+      // float weight_c2 = fmaxf(weight, average[i * ch + c2]);
+      float shift_h_c1 = shift_h[i * ch + c1];
+      float shift_v_c1 = shift_v[i * ch + c1];
+      float weight_c1 = ((fabsf(shift_h_c1) > 0) || (fabsf(shift_v_c1) > 0)) + 0.01f;
+      shift_h_c1 *= weight_c1;
+      shift_v_c1 *= weight_c1;
+      shifts[i * ch] = shift_h_c1;
+      shifts[i * ch + 1] = shift_v_c1;
+      float shift_h_c2 = shift_h[i * ch + c2];
+      float shift_v_c2 = shift_v[i * ch + c2];
+      float weight_c2 = ((fabsf(shift_h_c2) > 0) || (fabsf(shift_v_c2) > 0)) + 0.01f;
+      shift_h_c2 *= weight_c2;
+      shift_v_c2 *= weight_c2;
+      shifts[i * ch + 2] = shift_h_c2;
+      shifts[i * ch + 3] = shift_v_c2;
+
+      weights[i * 2] = weight_c1;
+      weights[i * 2 + 1] = weight_c2;
+
+      if(shift_h_c1 > maxshift) maxshift = shift_h_c1;
+      if(shift_h_c1 < minshift) minshift = shift_h_c1;
+      if(shift_h_c2 > maxshift) maxshift = shift_h_c2;
+      if(shift_h_c2 < minshift) minshift = shift_h_c2;
+      if(shift_v_c1 > maxshift) maxshift = shift_v_c1;
+      if(shift_v_c1 < minshift) minshift = shift_v_c1;
+      if(shift_v_c2 > maxshift) maxshift = shift_v_c2;
+      if(shift_v_c2 < minshift) minshift = shift_v_c2;
+
+      if(weight_c1 > maxw) maxw = weight_c1;
+      if(weight_c1 < minw) minw = weight_c1;
+      if(weight_c2 > maxw) maxw = weight_c2;
+      if(weight_c2 < minw) minw = weight_c2;
+    }
+    const float maxs[4] = {maxshift, maxshift, maxshift, maxshift};
+    const float mins[4] = {minshift, minshift, minshift, minshift};
+    sigma = 10.0f;
+    g = dt_gaussian_init(width, height, 4, maxs, mins, sigma, 0);
+    if(!g) return;
+    dt_gaussian_blur_4c(g, shifts, blurred_shifts);
+    dt_gaussian_free(g);
+    const float maxws[2] = {maxw, maxw};
+    const float minws[2] = {minw, minw};
+    g = dt_gaussian_init(width, height, 2, maxws, minws, sigma, 0);
+    if(!g) return;
+    dt_gaussian_blur(g, weights, blurred_weights);
+    dt_gaussian_free(g);
+
+  #ifdef _OPENMP
+  #pragma omp parallel for default(none) \
+    dt_omp_firstprivate(blurred_shifts, blurred_weights, width, height) \
+    schedule(static)
+  #endif
+    for(size_t i = 0; i < height * width; i++)
+    {
+      const float weight_c1 = blurred_weights[i * 2];
+      const float weight_c2 = blurred_weights[i * 2 + 1];
+      blurred_shifts[i * 4] /= weight_c1;
+      blurred_shifts[i * 4 + 1] /= weight_c1;
+      blurred_shifts[i * 4 + 2] /= weight_c2;
+      blurred_shifts[i * 4 + 3] /= weight_c2;
+    }
+
+    // apply final transformation
+  #ifdef _OPENMP
+  #pragma omp parallel for default(none) \
+    dt_omp_firstprivate(blurred_shifts, in, out, width, height, ch, guide) \
+    schedule(static)
+  #endif
+    for(size_t i = 0; i < height * width; i++)
+    {
+      for(size_t k = 1; k <= 2; k++)
+      {
+        size_t c = (guide + k) % 3;
+        // TODO compute float vertical and horizontal correction, and
+        // correct with a 4 points interpolation (cf code of bilin interpol)
+        float x = (i % width) + blurred_shifts[i * 4 + (k-1) * 2];
+        float y = (i / width) + blurred_shifts[i * 4 + (k-1) * 2 + 1];
+        size_t x_prev = (size_t)floorf(x);
+        size_t x_next = x_prev + 1;
+        size_t y_prev = (size_t)floorf(y);
+        size_t y_next = y_prev + 1;
+
+        x_prev = (x_prev < width) ? x_prev : width - 1;
+        x_next = (x_next < width) ? x_next : width - 1;
+        y_prev = (y_prev < height) ? y_prev : height - 1;
+        y_next = (y_next < height) ? y_next : height - 1;
+
+        // Nearest pixels in input array (nodes in grid)
+        const size_t Y_prev = y_prev * width;
+        const size_t Y_next =  y_next * width;
+        const float *const Q_NW = (float *)in + (Y_prev + x_prev) * ch;
+        const float *const Q_NE = (float *)in + (Y_prev + x_next) * ch;
+        const float *const Q_SE = (float *)in + (Y_next + x_next) * ch;
+        const float *const Q_SW = (float *)in + (Y_next + x_prev) * ch;
+
+        // Spatial differences between nodes
+        const float Dy_next = (float)y_next - y;
+        const float Dy_prev = 1.f - Dy_next; // because next - prev = 1
+        const float Dx_next = (float)x_next - x;
+        const float Dx_prev = 1.f - Dx_next; // because next - prev = 1
+
+        out[i * ch + c] = Dy_prev * (Q_SW[c] * Dx_next + Q_SE[c] * Dx_prev) +
+                          Dy_next * (Q_NW[c] * Dx_next + Q_NE[c] * Dx_prev);
+      }
+    }
+    dt_free_align(blurred_shifts);
+    dt_free_align(blurred_weights);
+  }
   dt_free_align(average);
+
 #if 0
   //TODO
   median_vert(shift_h);
