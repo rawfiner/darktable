@@ -97,7 +97,7 @@ static void upscale_2x_shift_nn(int* ds_shift, int* shift, const size_t width, c
       const size_t ds_j = j / 2;
       for(size_t c = 0; c < ch; c++)
       {
-        shift[(i * width + j) * ch + c] = ds_shift[(ds_i * ds_width + ds_j) * ch + c];
+        shift[(i * width + j) * ch + c] = 2 * ds_shift[(ds_i * ds_width + ds_j) * ch + c];
       }
     }
   }
@@ -141,11 +141,11 @@ static inline int median(int current, int prev, int next)
 
 // RPATCH is the radius of the patch that is used to compare the
 // channels and select the best shift
-#define RPATCH 8
+#define RPATCH 4
 #define DIAMETERPATCH (2 * RPATCH + 1)
-#define NBCLASSESHIST (DIAMETERPATCH)
 // number of pixels in a patch
 #define NBELEMPATCH (DIAMETERPATCH * DIAMETERPATCH)
+#define RBILAT 4
 
 static void compute_shift(const float* const in, int* shift_h, int* shift_v,
                           const size_t width, const size_t height,
@@ -168,7 +168,7 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
     dt_free_align(ds_shift_h);
     dt_free_align(ds_shift_v);
   }
-  const size_t iter = MIN(iterations, 2);
+  const int iter = MIN(iterations, 2);
 
   if(height < RPATCH + iterations) return;
   if(width < RPATCH + iterations) return;
@@ -191,40 +191,20 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   dt_omp_firstprivate(in, log, width, height, ch, iter, iterations, guide, shift_h, shift_v, apply_shift, out) \
   schedule(static)
 #endif
-  for(size_t i = RPATCH + iterations; i < height - RPATCH - iterations; i++)
+  for(size_t i = RPATCH + RBILAT + iterations; i < height - RPATCH - RBILAT - iterations; i++)
   {
-    for(size_t j = RPATCH + iterations; j < width - RPATCH - iterations; j++)
+    for(size_t j = RPATCH + RBILAT + iterations; j < width - RPATCH - RBILAT - iterations; j++)
     {
-      // find max and min of guide, and prepare to fill the histogram
-      float min = 10000000.0f;
-      float max = 0.0f;
-      for(int pi = -RPATCH; pi <= RPATCH; pi++)
+      for(size_t kc = 1; kc <= 2; kc++)
       {
-        for(int pj = -RPATCH; pj <= RPATCH; pj++)
-        {
-          const float value_pipj = log[((i + pi) * width + (j + pj)) * ch + guide];
-          if(value_pipj > max) max = value_pipj;
-          if(value_pipj < min) min = value_pipj;
-        }
-      }
-      // we multiply by 1.01 in order to be able to do
-      // (value - min) / hist_width and always get a value in [0;1[
-      // this avoids having to handle the maximum explicitely,
-      // which otherwise would return the value 1
-      const float hist_width = (max - min) * 1.01f;
+        size_t c = (guide + kc) % 3;
 
-      for(size_t c = 0; c < ch; c++)
-      {
-        if(c == guide || c == 4) continue;
-
-        //TODO continue if MAX(average[0], average[1], average[2]) is very
-        // small
-
+        //float res = 0;
         // find best shift in transformed image
         // in transformed image, the center is at coordinate [radius, radius]
         int shft_i = shift_v[(i * width + j) * ch + c];
         int shft_j = shift_h[(i * width + j) * ch + c];
-        for(int k = 0; k < iter; k++)
+        for(int k = 0; k < /*iter*/1; k++)
         {
           // compute alignment score between guide[radius,radius]
           // and c[shft_ii, shft_jj] with
@@ -235,57 +215,74 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
           float best_score = 1000000000.0f; // the lower the better
           int best_shft_ii = shft_i;
           int best_shft_jj = shft_j;
-          for(int shft_ii = shft_i - 1; shft_ii <= shft_i + 1; shft_ii++)
+          for(int shft_ii = shft_i - iter; shft_ii <= shft_i + iter; shft_ii++)
           {
-            for(int shft_jj = shft_j - 1; shft_jj <= shft_j + 1; shft_jj++)
+            for(int shft_jj = shft_j - iter; shft_jj <= shft_j + iter; shft_jj++)
             {
-              float nbelem[NBCLASSESHIST+1] = {0.0f};
-              float sum[NBCLASSESHIST+1] = {0.0f};
-              float err_squared = 0.0f;
+              float total_err_g = 0.0f;
+              float total_err_c = 0.0f;
+              float total_err_g_ref = 0.0f;
+              float total_err_c_ref = 0.0f;
+              // compute bilateral filters with small radius
+              // guide the filtering of color with the guide, and
+              // guide the filtering of guide with color
+              for(int pi = -RPATCH; pi <= RPATCH; pi++)
+              {
+                for(int pj = -RPATCH; pj <= RPATCH; pj++)
+                {
+                  float log_center_g = log[((i + pi) * width + (j + pj)) * ch + guide];
+                  float log_center_c = log[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
+                  float center_g = log[((i + pi) * width + (j + pj)) * ch + guide];
+                  float center_c = log[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
+                  float avg_g = 0.0f;
+                  float avg_c = 0.0f;
+                  float avg_g2 = 0.0f;
+                  float avg_c2 = 0.0f;
+                  float sum_w_g = 0.0f;
+                  float sum_w_c = 0.0f;
+                  int tii[13] = {-RBILAT+1, 0, RBILAT-1, -RBILAT, 0, RBILAT, -RBILAT+1, 0, RBILAT-1, 0, 0, 1, -1};
+                  int tjj[13] = {-RBILAT+1, -RBILAT, -RBILAT+1, 0, 0, 0, RBILAT-1, RBILAT, RBILAT-1, 1, -1, 0, 0};
+                  for(size_t p = 0; p < 13; p++)
+                  {
+                    int pii = tii[p];
+                    int pjj = tjj[p];
+                    float log_iijj_g = log[((i + pi + pii) * width + (j + pj + pjj)) * ch + guide];
+                    float log_iijj_c = log[((i + shft_ii + pi + pii) * width + (j + shft_jj + pj + pjj)) * ch + c];
+                    float iijj_g = log[((i + pi + pii) * width + (j + pj + pjj)) * ch + guide];
+                    float iijj_c = log[((i + shft_ii + pi + pii) * width + (j + shft_jj + pj + pjj)) * ch + c];
+                    float w_g = 0.01f / fmaxf(fabsf(log_center_g - log_iijj_g), 0.01f);
+                    float w_c = 0.01f / fmaxf(fabsf(log_center_c - log_iijj_c), 0.01f);
+                    w_c *= w_c;
+                    w_g *= w_g;
+                    // w_c *= w_c;
+                    // w_g *= w_g;
+                    avg_g += w_c * iijj_g;
+                    avg_g2 += w_g * iijj_g;
+                    sum_w_g += w_c;
+                    avg_c += w_g * iijj_c;
+                    avg_c2 += w_c * iijj_c;
+                    sum_w_c += w_g;
+                  }
+                  //if(sum_w_g > 9.0f) printf("bilat filter incorrect!\n");
+                  //if(sum_w_c > 9.0f) printf("bilat filter incorrect!\n");
+                  avg_g /= sum_w_g;
+                  avg_c /= sum_w_c;
+                  avg_g2 /= sum_w_c;
+                  avg_c2 /= sum_w_g;
 
-              // fill the histogram
-              for(int pi = -RPATCH; pi <= RPATCH; pi++)
-              {
-                for(int pj = -RPATCH; pj <= RPATCH; pj++)
-                {
-                  float value_pipj = log[((i + pi) * width + (j + pj)) * ch + guide];
-                  float class = (value_pipj - min) * NBCLASSESHIST / hist_width;
-                  uint32_t class_lower = floorf(class);
-                  uint32_t class_upper = ceilf(class);
-                  float dist = class - class_lower;
-                  float value_shft_ij = in[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
-                  nbelem[class_lower] += (1.0f - dist);
-                  sum[class_lower] += (1.0f - dist) * value_shft_ij;
-                  nbelem[class_upper] += dist;
-                  sum[class_upper] += dist * value_shft_ij;
+                  float err_g = center_g - avg_g;
+                  total_err_g += err_g * err_g;
+                  float err_c = center_c - avg_c;
+                  total_err_c += err_c * err_c;
+                  err_g = center_g - avg_g2;
+                  total_err_g_ref += err_g * err_g;
+                  err_c = center_c - avg_c2;
+                  total_err_c_ref += err_c * err_c;
+
+                  //if(pi == 0 && pj == 0) res = avg_c;
                 }
               }
-              // compute intra-class variance and inter-class score
-              for(int class = 0; class < NBCLASSESHIST; class++)
-              {
-                float nb = nbelem[class];
-                if(nb != 0.0f)
-                {
-                  sum[class] /= nb;
-                }
-              }
-              for(int pi = -RPATCH; pi <= RPATCH; pi++)
-              {
-                for(int pj = -RPATCH; pj <= RPATCH; pj++)
-                {
-                  float value_pipj = log[((i + pi) * width + (j + pj)) * ch + guide];
-                  float class = (value_pipj - min) * NBCLASSESHIST / hist_width;
-                  uint32_t class_lower = floorf(class);
-                  uint32_t class_upper = ceilf(class);
-                  float dist = class - class_lower;
-                  float value_shft_ij = in[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
-                  float mean_lower = sum[class_lower];
-                  float mean_upper = sum[class_upper];
-                  float mean = (1.0f - dist) * mean_lower + dist * mean_upper;
-                  float err = (value_shft_ij - mean);
-                  err_squared += err * err / (1 + pi * pi + pj * pj);
-                }
-              }
+              float err_squared = /*fmaxf(*/fmaxf(total_err_g, total_err_c)/* - fmaxf(total_err_g_ref, total_err_c_ref), 0.00001f)*/ + sqrtf(shft_i * shft_i + shft_j * shft_j) / 4;
               // lower variance means that we are closer to being able
               // to express the values of channel c as a function of the
               // values of channel guide in our patch.
@@ -298,22 +295,22 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
               }
             }
           }
-          if(shft_i == best_shft_ii && shft_j == best_shft_jj) break;
+          // if(shft_i == best_shft_ii && shft_j == best_shft_jj) break;
           shft_i = best_shft_ii;
           shft_j = best_shft_jj;
-          if(shft_i == i && shft_j == j) break;
+          // if(shft_i == 0 && shft_j == 0) break;
         }
         shift_v[(i * width + j) * ch + c] = shft_i;
         shift_h[(i * width + j) * ch + c] = shft_j;
         //TODO remove this: (only for testing purpose)
         if(apply_shift)
-          out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+          out[(i * width + j) * ch + c] = /*exp2f(res);*/in[((i + shft_i) * width + (j + shft_j)) * ch + c];
       }
     }
   }
   dt_free_align(log);
 
-  if(!apply_shift)
+  if(FALSE && !apply_shift)
   {
     // in place median approximation
     // /!\ not thread safe yet.
