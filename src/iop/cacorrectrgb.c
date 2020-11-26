@@ -139,6 +139,52 @@ static inline int median(int current, int prev, int next)
   return median;
 }
 
+static void horiz_average(const float* const in, float* out, const size_t width, const size_t height, const size_t ch, const size_t radius)
+{
+  assert(ch == 4);
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, out, width, height, ch, radius) \
+  schedule(static)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    double avg[4] = {0.0f};
+    for(size_t j = 0; j < radius; j++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] += in[(i * width + j) * ch + c];
+      }
+    }
+    for(size_t j = 0; j <= radius; j++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] += in[(i * width + j + radius) * ch + c];
+        out[(i * width + j) * ch + c] = avg[c] / (j + radius + 1);
+      }
+    }
+    for(size_t j = radius + 1; j < width - radius; j++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] += in[(i * width + j + radius) * ch + c];
+        avg[c] -= in[(i * width + j - radius - 1) * ch + c];
+        out[(i * width + j) * ch + c] = avg[c] / (2 * radius + 1);
+      }
+    }
+    for(size_t j = width - radius; j < width; j++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] -= in[(i * width + j - radius - 1) * ch + c];
+        out[(i * width + j) * ch + c] = avg[c] / ((width - j - 1) + radius + 1);
+      }
+    }
+  }
+}
+
 // RPATCH is the radius of the patch that is used to compare the
 // channels and select the best shift
 #define RPATCH 4
@@ -153,6 +199,12 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
                           float* const out, gboolean apply_shift)
 {
+  float *const restrict tmp = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  horiz_average(in, tmp, width, height, ch, iterations * 4);
+  horiz_average(tmp, out, width, height, ch, iterations * 2);
+  dt_free_align(tmp);
+  return;
+
   if(iterations > 2)
   {
     size_t ds_width = (width - 1) / 2 + 1;
