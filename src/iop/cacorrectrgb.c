@@ -187,7 +187,7 @@ static void horiz_average(const float* const in, float* out, const size_t width,
 
 // RPATCH is the radius of the patch that is used to compare the
 // channels and select the best shift
-#define RPATCH 4
+#define RPATCH 3
 #define DIAMETERPATCH (2 * RPATCH + 1)
 // number of pixels in a patch
 #define NBELEMPATCH (DIAMETERPATCH * DIAMETERPATCH)
@@ -199,11 +199,6 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
                           float* const out, gboolean apply_shift)
 {
-  float *const restrict tmp = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  horiz_average(in, tmp, width, height, ch, iterations * 4);
-  horiz_average(tmp, out, width, height, ch, iterations * 2);
-  dt_free_align(tmp);
-  return;
 
   if(iterations > 2)
   {
@@ -225,144 +220,65 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   if(height < RPATCH + iterations) return;
   if(width < RPATCH + iterations) return;
 
-  float *const restrict log = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict tmp = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict inh = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  horiz_average(in, tmp, width, height, ch, iterations * 4);
+  horiz_average(tmp, inh, width, height, ch, iterations * 2);
+  dt_free_align(tmp);
 
+  // find vertical shift
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(log, in, height, width, ch) \
+  dt_omp_firstprivate(in, width, height, ch, iter, iterations, guide, shift_h, shift_v, apply_shift, out) \
   schedule(static)
 #endif
-  for(int j = 0; j < width * height * ch; j++)
+  for(size_t i = RPATCH + iterations; i < height - RBILAT - iterations; i++)
   {
-    log[j] = log2f(fmaxf(in[j], 1.0f/1024));
-  }
-
-  // find horizontal and vertical shifts
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, log, width, height, ch, iter, iterations, guide, shift_h, shift_v, apply_shift, out) \
-  schedule(static)
-#endif
-  for(size_t i = RPATCH + RBILAT + iterations; i < height - RPATCH - RBILAT - iterations; i++)
-  {
-    for(size_t j = RPATCH + RBILAT + iterations; j < width - RPATCH - RBILAT - iterations; j++)
+    for(size_t j = RPATCH + iterations; j < width - RBILAT - iterations; j++)
     {
       for(size_t kc = 1; kc <= 2; kc++)
       {
         size_t c = (guide + kc) % 3;
-
-        //float res = 0;
-        // find best shift in transformed image
-        // in transformed image, the center is at coordinate [radius, radius]
+        float best_score = 0.0f; // the higher the better
         int shft_i = shift_v[(i * width + j) * ch + c];
         int shft_j = shift_h[(i * width + j) * ch + c];
-        for(int k = 0; k < /*iter*/1; k++)
+        int best_shft_ii = shft_i;
+        for(int shft_ii = shft_i - iter; shft_ii <= shft_i + iter; shft_ii++)
         {
-          // compute alignment score between guide[radius,radius]
-          // and c[shft_ii, shft_jj] with
-          // shft_ii and shft_jj in shft_i+[-1,1] and shft_j+[-1,1].
-          // then, update shft_i and shft_j with the shft_ii and
-          // shft_jj that delivered the best score (i.e. the smaller
-          // mean squared error)
-          float best_score = 1000000000.0f; // the lower the better
-          int best_shft_ii = shft_i;
-          int best_shft_jj = shft_j;
-          for(int shft_ii = shft_i - iter; shft_ii <= shft_i + iter; shft_ii++)
+          float score = 0.0f;
+          float cov = 0.0f;
+          float varg = 0.0f;
+          float varc = 0.0f;
+          float meang = 0.0f;
+          float meanc = 0.0f;
+          for(int pi = -RPATCH; pi <= RPATCH; pi++)
           {
-            for(int shft_jj = shft_j - iter; shft_jj <= shft_j + iter; shft_jj++)
-            {
-              float total_err_g = 0.0f;
-              float total_err_c = 0.0f;
-              float total_err_g_ref = 0.0f;
-              float total_err_c_ref = 0.0f;
-              // compute bilateral filters with small radius
-              // guide the filtering of color with the guide, and
-              // guide the filtering of guide with color
-              for(int pi = -RPATCH; pi <= RPATCH; pi++)
-              {
-                for(int pj = -RPATCH; pj <= RPATCH; pj++)
-                {
-                  float log_center_g = log[((i + pi) * width + (j + pj)) * ch + guide];
-                  float log_center_c = log[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
-                  float center_g = log[((i + pi) * width + (j + pj)) * ch + guide];
-                  float center_c = log[((i + shft_ii + pi) * width + (j + shft_jj + pj)) * ch + c];
-                  float avg_g = 0.0f;
-                  float avg_c = 0.0f;
-                  float avg_g2 = 0.0f;
-                  float avg_c2 = 0.0f;
-                  float sum_w_g = 0.0f;
-                  float sum_w_c = 0.0f;
-                  int tii[13] = {-RBILAT+1, 0, RBILAT-1, -RBILAT, 0, RBILAT, -RBILAT+1, 0, RBILAT-1, 0, 0, 1, -1};
-                  int tjj[13] = {-RBILAT+1, -RBILAT, -RBILAT+1, 0, 0, 0, RBILAT-1, RBILAT, RBILAT-1, 1, -1, 0, 0};
-                  for(size_t p = 0; p < 13; p++)
-                  {
-                    int pii = tii[p];
-                    int pjj = tjj[p];
-                    float log_iijj_g = log[((i + pi + pii) * width + (j + pj + pjj)) * ch + guide];
-                    float log_iijj_c = log[((i + shft_ii + pi + pii) * width + (j + shft_jj + pj + pjj)) * ch + c];
-                    float iijj_g = log[((i + pi + pii) * width + (j + pj + pjj)) * ch + guide];
-                    float iijj_c = log[((i + shft_ii + pi + pii) * width + (j + shft_jj + pj + pjj)) * ch + c];
-                    float w_g = 0.01f / fmaxf(fabsf(log_center_g - log_iijj_g), 0.01f);
-                    float w_c = 0.01f / fmaxf(fabsf(log_center_c - log_iijj_c), 0.01f);
-                    w_c *= w_c;
-                    w_g *= w_g;
-                    // w_c *= w_c;
-                    // w_g *= w_g;
-                    avg_g += w_c * iijj_g;
-                    avg_g2 += w_g * iijj_g;
-                    sum_w_g += w_c;
-                    avg_c += w_g * iijj_c;
-                    avg_c2 += w_c * iijj_c;
-                    sum_w_c += w_g;
-                  }
-                  //if(sum_w_g > 9.0f) printf("bilat filter incorrect!\n");
-                  //if(sum_w_c > 9.0f) printf("bilat filter incorrect!\n");
-                  avg_g /= sum_w_g;
-                  avg_c /= sum_w_c;
-                  avg_g2 /= sum_w_c;
-                  avg_c2 /= sum_w_g;
-
-                  float err_g = center_g - avg_g;
-                  total_err_g += err_g * err_g;
-                  float err_c = center_c - avg_c;
-                  total_err_c += err_c * err_c;
-                  err_g = center_g - avg_g2;
-                  total_err_g_ref += err_g * err_g;
-                  err_c = center_c - avg_c2;
-                  total_err_c_ref += err_c * err_c;
-
-                  //if(pi == 0 && pj == 0) res = avg_c;
-                }
-              }
-              float err_squared = /*fmaxf(*/fmaxf(total_err_g, total_err_c)/* - fmaxf(total_err_g_ref, total_err_c_ref), 0.00001f)*/ + sqrtf(shft_i * shft_i + shft_j * shft_j) / 4;
-              // lower variance means that we are closer to being able
-              // to express the values of channel c as a function of the
-              // values of channel guide in our patch.
-              //err_squared *= (10 + shft_ii * shft_ii + shft_jj * shft_jj);
-              if(err_squared < best_score)
-              {
-                best_score = err_squared;
-                best_shft_ii = shft_ii;
-                best_shft_jj = shft_jj;
-              }
-            }
+            float center_g = in[((i + pi) * width + j) * ch + guide];
+            float center_c = in[((i + shft_ii + pi) * width + (j + shft_j)) * ch + c];
+            cov += center_g * center_c;
+            varg += center_g * center_g;
+            varc += center_c * center_c;
+            meang += center_g;
+            meanc += center_c;
           }
-          // if(shft_i == best_shft_ii && shft_j == best_shft_jj) break;
-          shft_i = best_shft_ii;
-          shft_j = best_shft_jj;
-          // if(shft_i == 0 && shft_j == 0) break;
+          score = cov * cov / (varg * varc + 1E-6);
+          if(score > best_score)
+          {
+            best_score = score;
+            best_shft_ii = shft_ii;
+          }
         }
+        shft_i = best_shft_ii;
         shift_v[(i * width + j) * ch + c] = shft_i;
-        shift_h[(i * width + j) * ch + c] = shft_j;
-        //TODO remove this: (only for testing purpose)
         if(apply_shift)
-          out[(i * width + j) * ch + c] = /*exp2f(res);*/in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+          out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+
       }
     }
   }
-  dt_free_align(log);
+  dt_free_align(inh);
 
-  if(FALSE && !apply_shift)
+  if(!apply_shift)
   {
     // in place median approximation
     // /!\ not thread safe yet.
