@@ -193,6 +193,15 @@ static void horiz_average(const float* const in, float* out, const size_t width,
 #define NBELEMPATCH (DIAMETERPATCH * DIAMETERPATCH)
 #define RBILAT 4
 
+int comp(const void* p1, const void* p2)
+{
+  int shft1 = *((int*)p1);
+  int shft2 = *((int*)p2);
+  if(abs(shft1) < abs(shft2)) return -1;
+  if(abs(shft2) < abs(shft1)) return 1;
+  return 0;
+}
+
 static void compute_shift(const float* const in, int* shift_h, int* shift_v,
                           const size_t width, const size_t height,
                           const size_t ch, const size_t iterations,
@@ -232,29 +241,42 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   dt_omp_firstprivate(in, width, height, ch, iter, iterations, guide, shift_h, shift_v, apply_shift, out) \
   schedule(static)
 #endif
-  for(size_t i = RPATCH + iterations; i < height - RBILAT - iterations; i++)
+  for(size_t i = RPATCH + iterations; i < height - RPATCH - iterations; i++)
   {
-    for(size_t j = RPATCH + iterations; j < width - RBILAT - iterations; j++)
+    int* shfts = malloc(sizeof(int) * (2 * iter + 1));
+    for(size_t j = RPATCH + iterations; j < width - RPATCH - iterations; j++)
     {
       for(size_t kc = 1; kc <= 2; kc++)
       {
         size_t c = (guide + kc) % 3;
         float best_score = 0.0f; // the higher the better
+        float best_ratio = 10000000.0f; // the lower the better
         int shft_i = shift_v[(i * width + j) * ch + c];
         int shft_j = shift_h[(i * width + j) * ch + c];
         int best_shft_ii = shft_i;
+        int kii = 0;
         for(int shft_ii = shft_i - iter; shft_ii <= shft_i + iter; shft_ii++)
         {
+          shfts[kii] = shft_ii;
+          kii++;
+        }
+        qsort(shfts, 2 * iter + 1, sizeof(int), comp);
+        for(kii = 0; kii < 2 * iter + 1; kii++)
+        {
+          int shft_ii = shfts[kii];
           float score = 0.0f;
           float cov = 0.0f;
           float varg = 0.0f;
           float varc = 0.0f;
           float meang = 0.0f;
           float meanc = 0.0f;
+          float ratio = 1.0f;
           for(int pi = -RPATCH; pi <= RPATCH; pi++)
           {
             float center_g = in[((i + pi) * width + j) * ch + guide];
             float center_c = in[((i + shft_ii + pi) * width + (j + shft_j)) * ch + c];
+            float r = fmaxf(center_g, 1E-6) / fmaxf(center_c, 1E-6);
+            ratio *= fmaxf(r, 1.0f / r);
             cov += center_g * center_c;
             varg += center_g * center_g;
             varc += center_c * center_c;
@@ -264,8 +286,12 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
           score = cov * cov / (varg * varc + 1E-6);
           if(score > best_score)
           {
-            best_score = score;
-            best_shft_ii = shft_ii;
+            if(ratio < best_ratio)
+            {
+              best_ratio = ratio;
+              best_score = score;
+              best_shft_ii = shft_ii;
+            }
           }
         }
         shft_i = best_shft_ii;
@@ -275,6 +301,7 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
 
       }
     }
+    free(shfts);
   }
   dt_free_align(inh);
 
