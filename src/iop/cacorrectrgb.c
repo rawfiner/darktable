@@ -185,6 +185,52 @@ static void horiz_average(const float* const in, float* out, const size_t width,
   }
 }
 
+static void vert_average(const float* const in, float* out, const size_t width, const size_t height, const size_t ch, const size_t radius)
+{
+  assert(ch == 4);
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, out, width, height, ch, radius) \
+  schedule(static)
+#endif
+  for(size_t j = 0; j < width; j++)
+  {
+    double avg[4] = {0.0f};
+    for(size_t i = 0; i < radius; i++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] += in[(i * width + j) * ch + c];
+      }
+    }
+    for(size_t i = 0; i <= radius; i++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] += in[((i + radius) * width + j) * ch + c];
+        out[(i * width + j) * ch + c] = avg[c] / (i + radius + 1);
+      }
+    }
+    for(size_t i = radius + 1; i < height - radius; i++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] += in[((i + radius) * width + j) * ch + c];
+        avg[c] -= in[((i - radius - 1) * width + j) * ch + c];
+        out[(i * width + j) * ch + c] = avg[c] / (2 * radius + 1);
+      }
+    }
+    for(size_t i = height - radius; i < height; i++)
+    {
+      for(size_t c = 0; c < ch; c++)
+      {
+        avg[c] -= in[((i - radius - 1) * width + j) * ch + c];
+        out[(i * width + j) * ch + c] = avg[c] / ((height - i - 1) + radius + 1);
+      }
+    }
+  }
+}
+
 // RPATCH is the radius of the patch that is used to compare the
 // channels and select the best shift
 #define RPATCH 3
@@ -209,7 +255,7 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
                           float* const out, gboolean apply_shift)
 {
 
-  if(iterations > 2)
+  if(FALSE && iterations > 2)
   {
     size_t ds_width = (width - 1) / 2 + 1;
     size_t ds_height = (height - 1) / 2 + 1;
@@ -224,21 +270,25 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
     dt_free_align(ds_shift_h);
     dt_free_align(ds_shift_v);
   }
-  const int iter = MIN(iterations, 2);
+  const int iter = /*MIN(*/iterations/*, 2)*/;
 
   if(height < RPATCH + iterations) return;
   if(width < RPATCH + iterations) return;
 
+  int* shift_h_in = malloc(width * height * ch * sizeof(int));
+  int* shift_v_in = malloc(width * height * ch * sizeof(int));
+  memcpy(shift_h_in, shift_h, width * height * ch * sizeof(int));
+  memcpy(shift_v_in, shift_v, width * height * ch * sizeof(int));
+
   float *const restrict tmp = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict inh = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  horiz_average(in, tmp, width, height, ch, iterations * 4);
-  horiz_average(tmp, inh, width, height, ch, iterations * 2);
-  dt_free_align(tmp);
+  float *const restrict inb = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  horiz_average(in, tmp, width, height, ch, iterations * 2);
+  horiz_average(tmp, inb, width, height, ch, iterations);
 
   // find vertical shift
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, width, height, ch, iter, iterations, guide, shift_h, shift_v, apply_shift, out) \
+dt_omp_firstprivate(in, inb, width, height, ch, iter, iterations, guide, shift_h, shift_v, shift_h_in, shift_v_in, apply_shift, out) \
   schedule(static)
 #endif
   for(size_t i = RPATCH + iterations; i < height - RPATCH - iterations; i++)
@@ -251,8 +301,7 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
         size_t c = (guide + kc) % 3;
         float best_score = 0.0f; // the higher the better
         float best_ratio = 10000000.0f; // the lower the better
-        int shft_i = shift_v[(i * width + j) * ch + c];
-        int shft_j = shift_h[(i * width + j) * ch + c];
+        int shft_i = shift_v_in[(i * width + j) * ch + c];
         int best_shft_ii = shft_i;
         int kii = 0;
         for(int shft_ii = shft_i - iter; shft_ii <= shft_i + iter; shft_ii++)
@@ -273,10 +322,14 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
           float ratio = 1.0f;
           for(int pi = -RPATCH; pi <= RPATCH; pi++)
           {
+            int shft_j = shift_h_in[((i + pi) * width + j) * ch + c];
             float center_g = in[((i + pi) * width + j) * ch + guide];
             float center_c = in[((i + shft_ii + pi) * width + (j + shft_j)) * ch + c];
+            center_g += 0.3f * in[((i + pi) * width + j) * ch + guide];
+            center_c += 0.3f * in[((i + shft_ii + pi) * width + (j + shft_j)) * ch + c];
             float r = fmaxf(center_g, 1E-6) / fmaxf(center_c, 1E-6);
-            ratio *= fmaxf(r, 1.0f / r);
+            r = fmaxf(r, 1.0f / r);
+            ratio *= r;
             cov += center_g * center_c;
             varg += center_g * center_g;
             varc += center_c * center_c;
@@ -296,14 +349,97 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
         }
         shft_i = best_shft_ii;
         shift_v[(i * width + j) * ch + c] = shft_i;
+        int shft_j = shift_h_in[(i * width + j) * ch + c];
         if(apply_shift)
           out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
-
       }
     }
     free(shfts);
   }
-  dt_free_align(inh);
+
+  memcpy(shift_h_in, shift_h, width * height * ch * sizeof(int));
+  memcpy(shift_v_in, shift_v, width * height * ch * sizeof(int));
+
+  vert_average(in, tmp, width, height, ch, iterations * 2);
+  vert_average(tmp, inb, width, height, ch, iterations);
+  dt_free_align(tmp);
+  // find horizontal shift
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+  dt_omp_firstprivate(in, inb, width, height, ch, iter, iterations, guide, shift_h, shift_v, shift_h_in, shift_v_in, apply_shift, out) \
+  schedule(static)
+#endif
+  for(size_t j = RPATCH + iterations; j < width - RPATCH - iterations; j++)
+  {
+    int* shfts = malloc(sizeof(int) * (2 * iter + 1));
+    for(size_t i = RPATCH + iterations; i < height - RPATCH - iterations; i++)
+    {
+      for(size_t kc = 1; kc <= 2; kc++)
+      {
+        size_t c = (guide + kc) % 3;
+        float best_score = 0.0f; // the higher the better
+        float best_ratio = 10000000.0f; // the lower the better
+        int shft_j = shift_h_in[(i * width + j) * ch + c];
+        int best_shft_jj = shft_j;
+        int kjj = 0;
+        for(int shft_jj = shft_j - iter; shft_jj <= shft_j + iter; shft_jj++)
+        {
+          shfts[kjj] = shft_jj;
+          kjj++;
+        }
+        qsort(shfts, 2 * iter + 1, sizeof(int), comp);
+        for(kjj = 0; kjj < 2 * iter + 1; kjj++)
+        {
+          int shft_jj = shfts[kjj];
+          float score = 0.0f;
+          float cov = 0.0f;
+          float varg = 0.0f;
+          float varc = 0.0f;
+          float meang = 0.0f;
+          float meanc = 0.0f;
+          float ratio = 1.0f;
+          for(int pj = -RPATCH; pj <= RPATCH; pj++)
+          {
+            int shft_i = shift_v_in[(i * width + j + pj) * ch + c];
+            float center_g = in[(i * width + j + pj) * ch + guide];
+            float center_c = in[((i + shft_i) * width + (j + shft_jj + pj)) * ch + c];
+            center_g += 0.3f * in[(i * width + j + pj + shft_jj) * ch + guide];
+            center_c += 0.3f * in[((i + shft_i) * width + (j + shft_jj + pj)) * ch + c];
+            float r = fmaxf(center_g, 1E-6) / fmaxf(center_c, 1E-6);
+            r = fmaxf(r, 1.0f / r);
+            ratio *= r;
+            cov += center_g * center_c;
+            varg += center_g * center_g;
+            varc += center_c * center_c;
+            meang += center_g;
+            meanc += center_c;
+          }
+          score = cov * cov / (varg * varc + 1E-6);
+          if(score > best_score)
+          {
+            if(ratio < best_ratio)
+            {
+              best_ratio = ratio;
+              best_score = score;
+              best_shft_jj = shft_jj;
+            }
+          }
+        }
+        shft_j = best_shft_jj;
+        shift_h[(i * width + j) * ch + c] = shft_j;
+        int shft_i = shift_v_in[(i * width + j) * ch + c];
+        if(apply_shift)
+        {
+          out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+        }
+      }
+    }
+    free(shfts);
+  }
+
+  free(shift_h_in);
+  free(shift_v_in);
+  dt_free_align(inb);
 
   if(!apply_shift)
   {
