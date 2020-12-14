@@ -40,6 +40,14 @@ typedef enum dt_iop_cacorrectrgb_guide_channel_t
   DT_CACORRECT_RGB_B = 2     // $DESCRIPTION: "blue"
 } dt_iop_cacorrectrgb_guide_channel_t;
 
+typedef enum dt_iop_cacorrectrgb_direction_t
+{
+  DT_CACORRECT_N_S = 0,    // $DESCRIPTION: "north south"
+  DT_CACORRECT_E_W = 1,    // $DESCRIPTION: "east west"
+  DT_CACORRECT_NE_SW = 2,  // $DESCRIPTION: "north-east south-west"
+  DT_CACORRECT_NW_SE = 3   // $DESCRIPTION: "north-west south-east"
+} dt_iop_cacorrectrgb_direction_t;
+
 typedef struct dt_iop_cacorrectrgb_params_t
 {
   dt_iop_cacorrectrgb_guide_channel_t guide_channel; // $DEFAULT: DT_CACORRECT_RGB_G $DESCRIPTION: "guide"
@@ -139,105 +147,12 @@ static inline int median(int current, int prev, int next)
   return median;
 }
 
-static void horiz_average(const float* const in, float* out, const size_t width, const size_t height, const size_t ch, const size_t radius)
-{
-  assert(ch == 4);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, out, width, height, ch, radius) \
-  schedule(static)
-#endif
-  for(size_t i = 0; i < height; i++)
-  {
-    double avg[4] = {0.0f};
-    for(size_t j = 0; j < radius; j++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] += in[(i * width + j) * ch + c];
-      }
-    }
-    for(size_t j = 0; j <= radius; j++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] += in[(i * width + j + radius) * ch + c];
-        out[(i * width + j) * ch + c] = avg[c] / (j + radius + 1);
-      }
-    }
-    for(size_t j = radius + 1; j < width - radius; j++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] += in[(i * width + j + radius) * ch + c];
-        avg[c] -= in[(i * width + j - radius - 1) * ch + c];
-        out[(i * width + j) * ch + c] = avg[c] / (2 * radius + 1);
-      }
-    }
-    for(size_t j = width - radius; j < width; j++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] -= in[(i * width + j - radius - 1) * ch + c];
-        out[(i * width + j) * ch + c] = avg[c] / ((width - j - 1) + radius + 1);
-      }
-    }
-  }
-}
-
-static void vert_average(const float* const in, float* out, const size_t width, const size_t height, const size_t ch, const size_t radius)
-{
-  assert(ch == 4);
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, out, width, height, ch, radius) \
-  schedule(static)
-#endif
-  for(size_t j = 0; j < width; j++)
-  {
-    double avg[4] = {0.0f};
-    for(size_t i = 0; i < radius; i++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] += in[(i * width + j) * ch + c];
-      }
-    }
-    for(size_t i = 0; i <= radius; i++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] += in[((i + radius) * width + j) * ch + c];
-        out[(i * width + j) * ch + c] = avg[c] / (i + radius + 1);
-      }
-    }
-    for(size_t i = radius + 1; i < height - radius; i++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] += in[((i + radius) * width + j) * ch + c];
-        avg[c] -= in[((i - radius - 1) * width + j) * ch + c];
-        out[(i * width + j) * ch + c] = avg[c] / (2 * radius + 1);
-      }
-    }
-    for(size_t i = height - radius; i < height; i++)
-    {
-      for(size_t c = 0; c < ch; c++)
-      {
-        avg[c] -= in[((i - radius - 1) * width + j) * ch + c];
-        out[(i * width + j) * ch + c] = avg[c] / ((height - i - 1) + radius + 1);
-      }
-    }
-  }
-}
-
 // RPATCH is the radius of the patch that is used to compare the
 // channels and select the best shift
-#define RPATCH 3
+#define RPATCH 10
 #define DIAMETERPATCH (2 * RPATCH + 1)
 // number of pixels in a patch
 #define NBELEMPATCH (DIAMETERPATCH * DIAMETERPATCH)
-#define RBILAT 4
 
 int comp(const void* p1, const void* p2)
 {
@@ -270,176 +185,174 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
     dt_free_align(ds_shift_h);
     dt_free_align(ds_shift_v);
   }
-  const int iter = /*MIN(*/iterations/*, 2)*/;
 
   if(height < RPATCH + iterations) return;
   if(width < RPATCH + iterations) return;
 
-  int* shift_h_in = malloc(width * height * ch * sizeof(int));
-  int* shift_v_in = malloc(width * height * ch * sizeof(int));
-  memcpy(shift_h_in, shift_h, width * height * ch * sizeof(int));
-  memcpy(shift_v_in, shift_v, width * height * ch * sizeof(int));
+  float *const restrict weights = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict weighted_i = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict weighted_j = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_weights = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_i = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_j = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
 
-  float *const restrict tmp = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict inb = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  horiz_average(in, tmp, width, height, ch, iterations * 2);
-  horiz_average(tmp, inb, width, height, ch, iterations);
+  float minr = 10000000.0f;
+  float maxr = 0.0f;
+  float ming = 10000000.0f;
+  float maxg = 0.0f;
+  float minb = 10000000.0f;
+  float maxb = 0.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, width, height) \
+  schedule(simd:static) aligned(in:64) \
+  reduction(max:maxr, maxg, maxb)\
+  reduction(min:minr, ming, minb)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    const float pixelr = in[k * 4];
+    if(pixelr < minr) minr = pixelr;
+    if(pixelr > maxr) maxr = pixelr;
+    const float pixelg = in[k * 4 + 1];
+    if(pixelg < ming) ming = pixelg;
+    if(pixelg > maxg) maxg = pixelg;
+    const float pixelb = in[k * 4 + 2];
+    if(pixelb < minb) minb = pixelb;
+    if(pixelb > maxb) maxb = pixelb;
+  }
+
+  // mettre les valeurs pour 1.5 iter.
+  const float sigma1 = 5.0f * 1.f;
+  const float sigma = 1.f * 1.f;
+  float max[4] = {maxr, maxg, maxb, 0.0f};
+  float min[4] = {minr, ming, minb, 0.0f};
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma1, 0);
+  if(!g) return;
+  dt_gaussian_blur_4c(g, in, weights);
+  dt_gaussian_free(g);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, weights, weighted_i, weighted_j, width, height) \
+  schedule(simd:static) aligned(in, weights, weighted_i, weighted_j:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        const size_t index = (i * width + j) * 4 + c;
+        float input = in[index];
+        float blur = weights[index];
+        float res = fabsf(input - blur) / fmaxf(input + blur, 1E-6);
+        weights[index] = res;
+        weighted_i[index] = res * (float)i;
+        weighted_j[index] = res * (float)j;
+      }
+    }
+  }
+
+  for(size_t c = 0; c < 4; c++)
+  {
+    min[c] = 0.0f;
+    max[c] = 1.0f;
+  }
+  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur_4c(g, weights, blurred_weights);
+  dt_gaussian_free(g);
+
+  for(size_t c = 0; c < 4; c++)
+  {
+    min[c] = 0.0f;
+    max[c] = height;
+  }
+  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur_4c(g, weighted_i, blurred_i);
+  dt_gaussian_free(g);
+
+  for(size_t c = 0; c < 4; c++)
+  {
+    min[c] = 0.0f;
+    max[c] = width;
+  }
+  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur_4c(g, weighted_j, blurred_j);
+  dt_gaussian_free(g);
+
+  dt_free_align(weighted_i);
+  dt_free_align(weighted_j);
+  dt_free_align(weights);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(blurred_i, blurred_j, blurred_weights, width, height) \
+  schedule(simd:static) aligned(blurred_weights, weighted_i, weighted_j:64)
+#endif
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        const size_t index = (i * width + j) * 4 + c;
+        blurred_i[index] = blurred_i[index] / blurred_weights[index] - i;
+        blurred_j[index] = blurred_j[index] / blurred_weights[index] - j;
+      }
+    }
+  }
+  //dt_free_align(blurred_weights);
+
 
   // find vertical shift
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, inb, width, height, ch, iter, iterations, guide, shift_h, shift_v, shift_h_in, shift_v_in, apply_shift, out) \
+dt_omp_firstprivate(in, width, height, iterations, guide, blurred_i, blurred_j, blurred_weights, apply_shift, out) \
   schedule(static)
 #endif
-  for(size_t i = RPATCH + iterations; i < height - RPATCH - iterations; i++)
+  for(size_t i = iterations; i < height - iterations; i++)
   {
-    int* shfts = malloc(sizeof(int) * (2 * iter + 1));
-    for(size_t j = RPATCH + iterations; j < width - RPATCH - iterations; j++)
+    for(size_t j = iterations; j < width - iterations; j++)
     {
       for(size_t kc = 1; kc <= 2; kc++)
       {
         size_t c = (guide + kc) % 3;
-        float best_score = 0.0f; // the higher the better
-        float best_ratio = 10000000.0f; // the lower the better
-        int shft_i = shift_v_in[(i * width + j) * ch + c];
-        int best_shft_ii = shft_i;
-        int kii = 0;
-        for(int shft_ii = shft_i - iter; shft_ii <= shft_i + iter; shft_ii++)
+
+        float best = 100000000.0f;
+        size_t best_i = i;
+        size_t best_j = j;
+        float ref_i = blurred_i[(i * width + j) * 4 + guide];
+        float ref_j = blurred_j[(i * width + j) * 4 + guide];
+        for(size_t ii = i - iterations; ii <= i + iterations; ii++)
         {
-          shfts[kii] = shft_ii;
-          kii++;
-        }
-        qsort(shfts, 2 * iter + 1, sizeof(int), comp);
-        for(kii = 0; kii < 2 * iter + 1; kii++)
-        {
-          int shft_ii = shfts[kii];
-          float score = 0.0f;
-          float cov = 0.0f;
-          float varg = 0.0f;
-          float varc = 0.0f;
-          float meang = 0.0f;
-          float meanc = 0.0f;
-          float ratio = 1.0f;
-          for(int pi = -RPATCH; pi <= RPATCH; pi++)
+          for(size_t jj = j - iterations; jj <= j + iterations; jj++)
           {
-            int shft_j = shift_h_in[((i + pi) * width + j) * ch + c];
-            float center_g = in[((i + pi) * width + j) * ch + guide];
-            float center_c = in[((i + shft_ii + pi) * width + (j + shft_j)) * ch + c];
-            center_g += 0.3f * in[((i + pi) * width + j) * ch + guide];
-            center_c += 0.3f * in[((i + shft_ii + pi) * width + (j + shft_j)) * ch + c];
-            float r = fmaxf(center_g, 1E-6) / fmaxf(center_c, 1E-6);
-            r = fmaxf(r, 1.0f / r);
-            ratio *= r;
-            cov += center_g * center_c;
-            varg += center_g * center_g;
-            varc += center_c * center_c;
-            meang += center_g;
-            meanc += center_c;
-          }
-          score = cov * cov / (varg * varc + 1E-6);
-          if(score > best_score)
-          {
-            if(ratio < best_ratio)
+            float dist_i = ref_i - blurred_i[(ii * width + jj) * 4 + c];
+            float dist_j = ref_j - blurred_j[(ii * width + jj) * 4 + c];
+            float dist = sqrtf(dist_i * dist_i + dist_j * dist_j);
+            float ratio = (blurred_weights[(ii * width + jj) * 4 + c] + 1E-6) / (blurred_weights[(i * width + j) * 4 + guide] + 1E-6);
+            if(ratio < 1.0f) ratio = 1.0f / ratio;
+            dist *= ratio;
+            dist += 0.05f * sqrtf((ii - i) * (ii - i) + (jj - j) * (jj - j));
+            // dist += 10.0f * fabsf(blurred_weights[(ii * width + jj) * 4 + c] - blurred_weights[(i * width + j) * 4 + guide]) / fabsf(blurred_weights[(ii * width + jj) * 4 + c] + blurred_weights[(i * width + j) * 4 + guide] + 1E-6);
+            if(dist < best)
             {
-              best_ratio = ratio;
-              best_score = score;
-              best_shft_ii = shft_ii;
+              best = dist;
+              best_i = ii;
+              best_j = jj;
             }
           }
         }
-        shft_i = best_shft_ii;
-        shift_v[(i * width + j) * ch + c] = shft_i;
-        int shft_j = shift_h_in[(i * width + j) * ch + c];
+        // shift_v[(i * width + j) * ch + c] = shft_i;
         if(apply_shift)
-          out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
+          out[(i * width + j) * 4 + c] = in[(best_i * width + best_j) * 4 + c];
       }
     }
-    free(shfts);
   }
-
-  memcpy(shift_h_in, shift_h, width * height * ch * sizeof(int));
-  memcpy(shift_v_in, shift_v, width * height * ch * sizeof(int));
-
-  vert_average(in, tmp, width, height, ch, iterations * 2);
-  vert_average(tmp, inb, width, height, ch, iterations);
-  dt_free_align(tmp);
-  // find horizontal shift
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(in, inb, width, height, ch, iter, iterations, guide, shift_h, shift_v, shift_h_in, shift_v_in, apply_shift, out) \
-  schedule(static)
-#endif
-  for(size_t j = RPATCH + iterations; j < width - RPATCH - iterations; j++)
-  {
-    int* shfts = malloc(sizeof(int) * (2 * iter + 1));
-    for(size_t i = RPATCH + iterations; i < height - RPATCH - iterations; i++)
-    {
-      for(size_t kc = 1; kc <= 2; kc++)
-      {
-        size_t c = (guide + kc) % 3;
-        float best_score = 0.0f; // the higher the better
-        float best_ratio = 10000000.0f; // the lower the better
-        int shft_j = shift_h_in[(i * width + j) * ch + c];
-        int best_shft_jj = shft_j;
-        int kjj = 0;
-        for(int shft_jj = shft_j - iter; shft_jj <= shft_j + iter; shft_jj++)
-        {
-          shfts[kjj] = shft_jj;
-          kjj++;
-        }
-        qsort(shfts, 2 * iter + 1, sizeof(int), comp);
-        for(kjj = 0; kjj < 2 * iter + 1; kjj++)
-        {
-          int shft_jj = shfts[kjj];
-          float score = 0.0f;
-          float cov = 0.0f;
-          float varg = 0.0f;
-          float varc = 0.0f;
-          float meang = 0.0f;
-          float meanc = 0.0f;
-          float ratio = 1.0f;
-          for(int pj = -RPATCH; pj <= RPATCH; pj++)
-          {
-            int shft_i = shift_v_in[(i * width + j + pj) * ch + c];
-            float center_g = in[(i * width + j + pj) * ch + guide];
-            float center_c = in[((i + shft_i) * width + (j + shft_jj + pj)) * ch + c];
-            center_g += 0.3f * in[(i * width + j + pj + shft_jj) * ch + guide];
-            center_c += 0.3f * in[((i + shft_i) * width + (j + shft_jj + pj)) * ch + c];
-            float r = fmaxf(center_g, 1E-6) / fmaxf(center_c, 1E-6);
-            r = fmaxf(r, 1.0f / r);
-            ratio *= r;
-            cov += center_g * center_c;
-            varg += center_g * center_g;
-            varc += center_c * center_c;
-            meang += center_g;
-            meanc += center_c;
-          }
-          score = cov * cov / (varg * varc + 1E-6);
-          if(score > best_score)
-          {
-            if(ratio < best_ratio)
-            {
-              best_ratio = ratio;
-              best_score = score;
-              best_shft_jj = shft_jj;
-            }
-          }
-        }
-        shft_j = best_shft_jj;
-        shift_h[(i * width + j) * ch + c] = shft_j;
-        int shft_i = shift_v_in[(i * width + j) * ch + c];
-        if(apply_shift)
-        {
-          out[(i * width + j) * ch + c] = in[((i + shft_i) * width + (j + shft_j)) * ch + c];
-        }
-      }
-    }
-    free(shfts);
-  }
-
-  free(shift_h_in);
-  free(shift_v_in);
-  dt_free_align(inb);
 
   if(!apply_shift)
   {
