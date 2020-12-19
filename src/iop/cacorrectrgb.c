@@ -286,7 +286,9 @@ dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, blurred_ma
       {
         size_t c = (guide + kc) % 3;
         const float pixelg = in[(i * width + j) * 4 + guide];
+        const float log_pixg = logf(fmaxf(pixelg, 1E-6));
         const float avg = blurred_in[(i * width + j) * 4 + guide];
+        const float log_avg = logf(fmaxf(avg, 1E-6));
         const float ratio_means = blurred_in[(i * width + j) * 4 + c] / fmaxf(avg, 1E-6);
 
         float dist = 0.0f;
@@ -295,13 +297,15 @@ dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, blurred_ma
         {
           const float avg_high = blurred_manifold_higher[(i * width + j) * 4 + guide];
           ratio_means_manifold = blurred_manifold_higher[(i * width + j) * 4 + c] / fmaxf(avg_high, 1E-6);
-          dist = (avg_high - fminf(pixelg, avg_high)) / fmaxf(avg_high - avg, 1E-6);
+          const float log_avgh = logf(fmaxf(avg_high, 1E-6));
+          dist = (log_avgh - fminf(log_pixg, log_avgh)) / fmaxf(log_avgh - log_avg, 1E-6);
         }
         else
         {
           const float avg_low = blurred_manifold_lower[(i * width + j) * 4 + guide];
           ratio_means_manifold = blurred_manifold_lower[(i * width + j) * 4 + c] / fmaxf(avg_low, 1E-6);
-          dist = (fmaxf(pixelg, avg_low) - avg_low) / fmaxf(avg - avg_low, 1E-6);
+          const float log_avgl = logf(fmaxf(avg_low, 1E-6));
+          dist = (fmaxf(log_pixg, log_avgl) - log_avgl) / fmaxf(log_avg - log_avgl, 1E-6);
         }
 
         float ratio = dist * ratio_means + (1.0f - dist) * ratio_means_manifold;
