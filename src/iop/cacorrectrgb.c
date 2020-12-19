@@ -251,10 +251,6 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
 
   dt_gaussian_blur_4c(g, manifold_higher, blurred_manifold_higher);
   dt_gaussian_blur_4c(g, manifold_lower, blurred_manifold_lower);
-  dt_gaussian_free(g);
-
-  dt_free_align(manifold_lower);
-  dt_free_align(manifold_higher);
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -272,6 +268,40 @@ dt_omp_firstprivate(blurred_manifold_lower, blurred_manifold_higher, width, heig
       blurred_manifold_lower[k * 4 + c] /= weightl;
     }
   }
+
+  // second step.
+  // make manifolds more accurate by only considering pixels far enough
+  // from the mean (i.e. we don't consider pixels that are in the 2
+  // current manifolds)
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
+  schedule(simd:static) aligned(in, blurred_in, manifold_lower, manifold_higher, blurred_manifold_lower, blurred_manifold_higher:64)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    const float pixelg = in[k * 4 + guide];
+    const float avg = blurred_in[k * 4 + guide];
+    const float avgh = blurred_manifold_higher[k * 4 + guide];
+    const float avgl = blurred_manifold_lower[k * 4 + guide];
+    const float weighth = 0.8f * (pixelg >= avgh) + 0.2f * (pixelg >= avg);
+    const float weightl = 0.8f * (pixelg <= avgl) + 0.2f * (pixelg <= avg);
+    for(size_t c = 0; c < 3; c++)
+    {
+      const float pixel = in[k * 4 + c];
+      manifold_higher[k * 4 + c] = pixel * weighth;
+      manifold_lower[k * 4 + c] = pixel * weightl;
+    }
+    manifold_higher[k * 4 + 3] = weighth;
+    manifold_lower[k * 4 + 3] = weightl;
+  }
+
+  dt_gaussian_blur_4c(g, manifold_higher, blurred_manifold_higher);
+  dt_gaussian_blur_4c(g, manifold_lower, blurred_manifold_lower);
+  dt_gaussian_free(g);
+
+  dt_free_align(manifold_lower);
+  dt_free_align(manifold_higher);
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
