@@ -51,7 +51,7 @@ typedef enum dt_iop_cacorrectrgb_direction_t
 typedef struct dt_iop_cacorrectrgb_params_t
 {
   dt_iop_cacorrectrgb_guide_channel_t guide_channel; // $DEFAULT: DT_CACORRECT_RGB_G $DESCRIPTION: "guide"
-  int radius; // $MIN: 1 $MAX: 20 $DEFAULT: 1 $DESCRIPTION: "radius"
+  int radius; // $MIN: 1 $MAX: 50 $DEFAULT: 1 $DESCRIPTION: "radius"
 } dt_iop_cacorrectrgb_params_t;
 
 typedef struct dt_iop_cacorrectrgb_gui_data_t
@@ -190,6 +190,10 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   if(width < RPATCH + iterations) return;
 
   float *const restrict blurred_in = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict manifold_lower = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_manifold_lower = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
 
   float minr = 10000000.0f;
   float maxr = 0.0f;
@@ -218,16 +222,60 @@ dt_omp_firstprivate(in, width, height) \
   }
 
   const float sigma = iterations;
-  float max[4] = {maxr, maxg, maxb, 0.0f};
-  float min[4] = {minr, ming, minb, 0.0f};
+  float max[4] = {maxr, maxg, maxb, 1.0f};
+  float min[4] = {fminf(minr, 0.0f), fminf(ming, 0.0f), fminf(minb, 0.0f), 0.0f};
   dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
   if(!g) return;
   dt_gaussian_blur_4c(g, in, blurred_in);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, height, guide) \
+  schedule(simd:static) aligned(in, blurred_in, manifold_lower, manifold_higher:64)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    const float pixelg = in[k * 4 + guide];
+    const float avg = blurred_in[k * 4 + guide];
+    const float weighth = pixelg >= avg;
+    const float weightl = pixelg <= avg;
+    for(size_t c = 0; c < 3; c++)
+    {
+      const float pixel = in[k * 4 + c];
+      manifold_higher[k * 4 + c] = pixel * weighth;
+      manifold_lower[k * 4 + c] = pixel * weightl;
+    }
+    manifold_higher[k * 4 + 3] = weighth;
+    manifold_lower[k * 4 + 3] = weightl;
+  }
+
+  dt_gaussian_blur_4c(g, manifold_higher, blurred_manifold_higher);
+  dt_gaussian_blur_4c(g, manifold_lower, blurred_manifold_lower);
   dt_gaussian_free(g);
+
+  dt_free_align(manifold_lower);
+  dt_free_align(manifold_higher);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
+  schedule(simd:static) aligned(blurred_manifold_lower, blurred_manifold_higher:64)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    // normalize
+    const float weighth = fmaxf(blurred_manifold_higher[k * 4 + 3], 1E-6);
+    const float weightl = fmaxf(blurred_manifold_lower[k * 4 + 3], 1E-6);
+    for(size_t c = 0; c < 3; c++)
+    {
+      blurred_manifold_higher[k * 4 + c] /= weighth;
+      blurred_manifold_lower[k * 4 + c] /= weightl;
+    }
+  }
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, apply_shift, out) \
+dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, blurred_manifold_higher, blurred_manifold_lower, apply_shift, out) \
   schedule(static)
 #endif
   for(size_t i = 0; i < height; i++)
@@ -237,14 +285,33 @@ dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, apply_shif
       for(size_t kc = 1; kc <= 2; kc++)
       {
         size_t c = (guide + kc) % 3;
+        const float pixelg = in[(i * width + j) * 4 + guide];
+        const float avg = blurred_in[(i * width + j) * 4 + guide];
+        const float ratio_means = blurred_in[(i * width + j) * 4 + c] / fmaxf(avg, 1E-6);
 
-        float ratio_means = blurred_in[(i * width + j) * 4 + c] / fmaxf(blurred_in[(i * width + j) * 4 + guide], 1E-6);
+        float dist = 0.0f;
+        float ratio_means_manifold;
+        if(pixelg >= avg)
+        {
+          const float avg_high = blurred_manifold_higher[(i * width + j) * 4 + guide];
+          ratio_means_manifold = blurred_manifold_higher[(i * width + j) * 4 + c] / fmaxf(avg_high, 1E-6);
+          dist = (avg_high - fminf(pixelg, avg_high)) / fmaxf(avg_high - avg, 1E-6);
+        }
+        else
+        {
+          const float avg_low = blurred_manifold_lower[(i * width + j) * 4 + guide];
+          ratio_means_manifold = blurred_manifold_lower[(i * width + j) * 4 + c] / fmaxf(avg_low, 1E-6);
+          dist = (fmaxf(pixelg, avg_low) - avg_low) / fmaxf(avg - avg_low, 1E-6);
+        }
 
-        out[(i * width + j) * 4 + c] = in[(i * width + j) * 4 + guide] * ratio_means;
+        float ratio = dist * ratio_means + (1.0f - dist) * ratio_means_manifold;
+        out[(i * width + j) * 4 + c] = in[(i * width + j) * 4 + guide] * ratio;
       }
     }
   }
   dt_free_align(blurred_in);
+  dt_free_align(blurred_manifold_lower);
+  dt_free_align(blurred_manifold_higher);
 
   if(!apply_shift)
   {
