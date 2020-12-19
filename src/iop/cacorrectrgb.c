@@ -189,12 +189,7 @@ static void compute_shift(const float* const in, int* shift_h, int* shift_v,
   if(height < RPATCH + iterations) return;
   if(width < RPATCH + iterations) return;
 
-  float *const restrict weights = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict weighted_i = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict weighted_j = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_weights = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_i = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_j = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_in = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
 
   float minr = 10000000.0f;
   float maxr = 0.0f;
@@ -222,137 +217,34 @@ dt_omp_firstprivate(in, width, height) \
     if(pixelb > maxb) maxb = pixelb;
   }
 
-  // mettre les valeurs pour 1.5 iter.
-  const float sigma1 = 5.0f * 1.f;
-  const float sigma = 1.f * 1.f;
+  const float sigma = iterations;
   float max[4] = {maxr, maxg, maxb, 0.0f};
   float min[4] = {minr, ming, minb, 0.0f};
-  dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma1, 0);
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
   if(!g) return;
-  dt_gaussian_blur_4c(g, in, weights);
+  dt_gaussian_blur_4c(g, in, blurred_in);
   dt_gaussian_free(g);
 
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, weights, weighted_i, weighted_j, width, height) \
-  schedule(simd:static) aligned(in, weights, weighted_i, weighted_j:64)
-#endif
-  for(size_t i = 0; i < height; i++)
-  {
-    for(size_t j = 0; j < width; j++)
-    {
-      for(size_t c = 0; c < 4; c++)
-      {
-        const size_t index = (i * width + j) * 4 + c;
-        float input = in[index];
-        float blur = weights[index];
-        float res = fabsf(input - blur) / fmaxf(input + blur, 1E-6);
-        weights[index] = res;
-        weighted_i[index] = res * (float)i;
-        weighted_j[index] = res * (float)j;
-      }
-    }
-  }
-
-  for(size_t c = 0; c < 4; c++)
-  {
-    min[c] = 0.0f;
-    max[c] = 1.0f;
-  }
-  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur_4c(g, weights, blurred_weights);
-  dt_gaussian_free(g);
-
-  for(size_t c = 0; c < 4; c++)
-  {
-    min[c] = 0.0f;
-    max[c] = height;
-  }
-  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur_4c(g, weighted_i, blurred_i);
-  dt_gaussian_free(g);
-
-  for(size_t c = 0; c < 4; c++)
-  {
-    min[c] = 0.0f;
-    max[c] = width;
-  }
-  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur_4c(g, weighted_j, blurred_j);
-  dt_gaussian_free(g);
-
-  dt_free_align(weighted_i);
-  dt_free_align(weighted_j);
-  dt_free_align(weights);
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(blurred_i, blurred_j, blurred_weights, width, height) \
-  schedule(simd:static) aligned(blurred_weights, weighted_i, weighted_j:64)
-#endif
-  for(size_t i = 0; i < height; i++)
-  {
-    for(size_t j = 0; j < width; j++)
-    {
-      for(size_t c = 0; c < 4; c++)
-      {
-        const size_t index = (i * width + j) * 4 + c;
-        blurred_i[index] = blurred_i[index] / blurred_weights[index] - i;
-        blurred_j[index] = blurred_j[index] / blurred_weights[index] - j;
-      }
-    }
-  }
-  //dt_free_align(blurred_weights);
-
-
-  // find vertical shift
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, width, height, iterations, guide, blurred_i, blurred_j, blurred_weights, apply_shift, out) \
+dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, apply_shift, out) \
   schedule(static)
 #endif
-  for(size_t i = iterations; i < height - iterations; i++)
+  for(size_t i = 0; i < height; i++)
   {
-    for(size_t j = iterations; j < width - iterations; j++)
+    for(size_t j = 0; j < width; j++)
     {
       for(size_t kc = 1; kc <= 2; kc++)
       {
         size_t c = (guide + kc) % 3;
 
-        float best = 100000000.0f;
-        size_t best_i = i;
-        size_t best_j = j;
-        float ref_i = blurred_i[(i * width + j) * 4 + guide];
-        float ref_j = blurred_j[(i * width + j) * 4 + guide];
-        for(size_t ii = i - iterations; ii <= i + iterations; ii++)
-        {
-          for(size_t jj = j - iterations; jj <= j + iterations; jj++)
-          {
-            float dist_i = ref_i - blurred_i[(ii * width + jj) * 4 + c];
-            float dist_j = ref_j - blurred_j[(ii * width + jj) * 4 + c];
-            float dist = sqrtf(dist_i * dist_i + dist_j * dist_j);
-            float ratio = (blurred_weights[(ii * width + jj) * 4 + c] + 1E-6) / (blurred_weights[(i * width + j) * 4 + guide] + 1E-6);
-            if(ratio < 1.0f) ratio = 1.0f / ratio;
-            dist *= ratio;
-            dist += 0.05f * sqrtf((ii - i) * (ii - i) + (jj - j) * (jj - j));
-            // dist += 10.0f * fabsf(blurred_weights[(ii * width + jj) * 4 + c] - blurred_weights[(i * width + j) * 4 + guide]) / fabsf(blurred_weights[(ii * width + jj) * 4 + c] + blurred_weights[(i * width + j) * 4 + guide] + 1E-6);
-            if(dist < best)
-            {
-              best = dist;
-              best_i = ii;
-              best_j = jj;
-            }
-          }
-        }
-        // shift_v[(i * width + j) * ch + c] = shft_i;
-        if(apply_shift)
-          out[(i * width + j) * 4 + c] = in[(best_i * width + best_j) * 4 + c];
+        float ratio_means = blurred_in[(i * width + j) * 4 + c] / fmaxf(blurred_in[(i * width + j) * 4 + guide], 1E-6);
+
+        out[(i * width + j) * 4 + c] = in[(i * width + j) * 4 + guide] * ratio_means;
       }
     }
   }
+  dt_free_align(blurred_in);
 
   if(!apply_shift)
   {
