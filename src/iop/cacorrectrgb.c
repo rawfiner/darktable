@@ -88,107 +88,11 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
   memcpy(piece->data, p1, self->params_size);
 }
 
-static void upscale_2x_shift_nn(int* ds_shift, int* shift, const size_t width, const size_t height, const size_t ch)
-{
-  // upscale shift using nearest neighbour. Multiply all shifts by 2
-  size_t ds_width = (width - 1) / 2 + 1;
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-  dt_omp_firstprivate(ds_shift, shift, ds_width, width, height, ch) \
-  schedule(static)
-#endif
-  for(size_t i = 0; i < height; i++)
-  {
-    const size_t ds_i = i / 2;
-    for(size_t j = 0; j < width; j++)
-    {
-      const size_t ds_j = j / 2;
-      for(size_t c = 0; c < ch; c++)
-      {
-        shift[(i * width + j) * ch + c] = 2 * ds_shift[(ds_i * ds_width + ds_j) * ch + c];
-      }
-    }
-  }
-}
-
-static inline int median(int current, int prev, int next)
-{
-  int median;
-  if (next > current)
-  {
-    if (next < prev)
-    {
-      median = next;
-    }
-    else if (current > prev)
-    {
-      median = current;
-    }
-    else
-    {
-      median = prev;
-    }
-  }
-  else
-  {
-    if (next > prev)
-    {
-      median = next;
-    }
-    else if (current < prev)
-    {
-      median = current;
-    }
-    else
-    {
-      median = prev;
-    }
-  }
-  return median;
-}
-
-// RPATCH is the radius of the patch that is used to compare the
-// channels and select the best shift
-#define RPATCH 10
-#define DIAMETERPATCH (2 * RPATCH + 1)
-// number of pixels in a patch
-#define NBELEMPATCH (DIAMETERPATCH * DIAMETERPATCH)
-
-int comp(const void* p1, const void* p2)
-{
-  int shft1 = *((int*)p1);
-  int shft2 = *((int*)p2);
-  if(abs(shft1) < abs(shft2)) return -1;
-  if(abs(shft2) < abs(shft1)) return 1;
-  return 0;
-}
-
-static void compute_shift(const float* const in, int* shift_h, int* shift_v,
-                          const size_t width, const size_t height,
+static void ca_correct_rgb(const float* const restrict in, const size_t width, const size_t height,
                           const size_t ch, const size_t iterations,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
-                          float* const out, gboolean apply_shift)
+                          float* const restrict out)
 {
-
-  if(FALSE && iterations > 2)
-  {
-    size_t ds_width = (width - 1) / 2 + 1;
-    size_t ds_height = (height - 1) / 2 + 1;
-    float *const restrict ds_in = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
-    int *const restrict ds_shift_h = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
-    int *const restrict ds_shift_v = dt_alloc_sse_ps(dt_round_size_sse(ds_width * ds_height * ch));
-    interpolate_bilinear(in, width, height, ds_in, ds_width, ds_height, ch);
-    compute_shift(ds_in, ds_shift_h, ds_shift_v, ds_width, ds_height, ch, iterations / 2, guide, NULL, FALSE);
-    upscale_2x_shift_nn(ds_shift_h, shift_h, width, height, ch);
-    upscale_2x_shift_nn(ds_shift_v, shift_v, width, height, ch);
-    dt_free_align(ds_in);
-    dt_free_align(ds_shift_h);
-    dt_free_align(ds_shift_v);
-  }
-
-  if(height < RPATCH + iterations) return;
-  if(width < RPATCH + iterations) return;
-
   float *const restrict blurred_in = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_lower = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
@@ -275,7 +179,7 @@ dt_omp_firstprivate(blurred_manifold_lower, blurred_manifold_higher, width, heig
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, blurred_manifold_higher, blurred_manifold_lower, apply_shift, out) \
+dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, blurred_manifold_higher, blurred_manifold_lower, out) \
   schedule(static)
 #endif
   for(size_t i = 0; i < height; i++)
@@ -316,37 +220,6 @@ dt_omp_firstprivate(in, width, height, iterations, guide, blurred_in, blurred_ma
   dt_free_align(blurred_in);
   dt_free_align(blurred_manifold_lower);
   dt_free_align(blurred_manifold_higher);
-
-  if(!apply_shift)
-  {
-    // in place median approximation
-    // /!\ not thread safe yet.
-  #ifdef _OPENMP
-  #pragma omp parallel for default(none) \
-    dt_omp_firstprivate(shift_v, shift_h, width, height, ch, guide) \
-    schedule(static)
-  #endif
-    for(size_t i = 1; i < height-1; i++)
-    {
-      for(size_t j = 1; j < width-1; j++)
-      {
-        for(size_t k = 1; k <= 2; k++)
-        {
-          size_t c = (guide + k) % 3;
-          int currentv = shift_v[(i * width + j) * ch + c];
-          int nextv = shift_v[((i + 1) * width + j) * ch + c];
-          int prevv = shift_v[((i - 1) * width + j) * ch + c];
-          int medianv = median(currentv, nextv, prevv);
-          shift_v[(i * width + j) * ch + c] = medianv;
-          int currenth = shift_h[(i * width + j) * ch + c];
-          int nexth = shift_h[(i * width + (j + 1)) * ch + c];
-          int prevh = shift_h[(i * width + (j - 1)) * ch + c];
-          int medianh = median(currenth, nexth, prevh);
-          shift_h[(i * width + j) * ch + c] = medianh;
-        }
-      }
-    }
-  }
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
@@ -355,29 +228,20 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   dt_iop_cacorrectrgb_params_t *d = (dt_iop_cacorrectrgb_params_t *)piece->data;
   const float scale = piece->iscale / roi_in->scale;
   const int ch = piece->colors;
-  memcpy(ovoid, ivoid, sizeof(float) * ch * roi_out->height * roi_in->width);
+  const size_t width = roi_out->width;
+  const size_t height = roi_out->height;
+  const float* in = (float*)ivoid;
+  float* out = (float*)ovoid;
+
+  memcpy(out, in, width * height * ch * sizeof(float));
   if(ch != 4 || (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW
      || (piece->pipe->type & DT_DEV_PIXELPIPE_THUMBNAIL) == DT_DEV_PIXELPIPE_THUMBNAIL)
   {
     return;
   }
-  const size_t width = roi_out->width;
-  const size_t height = roi_out->height;
   const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
-  const size_t iter = MAX(d->radius / scale, 1);
-  const float* in = (float*)ivoid;
-  float* out = (float*)ovoid;
-  int* shift_h = calloc(width * height * ch, sizeof(int));
-  int* shift_v = calloc(width * height * ch, sizeof(int));
-
-  compute_shift(in, shift_h, shift_v, width, height, ch, iter, guide, out, TRUE);
-  dt_free_align(shift_h);
-  dt_free_align(shift_v);
-  return;
-#if 0
-  //propagate_shift(); // weighted gaussian blur to propagate the shift to apply
-  apply_shift(in, out, shift_map, width, height, ch, iter);
-#endif
+  const size_t rad = MAX(d->radius / scale, 1);
+  ca_correct_rgb(in, width, height, ch, rad, guide, out);
 }
 
 /** gui setup and update, these are needed. */
