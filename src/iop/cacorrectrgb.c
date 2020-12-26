@@ -277,37 +277,42 @@ dt_omp_firstprivate(in, out_s, correlation_1, correlation_2, width, height, guid
   for(size_t k = 0; k < width * height; k++)
   {
     size_t c = (guide + 1) % 3;
-    float x = in[k * 4 + c];
-    float y = out_s[k * 4 + c];
-    x = fabsf(x - y) / x;
-    correlation_1[k * 4] = x * y;
-    correlation_1[k * 4 + 1] = x * x;
-    correlation_1[k * 4 + 2] = y * y;
+    float x = in[k * 4 + guide];
+    float y1 = in[k * 4 + c];
+    float y2 = out_s[k * 4 + c];
+    correlation_1[k * 4] = x * y1;
+    correlation_1[k * 4 + 1] = y1 * y1;
+    correlation_1[k * 4 + 2] = x * y2;
+    correlation_1[k * 4 + 3] = y2 * y2;
     if(x > max1) max1 = x;
-    if(y > max1) max1 = y;
+    if(y1 > max1) max1 = y1;
+    if(y2 > max1) max1 = y2;
     if(x < min1) min1 = x;
-    if(y < min1) min1 = y;
+    if(y1 < min1) min1 = y1;
+    if(y2 < min1) min1 = y2;
 
     c = (guide + 2) % 3;
-    x = in[k * 4 + c];
-    y = out_s[k * 4 + c];
-    x = fabsf(x - y) / x;
-    correlation_2[k * 4] = x * y;
-    correlation_2[k * 4 + 1] = x * x;
-    correlation_2[k * 4 + 2] = y * y;
+    y1 = in[k * 4 + c];
+    y2 = out_s[k * 4 + c];
+    correlation_2[k * 4] = x * y1;
+    correlation_2[k * 4 + 1] = y1 * y1;
+    correlation_2[k * 4 + 2] = x * y2;
+    correlation_2[k * 4 + 3] = y2 * y2;
     if(x > max2) max2 = x;
-    if(y > max2) max2 = y;
+    if(y1 > max2) max2 = y1;
+    if(y2 > max2) max2 = y2;
     if(x < min2) min2 = x;
-    if(y < min2) min2 = y;
+    if(y1 < min2) min2 = y1;
+    if(y2 < min2) min2 = y2;
   }
   max1 *= max1;
   max2 *= max2;
   min1 *= min1;
   min2 *= min2;
 
-  float max[4] = {max1, max1, max1, 0.0f};
-  float min[4] = {min1, min1, min1, 0.0f};
-  dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma * 16.0f, 0);
+  float max[4] = {max1, max1, max1, max1};
+  float min[4] = {min1, min1, min1, min1};
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
   if(!g) return;
   dt_gaussian_blur_4c(g, correlation_1, blurred_correlation_1);
   dt_gaussian_free(g);
@@ -317,7 +322,7 @@ dt_omp_firstprivate(in, out_s, correlation_1, correlation_2, width, height, guid
     max[c] = max2;
     min[c] = min2;
   }
-  g = dt_gaussian_init(width, height, 4, max, min, sigma * 64.0f, 0);
+  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
   if(!g) return;
   dt_gaussian_blur_4c(g, correlation_2, blurred_correlation_2);
   dt_gaussian_free(g);
@@ -333,18 +338,22 @@ dt_omp_firstprivate(in, out_s, out_4s, out_16s, out, blurred_correlation_1, blur
     out[k * 4 + 3] = in[k * 4 + 3];
 
     size_t c = (guide + 1) % 3;
-    float corr1 = fabsf(blurred_correlation_1[k * 4]) / fmaxf(sqrtf(blurred_correlation_1[k * 4 + 1] * blurred_correlation_1[k * 4 + 2]), 1E-6);
+    float uncorrected_corr = fmaxf(blurred_correlation_1[k * 4], 1E-6) / sqrtf(fmaxf(blurred_correlation_1[k * 4 + 1], 1E-6));
+    float ref_corr = fmaxf(blurred_correlation_1[k * 4 + 2], 1E-6) / sqrtf(fmaxf(blurred_correlation_1[k * 4 + 3], 1E-6));
+    float corr1 = uncorrected_corr / ref_corr;
     //printf("%f\n", corr1);
-    if(corr1 > 0.7) out[k * 4 + c] = in[k * 4 + c];
-    else if(corr1 > 0.6) out[k * 4 + c] = out_s[k * 4 + c];
-    else if(corr1 > 0.5) out[k * 4 + c] = out_4s[k * 4 + c];
+    if(corr1 > 0.994) out[k * 4 + c] = in[k * 4 + c];
+    else if(corr1 > 0.99) out[k * 4 + c] = out_s[k * 4 + c];
+    else if(corr1 > 0.986) out[k * 4 + c] = out_4s[k * 4 + c];
     else out[k * 4 + c] = out_16s[k * 4 + c];
 
     c = (guide + 2) % 3;
-    float corr2 = fabsf(blurred_correlation_2[k * 4]) / fmaxf(sqrtf(blurred_correlation_2[k * 4 + 1] * blurred_correlation_2[k * 4 + 2]), 1E-6);
-    if(corr2 > 0.7) out[k * 4 + c] = in[k * 4 + c];
-    else if(corr2 > 0.6) out[k * 4 + c] = out_s[k * 4 + c];
-    else if(corr2 > 0.5) out[k * 4 + c] = out_4s[k * 4 + c];
+    uncorrected_corr = fmaxf(blurred_correlation_2[k * 4], 1E-6) / sqrtf(fmaxf(blurred_correlation_2[k * 4 + 1], 1E-6));
+    ref_corr = fmaxf(blurred_correlation_2[k * 4 + 2], 1E-6) / sqrtf(fmaxf(blurred_correlation_2[k * 4 + 3], 1E-6));
+    float corr2 = uncorrected_corr / ref_corr;
+    if(corr2 > 0.994) out[k * 4 + c] = in[k * 4 + c];
+    else if(corr2 > 0.99) out[k * 4 + c] = out_s[k * 4 + c];
+    else if(corr2 > 0.986) out[k * 4 + c] = out_4s[k * 4 + c];
     else out[k * 4 + c] = out_16s[k * 4 + c];
   }
 
