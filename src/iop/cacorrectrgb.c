@@ -245,19 +245,13 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     return;
   }
 
-  float *const restrict out0_s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out0_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out0_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out1_s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out1_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out1_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out2_s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out2_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out2_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict diffs_1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict diffs_2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_diffs_1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_diffs_2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict out_s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict out_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict out_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict correlation_1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict correlation_2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_correlation_1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict blurred_correlation_2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
 
   const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
   const float sigma = MAX(d->radius / scale, 1);
@@ -265,100 +259,102 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // in order to have an adaptative correction depending on
   // the amount of chromatic aberration in each part of the
   // image
-  ca_correct_rgb(in, width, height, ch, sigma, guide, out0_s);
-  ca_correct_rgb(in, width, height, ch, 4.0f * sigma, guide, out0_4s);
-  ca_correct_rgb(in, width, height, ch, 16.0f * sigma, guide, out0_16s);
-  ca_correct_rgb(out0_s, width, height, ch, sigma, (guide + 1) % 3, out1_s);
-  ca_correct_rgb(out0_4s, width, height, ch, 4.0f * sigma, (guide + 1) % 3, out1_4s);
-  ca_correct_rgb(out0_16s, width, height, ch, 16.0f * sigma, (guide + 1) % 3, out1_16s);
-  ca_correct_rgb(out0_s, width, height, ch, sigma, (guide + 2) % 3, out2_s);
-  ca_correct_rgb(out0_4s, width, height, ch, 4.0f * sigma, (guide + 2) % 3, out2_4s);
-  ca_correct_rgb(out0_16s, width, height, ch, 16.0f * sigma, (guide + 2) % 3, out2_16s);
+  ca_correct_rgb(in, width, height, ch, sigma, guide, out_s);
+  ca_correct_rgb(in, width, height, ch, 4.0f * sigma, guide, out_4s);
+  ca_correct_rgb(in, width, height, ch, 16.0f * sigma, guide, out_16s);
+
+  float min1 = 10000000.0f;
+  float max1 = 0.0f;
+  float min2 = 10000000.0f;
+  float max2 = 0.0f;
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, out0_s, out0_4s, out0_16s, out1_s, out1_4s, out1_16s, out2_s, out2_4s, out2_16s, diffs_1, diffs_2, width, height, guide) \
-  schedule(simd:static) aligned(in, out0_s, out0_4s, out0_16s, out1_s, out1_4s, out1_16s, out2_s, out2_4s, out2_16s, diffs_1, diffs_2:64)
+dt_omp_firstprivate(in, out_s, correlation_1, correlation_2, width, height, guide) \
+  schedule(simd:static) aligned(in, out_s, correlation_1, correlation_2:64) \
+  reduction(max:max1, max2)\
+  reduction(min:min1, min2)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
-    const float ref_pixelg = fmaxf(in[k * 4 + guide], 1E-6);
-    // out[k * 4 + guide] = ref_pixelg;
-    float diff1_1 = fmaxf(fabsf(out1_s[k * 4 + guide] - ref_pixelg), 1E-6) / ref_pixelg;
-    float diff1_4 = fmaxf(fabsf(out1_4s[k * 4 + guide] - ref_pixelg), 1E-6) / ref_pixelg;
-    float diff1_16 = fmaxf(fabsf(out1_16s[k * 4 + guide] - ref_pixelg), 1E-6) / ref_pixelg;
-    float w11 = fminf(diff1_1 * diff1_1, 4.0f);
-    float w44 = fminf(diff1_4 * diff1_4, 4.0f);
-    float w1616 = fminf(diff1_16 * diff1_16, 4.0f);
-    diffs_1[k * 4] = w11;
-    diffs_1[k * 4 + 1] = w44;
-    diffs_1[k * 4 + 2] = w1616;
-    // size_t c = (guide + 1) % 3;
-    // out[k * 4 + c] = (in[k * 4 + c] * w00 + out0_s[k * 4 + c] * w11 + out0_4s[k * 4 + c] * w44 + out0_16s[k * 4 + c] * w1616) / (w00 + w11 + w44 + w1616);
-    float diff2_1 = fmaxf(fabsf(out2_s[k * 4 + guide] - ref_pixelg), 1E-6) / ref_pixelg;
-    float diff2_4 = fmaxf(fabsf(out2_4s[k * 4 + guide] - ref_pixelg), 1E-6) / ref_pixelg;
-    float diff2_16 = fmaxf(fabsf(out2_16s[k * 4 + guide] - ref_pixelg), 1E-6) / ref_pixelg;
-    w11 = fminf(diff2_1 * diff2_1, 4.0f);
-    w44 = fminf(diff2_4 * diff2_4, 4.0f);
-    w1616 = fminf(diff2_16 * diff2_16, 4.0f);
-    diffs_2[k * 4] = w11;
-    diffs_2[k * 4 + 1] = w44;
-    diffs_2[k * 4 + 2] = w1616;
-    // c = (guide + 2) % 3;
-    // out[k * 4 + c] = (in[k * 4 + c] * w00 + out0_s[k * 4 + c] * w11 + out0_4s[k * 4 + c] * w44 + out0_16s[k * 4 + c] * w1616) / (w00 + w11 + w44 + w1616);
-    // out[k * 4 + 3] = in[k * 4 + 3];
+    size_t c = (guide + 1) % 3;
+    float x = in[k * 4 + c];
+    float y = out_s[k * 4 + c];
+    x = fabsf(x - y) / x;
+    correlation_1[k * 4] = x * y;
+    correlation_1[k * 4 + 1] = x * x;
+    correlation_1[k * 4 + 2] = y * y;
+    if(x > max1) max1 = x;
+    if(y > max1) max1 = y;
+    if(x < min1) min1 = x;
+    if(y < min1) min1 = y;
+
+    c = (guide + 2) % 3;
+    x = in[k * 4 + c];
+    y = out_s[k * 4 + c];
+    x = fabsf(x - y) / x;
+    correlation_2[k * 4] = x * y;
+    correlation_2[k * 4 + 1] = x * x;
+    correlation_2[k * 4 + 2] = y * y;
+    if(x > max2) max2 = x;
+    if(y > max2) max2 = y;
+    if(x < min2) min2 = x;
+    if(y < min2) min2 = y;
   }
-  float max[4] = {4.0f, 4.0f, 4.0f, 0.0f};
-  float min[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  max1 *= max1;
+  max2 *= max2;
+  min1 *= min1;
+  min2 *= min2;
+
+  float max[4] = {max1, max1, max1, 0.0f};
+  float min[4] = {min1, min1, min1, 0.0f};
   dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma * 16.0f, 0);
   if(!g) return;
-  dt_gaussian_blur_4c(g, diffs_1, blurred_diffs_1);
-  dt_gaussian_blur_4c(g, diffs_2, blurred_diffs_2);
+  dt_gaussian_blur_4c(g, correlation_1, blurred_correlation_1);
+  dt_gaussian_free(g);
+
+  for(size_t c = 0; c < 4; c++)
+  {
+    max[c] = max2;
+    min[c] = min2;
+  }
+  g = dt_gaussian_init(width, height, 4, max, min, sigma * 64.0f, 0);
+  if(!g) return;
+  dt_gaussian_blur_4c(g, correlation_2, blurred_correlation_2);
+  dt_gaussian_free(g);
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, out0_s, out0_4s, out0_16s, out1_s, out1_4s, out1_16s, out2_s, out2_4s, out2_16s, blurred_diffs_1, blurred_diffs_2, out, width, height, guide) \
-  schedule(simd:static) aligned(in, out0_s, out0_4s, out0_16s, out1_s, out1_4s, out1_16s, out2_s, out2_4s, out2_16s, blurred_diffs_1, blurred_diffs_2, out:64)
+dt_omp_firstprivate(in, out_s, out_4s, out_16s, out, blurred_correlation_1, blurred_correlation_2, width, height, guide) \
+  schedule(simd:static) aligned(in, out_s, out_4s, out_16s, out, blurred_correlation_1, blurred_correlation_2:64)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
-    const float ref_pixelg = fmaxf(in[k * 4 + guide], 1E-6);
-    out[k * 4 + guide] = ref_pixelg;
-    float w11 = 1.0f / fmaxf(blurred_diffs_1[k * 4], 1E-6);
-    float w44 = 1.0f / fmaxf(blurred_diffs_1[k * 4 + 1], 1E-6);
-    float w1616 = 1.0f / fmaxf(blurred_diffs_1[k * 4 + 2], 1E-6);
-    float w00 = w11;
-    w00 *= w00;
-    w11 *= w11;
-    w44 *= w44;
-    w1616 *= w1616;
-    size_t c = (guide + 1) % 3;
-    out[k * 4 + c] = (in[k * 4 + c] * w00 + out0_s[k * 4 + c] * w11 + out0_4s[k * 4 + c] * w44 + out0_16s[k * 4 + c] * w1616) / (w00 + w11 + w44 + w1616);
-    w11 = 1.0f / fmaxf(blurred_diffs_2[k * 4], 1E-6);
-    w44 = 1.0f / fmaxf(blurred_diffs_2[k * 4 + 1], 1E-6);
-    w1616 = 1.0f / fmaxf(blurred_diffs_2[k * 4 + 2], 1E-6);
-    w00 = w11;
-    w00 *= w00;
-    w11 *= w11;
-    w44 *= w44;
-    w1616 *= w1616;
-    c = (guide + 2) % 3;
-    out[k * 4 + c] = (in[k * 4 + c] * w00 + out0_s[k * 4 + c] * w11 + out0_4s[k * 4 + c] * w44 + out0_16s[k * 4 + c] * w1616) / (w00 + w11 + w44 + w1616);
+    out[k * 4 + guide] = in[k * 4 + guide];
     out[k * 4 + 3] = in[k * 4 + 3];
+
+    size_t c = (guide + 1) % 3;
+    float corr1 = fabsf(blurred_correlation_1[k * 4]) / fmaxf(sqrtf(blurred_correlation_1[k * 4 + 1] * blurred_correlation_1[k * 4 + 2]), 1E-6);
+    //printf("%f\n", corr1);
+    if(corr1 > 0.7) out[k * 4 + c] = in[k * 4 + c];
+    else if(corr1 > 0.6) out[k * 4 + c] = out_s[k * 4 + c];
+    else if(corr1 > 0.5) out[k * 4 + c] = out_4s[k * 4 + c];
+    else out[k * 4 + c] = out_16s[k * 4 + c];
+
+    c = (guide + 2) % 3;
+    float corr2 = fabsf(blurred_correlation_2[k * 4]) / fmaxf(sqrtf(blurred_correlation_2[k * 4 + 1] * blurred_correlation_2[k * 4 + 2]), 1E-6);
+    if(corr2 > 0.7) out[k * 4 + c] = in[k * 4 + c];
+    else if(corr2 > 0.6) out[k * 4 + c] = out_s[k * 4 + c];
+    else if(corr2 > 0.5) out[k * 4 + c] = out_4s[k * 4 + c];
+    else out[k * 4 + c] = out_16s[k * 4 + c];
   }
 
-  dt_free_align(out0_s);
-  dt_free_align(out0_4s);
-  dt_free_align(out0_16s);
-  dt_free_align(out1_s);
-  dt_free_align(out1_4s);
-  dt_free_align(out1_16s);
-  dt_free_align(out2_s);
-  dt_free_align(out2_4s);
-  dt_free_align(out2_16s);
-  dt_free_align(diffs_1);
-  dt_free_align(diffs_2);
-  dt_free_align(blurred_diffs_1);
-  dt_free_align(blurred_diffs_2);
+  dt_free_align(out_s);
+  dt_free_align(out_4s);
+  dt_free_align(out_16s);
+  dt_free_align(correlation_1);
+  dt_free_align(correlation_2);
+  dt_free_align(blurred_correlation_1);
+  dt_free_align(blurred_correlation_2);
 }
 
 /** gui setup and update, these are needed. */
