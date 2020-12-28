@@ -265,6 +265,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float *const restrict ratio_manifolds_guide_s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
   float *const restrict ratio_manifolds_guide_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
   float *const restrict ratio_manifolds_guide_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
+  float *const restrict guide_in = dt_alloc_sse_ps(dt_round_size_sse(width * height));
+  float *const restrict blurred_guide_in = dt_alloc_sse_ps(dt_round_size_sse(width * height));
 
   const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
   const float force = d->radius;
@@ -277,17 +279,73 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   ca_correct_rgb(in, width, height, ch, 4.0f * sigma, guide, out_4s, ratio_manifolds_guide_4s);
   ca_correct_rgb(in, width, height, ch, 16.0f * sigma, guide, out_16s, ratio_manifolds_guide_16s);
 
+  float ming = 10000000.0f;
+  float maxg = 0.0f;
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s, width, height, guide, sigma, force) \
-  schedule(simd:static) aligned(in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s:64)
+dt_omp_firstprivate(in, guide_in, width, height, guide) \
+  schedule(simd:static) aligned(in, guide_in:64) \
+  reduction(max:maxg)\
+  reduction(min:ming)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    const float pixelg = in[k * 4 + guide];
+    guide_in[k] = pixelg;
+    if(pixelg < ming) ming = pixelg;
+    if(pixelg > maxg) maxg = pixelg;
+  }
+
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &maxg, &ming, sigma / 4.0f, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, guide_in, blurred_guide_in);
+  dt_gaussian_free(g);
+
+  ming = 10000000.0f;
+  maxg = 0.0f;
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(blurred_guide_in, guide_in, width, height, guide) \
+  schedule(simd:static) aligned(blurred_guide_in, guide_in:64) \
+  reduction(max:maxg)\
+  reduction(min:ming)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    const float a = fmaxf(guide_in[k], 1E-6);
+    const float b = fmaxf(blurred_guide_in[k], 1E-6);
+    const float pixelg = powf(fminf(a / b, b / a), 256.0f);// - 1.0f;
+    guide_in[k] = pixelg;
+    if(pixelg < ming) ming = pixelg;
+    if(pixelg > maxg) maxg = pixelg;
+  }
+
+  g = dt_gaussian_init(width, height, 1, &maxg, &ming, 32.0f * sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, guide_in, blurred_guide_in);
+  dt_gaussian_free(g);
+  dt_free_align(guide_in);
+
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, blurred_guide_in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s, width, height, guide, sigma, force) \
+  schedule(simd:static) aligned(in, blurred_guide_in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s:64)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
     out[k * 4 + guide] = in[k * 4 + guide];
     out[k * 4 + 3] = in[k * 4 + 3];
+    float blurry_vs_sharp_weight = blurred_guide_in[k];
+    blurry_vs_sharp_weight *= blurry_vs_sharp_weight;
+    blurry_vs_sharp_weight *= blurry_vs_sharp_weight;
+    // out[k * 4 + 0] = blurry_vs_sharp_weight;
+    // out[k * 4 + 1] = blurry_vs_sharp_weight;
+    // out[k * 4 + 2] = blurry_vs_sharp_weight;
+    // continue;
 
-    float ratio = (powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.666f) - 1.0f) / 16.0f * force * force;
+    float ratio = powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.33333f);
+    ratio *= ratio;
+    ratio = (ratio - 1.0f) * force * force * force * blurry_vs_sharp_weight;
     size_t c1 = (guide + 1) % 3;
     size_t c2 = (guide + 2) % 3;
     if(ratio < sigma)
@@ -321,6 +379,7 @@ dt_omp_firstprivate(in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ra
   dt_free_align(ratio_manifolds_guide_s);
   dt_free_align(ratio_manifolds_guide_4s);
   dt_free_align(ratio_manifolds_guide_16s);
+  dt_free_align(blurred_guide_in);
 }
 
 /** gui setup and update, these are needed. */
