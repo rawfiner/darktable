@@ -91,7 +91,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 static void ca_correct_rgb(const float* const restrict in, const size_t width, const size_t height,
                           const size_t ch, const float sigma,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
-                          float* const restrict out)
+                          float* const restrict out, float* const restrict ratio_manifolds_guide)
 {
   //TODO do all computation with downscaled image
 
@@ -222,6 +222,20 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
       out[(i * width + j) * 4 + guide] = in[(i * width + j) * 4 + guide];
     }
   }
+
+  if(ratio_manifolds_guide != NULL)
+  {
+  #ifdef _OPENMP
+  #pragma omp parallel for simd default(none) \
+  dt_omp_firstprivate(ratio_manifolds_guide, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
+    schedule(simd:static) aligned(ratio_manifolds_guide, blurred_manifold_lower, blurred_manifold_higher:64)
+  #endif
+    for(size_t k = 0; k < width * height; k++)
+    {
+      ratio_manifolds_guide[k] = blurred_manifold_higher[k * 4 + guide] / fmaxf(blurred_manifold_lower[k * 4 + guide], 1E-6);
+    }
+  }
+
   dt_free_align(blurred_in);
   dt_free_align(blurred_manifold_lower);
   dt_free_align(blurred_manifold_higher);
@@ -238,8 +252,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const float* in = (float*)ivoid;
   float* out = (float*)ovoid;
 
-  if(ch != 4 || (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW
-     || (piece->pipe->type & DT_DEV_PIXELPIPE_THUMBNAIL) == DT_DEV_PIXELPIPE_THUMBNAIL)
+  if(ch != 4/* || (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW
+     || (piece->pipe->type & DT_DEV_PIXELPIPE_THUMBNAIL) == DT_DEV_PIXELPIPE_THUMBNAIL*/)
   {
     memcpy(out, in, width * height * ch * sizeof(float));
     return;
@@ -248,122 +262,65 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float *const restrict out_s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict out_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict out_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict correlation_1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict correlation_2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_correlation_1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_correlation_2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict ratio_manifolds_guide_s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
+  float *const restrict ratio_manifolds_guide_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
+  float *const restrict ratio_manifolds_guide_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
 
   const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
-  const float sigma = MAX(d->radius / scale, 1);
+  const float force = d->radius;
+  const float sigma = MAX(4.0f/*d->radius*/ / scale, 1);
   // we compute the correction 3 times and them blend them
   // in order to have an adaptative correction depending on
   // the amount of chromatic aberration in each part of the
   // image
-  ca_correct_rgb(in, width, height, ch, sigma, guide, out_s);
-  ca_correct_rgb(in, width, height, ch, 4.0f * sigma, guide, out_4s);
-  ca_correct_rgb(in, width, height, ch, 16.0f * sigma, guide, out_16s);
-
-  float min1 = 10000000.0f;
-  float max1 = 0.0f;
-  float min2 = 10000000.0f;
-  float max2 = 0.0f;
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, out_s, correlation_1, correlation_2, width, height, guide) \
-  schedule(simd:static) aligned(in, out_s, correlation_1, correlation_2:64) \
-  reduction(max:max1, max2)\
-  reduction(min:min1, min2)
-#endif
-  for(size_t k = 0; k < width * height; k++)
-  {
-    size_t c = (guide + 1) % 3;
-    float x = in[k * 4 + guide];
-    float y1 = in[k * 4 + c];
-    float y2 = out_s[k * 4 + c];
-    correlation_1[k * 4] = x * y1;
-    correlation_1[k * 4 + 1] = y1 * y1;
-    correlation_1[k * 4 + 2] = x * y2;
-    correlation_1[k * 4 + 3] = y2 * y2;
-    if(x > max1) max1 = x;
-    if(y1 > max1) max1 = y1;
-    if(y2 > max1) max1 = y2;
-    if(x < min1) min1 = x;
-    if(y1 < min1) min1 = y1;
-    if(y2 < min1) min1 = y2;
-
-    c = (guide + 2) % 3;
-    y1 = in[k * 4 + c];
-    y2 = out_s[k * 4 + c];
-    correlation_2[k * 4] = x * y1;
-    correlation_2[k * 4 + 1] = y1 * y1;
-    correlation_2[k * 4 + 2] = x * y2;
-    correlation_2[k * 4 + 3] = y2 * y2;
-    if(x > max2) max2 = x;
-    if(y1 > max2) max2 = y1;
-    if(y2 > max2) max2 = y2;
-    if(x < min2) min2 = x;
-    if(y1 < min2) min2 = y1;
-    if(y2 < min2) min2 = y2;
-  }
-  max1 *= max1;
-  max2 *= max2;
-  min1 *= min1;
-  min2 *= min2;
-
-  float max[4] = {max1, max1, max1, max1};
-  float min[4] = {min1, min1, min1, min1};
-  dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur_4c(g, correlation_1, blurred_correlation_1);
-  dt_gaussian_free(g);
-
-  for(size_t c = 0; c < 4; c++)
-  {
-    max[c] = max2;
-    min[c] = min2;
-  }
-  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur_4c(g, correlation_2, blurred_correlation_2);
-  dt_gaussian_free(g);
+  ca_correct_rgb(in, width, height, ch, sigma, guide, out_s, ratio_manifolds_guide_s);
+  ca_correct_rgb(in, width, height, ch, 4.0f * sigma, guide, out_4s, ratio_manifolds_guide_4s);
+  ca_correct_rgb(in, width, height, ch, 16.0f * sigma, guide, out_16s, ratio_manifolds_guide_16s);
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, out_s, out_4s, out_16s, out, blurred_correlation_1, blurred_correlation_2, width, height, guide) \
-  schedule(simd:static) aligned(in, out_s, out_4s, out_16s, out, blurred_correlation_1, blurred_correlation_2:64)
+dt_omp_firstprivate(in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s, width, height, guide, sigma, force) \
+  schedule(simd:static) aligned(in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s:64)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
     out[k * 4 + guide] = in[k * 4 + guide];
     out[k * 4 + 3] = in[k * 4 + 3];
 
-    size_t c = (guide + 1) % 3;
-    float uncorrected_corr = fmaxf(blurred_correlation_1[k * 4], 1E-6) / sqrtf(fmaxf(blurred_correlation_1[k * 4 + 1], 1E-6));
-    float ref_corr = fmaxf(blurred_correlation_1[k * 4 + 2], 1E-6) / sqrtf(fmaxf(blurred_correlation_1[k * 4 + 3], 1E-6));
-    float corr1 = uncorrected_corr / ref_corr;
-    //printf("%f\n", corr1);
-    if(corr1 > 0.994) out[k * 4 + c] = in[k * 4 + c];
-    else if(corr1 > 0.99) out[k * 4 + c] = out_s[k * 4 + c];
-    else if(corr1 > 0.986) out[k * 4 + c] = out_4s[k * 4 + c];
-    else out[k * 4 + c] = out_16s[k * 4 + c];
-
-    c = (guide + 2) % 3;
-    uncorrected_corr = fmaxf(blurred_correlation_2[k * 4], 1E-6) / sqrtf(fmaxf(blurred_correlation_2[k * 4 + 1], 1E-6));
-    ref_corr = fmaxf(blurred_correlation_2[k * 4 + 2], 1E-6) / sqrtf(fmaxf(blurred_correlation_2[k * 4 + 3], 1E-6));
-    float corr2 = uncorrected_corr / ref_corr;
-    if(corr2 > 0.994) out[k * 4 + c] = in[k * 4 + c];
-    else if(corr2 > 0.99) out[k * 4 + c] = out_s[k * 4 + c];
-    else if(corr2 > 0.986) out[k * 4 + c] = out_4s[k * 4 + c];
-    else out[k * 4 + c] = out_16s[k * 4 + c];
+    float ratio = (powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.666f) - 1.0f) / 16.0f * force * force;
+    size_t c1 = (guide + 1) % 3;
+    size_t c2 = (guide + 2) % 3;
+    if(ratio < sigma)
+    {
+      float w = 1.0f - ratio / sigma;
+      out[k * 4 + c1] = w * in[k * 4 + c1] + (1.0f - w) * out_s[k * 4 + c1];
+      out[k * 4 + c2] = w * in[k * 4 + c2] + (1.0f - w) * out_s[k * 4 + c2];
+    }
+    else if(ratio < 4.0f * sigma)
+    {
+      float w = 1.0f - (ratio - sigma) / (3.0f * sigma);
+      out[k * 4 + c1] = w * out_s[k * 4 + c1] + (1.0f - w) * out_4s[k * 4 + c1];
+      out[k * 4 + c2] = w * out_s[k * 4 + c2] + (1.0f - w) * out_4s[k * 4 + c2];
+    }
+    else if(ratio < 16.0f * sigma)
+    {
+      float w = 1.0f - (ratio - 4.0f * sigma) / (12.0f * sigma);
+      out[k * 4 + c1] = w * out_4s[k * 4 + c1] + (1.0f - w) * out_16s[k * 4 + c1];
+      out[k * 4 + c2] = w * out_4s[k * 4 + c2] + (1.0f - w) * out_16s[k * 4 + c2];
+    }
+    else
+    {
+      out[k * 4 + c1] = out_16s[k * 4 + c1];
+      out[k * 4 + c2] = out_16s[k * 4 + c2];
+    }
   }
 
   dt_free_align(out_s);
   dt_free_align(out_4s);
   dt_free_align(out_16s);
-  dt_free_align(correlation_1);
-  dt_free_align(correlation_2);
-  dt_free_align(blurred_correlation_1);
-  dt_free_align(blurred_correlation_2);
+  dt_free_align(ratio_manifolds_guide_s);
+  dt_free_align(ratio_manifolds_guide_4s);
+  dt_free_align(ratio_manifolds_guide_16s);
 }
 
 /** gui setup and update, these are needed. */
