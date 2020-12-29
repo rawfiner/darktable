@@ -163,8 +163,8 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
-  schedule(simd:static) aligned(blurred_manifold_lower, blurred_manifold_higher:64)
+dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
+  schedule(simd:static) aligned(blurred_in, blurred_manifold_lower, blurred_manifold_higher:64)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
@@ -176,7 +176,23 @@ dt_omp_firstprivate(blurred_manifold_lower, blurred_manifold_higher, width, heig
       blurred_manifold_higher[k * 4 + c] /= weighth;
       blurred_manifold_lower[k * 4 + c] /= weightl;
     }
+    // replace by average if weight is too small
+    if(weighth < 0.05f)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        blurred_manifold_higher[k * 4 + c] = blurred_in[k * 4 + c];
+      }
+    }
+    if(weightl < 0.05f)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        blurred_manifold_lower[k * 4 + c] = blurred_in[k * 4 + c];
+      }
+    }
   }
+  //TODO also compute manifolds guided by each channel
 
   //TODO upscale blurred_manifolds and blurred_in here
   // for this to be worth it we need upscaling to be faster than gaussian blur
@@ -312,8 +328,8 @@ dt_omp_firstprivate(blurred_guide_in, guide_in, width, height, guide) \
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
-    const float a = fmaxf(guide_in[k], 1E-6);
-    const float b = fmaxf(blurred_guide_in[k], 1E-6);
+    const float a = fmaxf(guide_in[k], 1E-4);
+    const float b = fmaxf(blurred_guide_in[k], 1E-4);
     const float pixelg = powf(fminf(a / b, b / a), 256.0f);// - 1.0f;
     guide_in[k] = pixelg;
     if(pixelg < ming) ming = pixelg;
@@ -343,9 +359,9 @@ dt_omp_firstprivate(in, blurred_guide_in, out_s, out_4s, out_16s, out, ratio_man
     // out[k * 4 + 2] = blurry_vs_sharp_weight;
     // continue;
 
-    float ratio = powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.33333f);
-    ratio *= ratio;
-    ratio = (ratio - 1.0f) * force * force * force * blurry_vs_sharp_weight;
+    float ratio = fmaxf(powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.33333f), 1.0f);
+    //ratio *= ratio;
+    ratio = (ratio - 1.0f) * force * force * force * force * blurry_vs_sharp_weight;
     size_t c1 = (guide + 1) % 3;
     size_t c2 = (guide + 2) % 3;
     if(ratio < sigma)
