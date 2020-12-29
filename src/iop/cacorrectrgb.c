@@ -40,14 +40,6 @@ typedef enum dt_iop_cacorrectrgb_guide_channel_t
   DT_CACORRECT_RGB_B = 2     // $DESCRIPTION: "blue"
 } dt_iop_cacorrectrgb_guide_channel_t;
 
-typedef enum dt_iop_cacorrectrgb_direction_t
-{
-  DT_CACORRECT_N_S = 0,    // $DESCRIPTION: "north south"
-  DT_CACORRECT_E_W = 1,    // $DESCRIPTION: "east west"
-  DT_CACORRECT_NE_SW = 2,  // $DESCRIPTION: "north-east south-west"
-  DT_CACORRECT_NW_SE = 3   // $DESCRIPTION: "north-west south-east"
-} dt_iop_cacorrectrgb_direction_t;
-
 typedef struct dt_iop_cacorrectrgb_params_t
 {
   dt_iop_cacorrectrgb_guide_channel_t guide_channel; // $DEFAULT: DT_CACORRECT_RGB_G $DESCRIPTION: "guide"
