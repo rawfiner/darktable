@@ -88,10 +88,6 @@ static void ca_correct_rgb(const float* const restrict in, const size_t width, c
   //TODO do all computation with downscaled image
 
   float *const restrict blurred_in = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict manifold_higher_than_guide_avg = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict manifold_lower_than_guide_avg = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_manifold_higher_than_guide_avg = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict blurred_manifold_lower_than_guide_avg = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_lower = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict blurred_manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
@@ -131,55 +127,25 @@ dt_omp_firstprivate(in, width, height) \
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, manifold_lower_than_guide_avg, manifold_higher_than_guide_avg, width, height, guide) \
-  schedule(simd:static) aligned(in, blurred_in, manifold_lower, manifold_higher, manifold_lower_than_guide_avg, manifold_higher_than_guide_avg:64)
+dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, height, guide) \
+  schedule(simd:static) aligned(in, blurred_in, manifold_lower, manifold_higher:64)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
     const float pixelg = in[k * 4 + guide];
     const float avg = blurred_in[k * 4 + guide];
-    const float weighth = (pixelg >= avg) ? fminf(((pixelg / avg) - 1.0f) / 3.0f, 1.0f): 0.0f;
-    const float weightl = (pixelg <= avg) ? fminf(((avg / pixelg) - 1.0f) / 3.0f, 1.0f): 0.0f;
+    const float weighth = pixelg >= avg;
+    const float weightl = pixelg <= avg;
     for(size_t c = 0; c < 3; c++)
     {
       const float pixel = in[k * 4 + c];
-      manifold_higher_than_guide_avg[k * 4 + c] = pixel * weighth;
-      manifold_lower_than_guide_avg[k * 4 + c] = pixel * weightl;
+      manifold_higher[k * 4 + c] = pixel * weighth;
+      manifold_lower[k * 4 + c] = pixel * weightl;
     }
-    manifold_higher_than_guide_avg[k * 4 + 3] = weighth;
-    manifold_lower_than_guide_avg[k * 4 + 3] = weightl;
-    for(size_t kc = 0; kc < 2; kc++)
-    {
-      size_t c = (guide + kc + 1) % 3;
-      const float pixelc = in[k * 4 + c];
-      const float avgc = blurred_in[k * 4 + c];
-      const float weighthc = (pixelc >= avgc) ? fminf(((pixelc / avgc) - 1.0f) / 3.0f, 1.0f): 0.0f;
-      const float weightlc = (pixelc <= avgc) ? fminf(((avgc / pixelc) - 1.0f) / 3.0f, 1.0f): 0.0f;
-      manifold_higher[k * 4 + kc * 2] = pixelc * weighthc;
-      manifold_lower[k * 4 + kc * 2] = pixelc * weightlc;
-      manifold_higher[k * 4 + kc * 2 + 1] = weighthc;
-      manifold_lower[k * 4 + kc * 2 + 1] = weightlc;
-    }
+    manifold_higher[k * 4 + 3] = weighth;
+    manifold_lower[k * 4 + 3] = weightl;
   }
 
-  dt_gaussian_blur_4c(g, manifold_higher_than_guide_avg, blurred_manifold_higher_than_guide_avg);
-  dt_gaussian_blur_4c(g, manifold_lower_than_guide_avg, blurred_manifold_lower_than_guide_avg);
-  dt_gaussian_free(g);
-  dt_free_align(manifold_lower_than_guide_avg);
-  dt_free_align(manifold_higher_than_guide_avg);
-
-  max[1] = 1.0f;
-  max[3] = 1.0f;
-  min[1] = 0.0f;
-  min[3] = 0.0f;
-  float maxmax = fmaxf(maxr, fmaxf(maxg, maxb));
-  float minmin = fminf(minr, fminf(ming, minb));
-  max[0] = maxmax;
-  max[2] = maxmax;
-  min[0] = minmin;
-  min[2] = minmin;
-  g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
-  if(!g) return;
   dt_gaussian_blur_4c(g, manifold_higher, blurred_manifold_higher);
   dt_gaussian_blur_4c(g, manifold_lower, blurred_manifold_lower);
   dt_gaussian_free(g);
@@ -187,61 +153,34 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, manifold_lo
   dt_free_align(manifold_lower);
   dt_free_align(manifold_higher);
 
-
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(blurred_in, blurred_manifold_higher, blurred_manifold_lower, blurred_manifold_lower_than_guide_avg, blurred_manifold_higher_than_guide_avg, width, height, guide) \
-  schedule(simd:static) aligned(blurred_in, blurred_manifold_higher, blurred_manifold_lower, blurred_manifold_lower_than_guide_avg, blurred_manifold_higher_than_guide_avg:64)
+dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
+  schedule(simd:static) aligned(blurred_in, blurred_manifold_lower, blurred_manifold_higher:64)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
     // normalize
-    const float weighth = fmaxf(blurred_manifold_higher_than_guide_avg[k * 4 + 3], 1E-6);
-    const float weightl = fmaxf(blurred_manifold_lower_than_guide_avg[k * 4 + 3], 1E-6);
+    const float weighth = fmaxf(blurred_manifold_higher[k * 4 + 3], 1E-6);
+    const float weightl = fmaxf(blurred_manifold_lower[k * 4 + 3], 1E-6);
     for(size_t c = 0; c < 3; c++)
     {
-      blurred_manifold_higher_than_guide_avg[k * 4 + c] /= weighth;
-      blurred_manifold_lower_than_guide_avg[k * 4 + c] /= weightl;
+      blurred_manifold_higher[k * 4 + c] /= weighth;
+      blurred_manifold_lower[k * 4 + c] /= weightl;
     }
-    blurred_manifold_higher[k * 4 + 0] /= fmaxf(blurred_manifold_higher[k * 4 + 1], 1E-6);
-    blurred_manifold_higher[k * 4 + 2] /= fmaxf(blurred_manifold_higher[k * 4 + 3], 1E-6);
-    blurred_manifold_lower[k * 4 + 0] /= fmaxf(blurred_manifold_lower[k * 4 + 1], 1E-6);
-    blurred_manifold_lower[k * 4 + 2] /= fmaxf(blurred_manifold_lower[k * 4 + 3], 1E-6);
-
-    // // replace by average if weight is too small
-    // if(weighth < 0.05f)
-    // {
-    //   for(size_t c = 0; c < 3; c++)
-    //   {
-    //     blurred_manifold_higher_than_guide_avg[k * 4 + c] = blurred_in[k * 4 + c];
-    //   }
-    // }
-    // if(weightl < 0.05f)
-    // {
-    //   for(size_t c = 0; c < 3; c++)
-    //   {
-    //     blurred_manifold_lower_than_guide_avg[k * 4 + c] = blurred_in[k * 4 + c];
-    //   }
-    // }
-
-    for(size_t kc = 0; kc < 2; kc++)
+    // replace by average if weight is too small
+    if(weighth < 0.05f)
     {
-      size_t c = (guide + kc + 1) % 3;
-      const float high_guided = blurred_manifold_higher_than_guide_avg[k * 4 + c];
-      const float low_guided = blurred_manifold_lower_than_guide_avg[k * 4 + c];
-      const float high = blurred_manifold_higher[k * 4 + kc * 2];
-      const float low = blurred_manifold_lower[k * 4 + kc * 2];
-      if(high_guided > low_guided)
+      for(size_t c = 0; c < 3; c++)
       {
-        //printf("%f, %f\n", high / high_guided, low_guided / low);
-        blurred_manifold_higher_than_guide_avg[k * 4 + c] = high;
-        blurred_manifold_lower_than_guide_avg[k * 4 + c] = low;
+        blurred_manifold_higher[k * 4 + c] = blurred_in[k * 4 + c];
       }
-      else
+    }
+    if(weightl < 0.05f)
+    {
+      for(size_t c = 0; c < 3; c++)
       {
-        //printf("%f, %f\n", high / low_guided, high_guided / low);
-        blurred_manifold_higher_than_guide_avg[k * 4 + c] = low;
-        blurred_manifold_lower_than_guide_avg[k * 4 + c] = high;
+        blurred_manifold_lower[k * 4 + c] = blurred_in[k * 4 + c];
       }
     }
   }
@@ -252,7 +191,7 @@ dt_omp_firstprivate(blurred_in, blurred_manifold_higher, blurred_manifold_lower,
 
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_higher_than_guide_avg, blurred_manifold_lower_than_guide_avg, out) \
+dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_higher, blurred_manifold_lower, out) \
   schedule(static)
 #endif
   for(size_t i = 0; i < height; i++)
@@ -272,15 +211,15 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
         float ratio_means_manifold;
         if(pixelg >= avg)
         {
-          const float avg_high = blurred_manifold_higher_than_guide_avg[(i * width + j) * 4 + guide];
-          ratio_means_manifold = blurred_manifold_higher_than_guide_avg[(i * width + j) * 4 + c] / fmaxf(avg_high, 1E-6);
+          const float avg_high = blurred_manifold_higher[(i * width + j) * 4 + guide];
+          ratio_means_manifold = blurred_manifold_higher[(i * width + j) * 4 + c] / fmaxf(avg_high, 1E-6);
           const float log_avgh = logf(fmaxf(avg_high, 1E-6));
           dist = (log_avgh - fminf(log_pixg, log_avgh)) / fmaxf(log_avgh - log_avg, 1E-6);
         }
         else
         {
-          const float avg_low = blurred_manifold_lower_than_guide_avg[(i * width + j) * 4 + guide];
-          ratio_means_manifold = blurred_manifold_lower_than_guide_avg[(i * width + j) * 4 + c] / fmaxf(avg_low, 1E-6);
+          const float avg_low = blurred_manifold_lower[(i * width + j) * 4 + guide];
+          ratio_means_manifold = blurred_manifold_lower[(i * width + j) * 4 + c] / fmaxf(avg_low, 1E-6);
           const float log_avgl = logf(fmaxf(avg_low, 1E-6));
           dist = (fmaxf(log_pixg, log_avgl) - log_avgl) / fmaxf(log_avg - log_avgl, 1E-6);
         }
@@ -296,18 +235,16 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
   {
   #ifdef _OPENMP
   #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(ratio_manifolds_guide, blurred_manifold_lower_than_guide_avg, blurred_manifold_higher_than_guide_avg, width, height, guide) \
-    schedule(simd:static) aligned(ratio_manifolds_guide, blurred_manifold_lower_than_guide_avg, blurred_manifold_higher_than_guide_avg:64)
+  dt_omp_firstprivate(ratio_manifolds_guide, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
+    schedule(simd:static) aligned(ratio_manifolds_guide, blurred_manifold_lower, blurred_manifold_higher:64)
   #endif
     for(size_t k = 0; k < width * height; k++)
     {
-      ratio_manifolds_guide[k] = blurred_manifold_higher_than_guide_avg[k * 4 + guide] / fmaxf(blurred_manifold_lower_than_guide_avg[k * 4 + guide], 1E-6);
+      ratio_manifolds_guide[k] = blurred_manifold_higher[k * 4 + guide] / fmaxf(blurred_manifold_lower[k * 4 + guide], 1E-6);
     }
   }
 
   dt_free_align(blurred_in);
-  dt_free_align(blurred_manifold_lower_than_guide_avg);
-  dt_free_align(blurred_manifold_higher_than_guide_avg);
   dt_free_align(blurred_manifold_lower);
   dt_free_align(blurred_manifold_higher);
 }
