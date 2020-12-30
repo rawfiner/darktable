@@ -180,7 +180,7 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_man
     float weighth = fmaxf(pixelg >= avgg, 0.1f);
     float weightl = fmaxf(pixelg <= avgg, 0.1f);
     const float log_range = logf(blurred_manifold_higher[k * 4 + guide] / fmaxf(blurred_manifold_lower[k * 4 + guide], 1E-6));
-    const float max_log_diff = fminf(log_range, 4.0f);
+    const float max_log_diff = fminf(log_range, 4.0f); //TODO not sure it is still needed
 
     for(size_t c = 0; c < 3; c++)
     {
@@ -194,26 +194,32 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_man
       log_diff_high *= log_diff_high;
       if(high > low)
       {
-        // for h, we want to be as far from low as possible
-        if(pixel > low)
-          weighth *= log_diff_low;//fminf(pixel / low / 4.0f, 1.0f);
-        else
-          weighth *= 0.0001f;
-        if(pixel < high)
-          weightl *= log_diff_high;//fminf(high / pixel / 4.0f, 1.0f);
-        else
-          weightl *= 0.0001f;
+        weighth /= log_diff_high;
+        weightl /= log_diff_low;
+
+        // // for h, we want to be as far from low as possible
+        // if(pixel > low)
+        //   weighth /= log_diff_low;//fminf(pixel / low / 4.0f, 1.0f);
+        // else
+        //   weighth *= 0.0001f;
+        // if(pixel < high)
+        //   weightl *= log_diff_high;//fminf(high / pixel / 4.0f, 1.0f);
+        // else
+        //   weightl *= 0.0001f;
       }
       else
       {
-        if(pixel > high)
-          weighth *= log_diff_high;//fminf(pixel / high / 4.0f, 1.0f);
-        else
-          weighth *= 0.0001f;
-        if(pixel < low)
-          weightl *= log_diff_low;//fminf(low / pixel / 4.0f, 1.0f);
-        else
-          weightl *= 0.0001f;
+        weighth /= log_diff_low;
+        weightl /= log_diff_high;
+
+        // if(pixel > high)
+        //   weighth *= log_diff_high;//fminf(pixel / high / 4.0f, 1.0f);
+        // else
+        //   weighth *= 0.0001f;
+        // if(pixel < low)
+        //   weightl *= log_diff_low;//fminf(low / pixel / 4.0f, 1.0f);
+        // else
+        //   weightl *= 0.0001f;
       }
     }
     // weighth = powf(weighth, 0.333f);
