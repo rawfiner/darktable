@@ -43,7 +43,7 @@ typedef enum dt_iop_cacorrectrgb_guide_channel_t
 typedef struct dt_iop_cacorrectrgb_params_t
 {
   dt_iop_cacorrectrgb_guide_channel_t guide_channel; // $DEFAULT: DT_CACORRECT_RGB_G $DESCRIPTION: "guide"
-  int radius; // $MIN: 1 $MAX: 50 $DEFAULT: 1 $DESCRIPTION: "radius"
+  int radius; // $MIN: 1 $MAX: 100 $DEFAULT: 1 $DESCRIPTION: "radius"
 } dt_iop_cacorrectrgb_params_t;
 
 typedef struct dt_iop_cacorrectrgb_gui_data_t
@@ -164,9 +164,26 @@ dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher,
       blurred_manifold_higher[k * 4 + c] /= weighth;
       blurred_manifold_lower[k * 4 + c] /= weightl;
     }
+    // replace by average if weight is too small
+    if(weighth < 0.05f)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        blurred_manifold_higher[k * 4 + c] = blurred_in[k * 4 + c];
+      }
+    }
+    if(weightl < 0.05f)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        blurred_manifold_lower[k * 4 + c] = blurred_in[k * 4 + c];
+      }
+    }
   }
 
-for(int n = 0; n < 4; n++)
+// iterations to refine the manifolds. Usually useless.
+// can improve result on VERY degraded images
+for(int n = 0; n < 0; n++)
 {
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -179,19 +196,32 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_man
     const float avgg = blurred_in[k * 4 + guide];
     float weighth = fmaxf(pixelg >= avgg, 0.1f);
     float weightl = fmaxf(pixelg <= avgg, 0.1f);
-    const float log_range = logf(blurred_manifold_higher[k * 4 + guide] / fmaxf(blurred_manifold_lower[k * 4 + guide], 1E-6));
-    const float max_log_diff = fminf(log_range, 4.0f); //TODO not sure it is still needed
+    // const float log_range = logf(blurred_manifold_higher[k * 4 + guide] / fmaxf(blurred_manifold_lower[k * 4 + guide], 1E-6));
+    // const float min_log_diff = fminf(log_range, 1.0f);
+    // const float max_log_diff = fminf(log_range, 8.0f); //TODO not sure it is still needed
 
     for(size_t c = 0; c < 3; c++)
     {
       const float pixel = in[k * 4 + c];
       // const float avg = blurred_in[k * 4 + c];
-      const float high = blurred_manifold_higher[k * 4 + c];
-      const float low = blurred_manifold_lower[k * 4 + c];
-      float log_diff_low = fmaxf(fminf(fabsf(logf(fmaxf(pixel, 1E-6)) - logf(fmaxf(low, 1E-6))), max_log_diff) / max_log_diff, 0.01f);
-      float log_diff_high = fmaxf(fminf(fabsf(logf(fmaxf(pixel, 1E-6)) - logf(fmaxf(high, 1E-6))), max_log_diff) / max_log_diff, 0.01f);
-      log_diff_low *= log_diff_low;
-      log_diff_high *= log_diff_high;
+      float high = blurred_manifold_higher[k * 4 + c];
+      float low = blurred_manifold_lower[k * 4 + c];
+      // if(high > low)
+      // {
+      //   low /= 2.0f;
+      //   high *= 2.0f;
+      // }
+      // else
+      // {
+      //   high /= 2.0f;
+      //   low *= 2.0f;
+      // }
+      // float log_diff_low = (pixel < fminf(low, high)) ? 1.0f : fmaxf(fminf(fabsf(logf(fmaxf(pixel, 1E-6) / fmaxf(low, 1E-6))), max_log_diff), min_log_diff) / max_log_diff;
+      // float log_diff_high = (pixel > fmaxf(low, high)) ? 1.0f : fmaxf(fminf(fabsf(logf(fmaxf(pixel, 1E-6) / fmaxf(high, 1E-6))), max_log_diff), min_log_diff) / max_log_diff;
+      float log_diff_low = (pixel < fminf(low, high)) ? 1.0f : fmaxf(pixel, 1E-6) / fmaxf(low, 1E-6);
+      float log_diff_high = (pixel > fmaxf(low, high)) ? 1.0f : fmaxf(pixel, 1E-6) / fmaxf(high, 1E-6);
+      // log_diff_low *= log_diff_low;
+      // log_diff_high *= log_diff_high;
       if(high > low)
       {
         weighth /= log_diff_high;
@@ -252,21 +282,21 @@ dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher,
       blurred_manifold_higher[k * 4 + c] /= weighth;
       blurred_manifold_lower[k * 4 + c] /= weightl;
     }
-    // // replace by average if weight is too small
-    // if(weighth < 0.05f)
-    // {
-    //   for(size_t c = 0; c < 3; c++)
-    //   {
-    //     blurred_manifold_higher[k * 4 + c] = blurred_in[k * 4 + c];
-    //   }
-    // }
-    // if(weightl < 0.05f)
-    // {
-    //   for(size_t c = 0; c < 3; c++)
-    //   {
-    //     blurred_manifold_lower[k * 4 + c] = blurred_in[k * 4 + c];
-    //   }
-    // }
+    // replace by average if weight is too small
+    if(weighth < 0.05f)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        blurred_manifold_higher[k * 4 + c] = blurred_in[k * 4 + c];
+      }
+    }
+    if(weightl < 0.05f)
+    {
+      for(size_t c = 0; c < 3; c++)
+      {
+        blurred_manifold_lower[k * 4 + c] = blurred_in[k * 4 + c];
+      }
+    }
   }
 }
   dt_gaussian_free(g);
