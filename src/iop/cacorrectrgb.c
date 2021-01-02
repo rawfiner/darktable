@@ -83,7 +83,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 static void ca_correct_rgb(const float* const restrict in, const size_t width, const size_t height,
                           const size_t ch, const float sigma,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
-                          float* const restrict out, float* const restrict ratio_manifolds_guide)
+                          float* const restrict out)
 {
   //TODO do all computation with downscaled image
 
@@ -303,19 +303,6 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
     }
   }
 
-  if(ratio_manifolds_guide != NULL)
-  {
-  #ifdef _OPENMP
-  #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(ratio_manifolds_guide, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
-    schedule(simd:static) aligned(ratio_manifolds_guide, blurred_manifold_lower, blurred_manifold_higher:64)
-  #endif
-    for(size_t k = 0; k < width * height; k++)
-    {
-      ratio_manifolds_guide[k] = blurred_manifold_higher[k * 4 + guide] / fmaxf(blurred_manifold_lower[k * 4 + guide], 1E-6);
-    }
-  }
-
   dt_free_align(blurred_in);
   dt_free_align(blurred_manifold_lower);
   dt_free_align(blurred_manifold_higher);
@@ -331,141 +318,16 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t height = roi_out->height;
   const float* in = (float*)ivoid;
   float* out = (float*)ovoid;
+  const float sigma = MAX(d->radius / scale, 1);
 
-  if(ch != 4/* || (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) == DT_DEV_PIXELPIPE_PREVIEW
-     || (piece->pipe->type & DT_DEV_PIXELPIPE_THUMBNAIL) == DT_DEV_PIXELPIPE_THUMBNAIL*/)
+  if(ch != 4 || sigma < 0.5f)
   {
     memcpy(out, in, width * height * ch * sizeof(float));
     return;
   }
 
-  float *const restrict out_s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict out_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-  float *const restrict ratio_manifolds_guide_s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
-  float *const restrict ratio_manifolds_guide_4s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
-  float *const restrict ratio_manifolds_guide_16s = dt_alloc_sse_ps(dt_round_size_sse(width * height));
-  float *const restrict guide_in = dt_alloc_sse_ps(dt_round_size_sse(width * height));
-  float *const restrict blurred_guide_in = dt_alloc_sse_ps(dt_round_size_sse(width * height));
-
   const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
-  const float force = d->radius;
-  const float sigma = MAX(4.0f/*d->radius*/ / scale, 1);
-  // we compute the correction 3 times and them blend them
-  // in order to have an adaptative correction depending on
-  // the amount of chromatic aberration in each part of the
-  // image
-
-  // ca_correct_rgb(in, width, height, ch, d->radius / scale, guide, out, ratio_manifolds_guide_s);
-  // return;
-
-  ca_correct_rgb(in, width, height, ch, sigma, guide, out_s, ratio_manifolds_guide_s);
-  ca_correct_rgb(in, width, height, ch, 4.0f * sigma, guide, out_4s, ratio_manifolds_guide_4s);
-  ca_correct_rgb(in, width, height, ch, 16.0f * sigma, guide, out_16s, ratio_manifolds_guide_16s);
-
-  float ming = 10000000.0f;
-  float maxg = 0.0f;
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, guide_in, width, height, guide) \
-  schedule(simd:static) aligned(in, guide_in:64) \
-  reduction(max:maxg)\
-  reduction(min:ming)
-#endif
-  for(size_t k = 0; k < width * height; k++)
-  {
-    const float pixelg = in[k * 4 + guide];
-    guide_in[k] = pixelg;
-    if(pixelg < ming) ming = pixelg;
-    if(pixelg > maxg) maxg = pixelg;
-  }
-
-  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &maxg, &ming, sigma / 4.0f, 0);
-  if(!g) return;
-  dt_gaussian_blur(g, guide_in, blurred_guide_in);
-  dt_gaussian_free(g);
-
-  ming = 10000000.0f;
-  maxg = 0.0f;
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(blurred_guide_in, guide_in, width, height, guide) \
-  schedule(simd:static) aligned(blurred_guide_in, guide_in:64) \
-  reduction(max:maxg)\
-  reduction(min:ming)
-#endif
-  for(size_t k = 0; k < width * height; k++)
-  {
-    const float a = fmaxf(guide_in[k], 1E-4);
-    const float b = fmaxf(blurred_guide_in[k], 1E-4);
-    const float pixelg = powf(fminf(a / b, b / a), 256.0f);// - 1.0f;
-    guide_in[k] = pixelg;
-    if(pixelg < ming) ming = pixelg;
-    if(pixelg > maxg) maxg = pixelg;
-  }
-
-  g = dt_gaussian_init(width, height, 1, &maxg, &ming, 32.0f * sigma, 0);
-  if(!g) return;
-  dt_gaussian_blur(g, guide_in, blurred_guide_in);
-  dt_gaussian_free(g);
-  dt_free_align(guide_in);
-
-#ifdef _OPENMP
-#pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, blurred_guide_in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s, width, height, guide, sigma, force) \
-  schedule(simd:static) aligned(in, blurred_guide_in, out_s, out_4s, out_16s, out, ratio_manifolds_guide_s, ratio_manifolds_guide_4s, ratio_manifolds_guide_16s:64)
-#endif
-  for(size_t k = 0; k < width * height; k++)
-  {
-    out[k * 4 + guide] = in[k * 4 + guide];
-    out[k * 4 + 3] = in[k * 4 + 3];
-    float blurry_vs_sharp_weight = blurred_guide_in[k];
-    blurry_vs_sharp_weight *= blurry_vs_sharp_weight;
-    blurry_vs_sharp_weight *= blurry_vs_sharp_weight;
-    // out[k * 4 + 0] = blurry_vs_sharp_weight;
-    // out[k * 4 + 1] = blurry_vs_sharp_weight;
-    // out[k * 4 + 2] = blurry_vs_sharp_weight;
-    // continue;
-    //blurry_vs_sharp_weight = 1.0f;
-
-    // float ratio = fmaxf(powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.33333f), 1.0f);
-    float ratio = 2.0f;//fmaxf(fminf(fminf(ratio_manifolds_guide_s[k], ratio_manifolds_guide_4s[k]), ratio_manifolds_guide_16s[k]), 1.0f);
-    //ratio *= ratio;
-    ratio = (ratio - 1.0f) * force * force * blurry_vs_sharp_weight;
-    size_t c1 = (guide + 1) % 3;
-    size_t c2 = (guide + 2) % 3;
-    if(ratio < sigma)
-    {
-      float w = 1.0f - ratio / sigma;
-      out[k * 4 + c1] = w * in[k * 4 + c1] + (1.0f - w) * out_s[k * 4 + c1];
-      out[k * 4 + c2] = w * in[k * 4 + c2] + (1.0f - w) * out_s[k * 4 + c2];
-    }
-    else if(ratio < 4.0f * sigma)
-    {
-      float w = 1.0f - (ratio - sigma) / (3.0f * sigma);
-      out[k * 4 + c1] = w * out_s[k * 4 + c1] + (1.0f - w) * out_4s[k * 4 + c1];
-      out[k * 4 + c2] = w * out_s[k * 4 + c2] + (1.0f - w) * out_4s[k * 4 + c2];
-    }
-    else if(ratio < 16.0f * sigma)
-    {
-      float w = 1.0f - (ratio - 4.0f * sigma) / (12.0f * sigma);
-      out[k * 4 + c1] = w * out_4s[k * 4 + c1] + (1.0f - w) * out_16s[k * 4 + c1];
-      out[k * 4 + c2] = w * out_4s[k * 4 + c2] + (1.0f - w) * out_16s[k * 4 + c2];
-    }
-    else
-    {
-      out[k * 4 + c1] = out_16s[k * 4 + c1];
-      out[k * 4 + c2] = out_16s[k * 4 + c2];
-    }
-  }
-
-  dt_free_align(out_s);
-  dt_free_align(out_4s);
-  dt_free_align(out_16s);
-  dt_free_align(ratio_manifolds_guide_s);
-  dt_free_align(ratio_manifolds_guide_4s);
-  dt_free_align(ratio_manifolds_guide_16s);
-  dt_free_align(blurred_guide_in);
+  ca_correct_rgb(in, width, height, ch, sigma, guide, out);
 }
 
 /** gui setup and update, these are needed. */
