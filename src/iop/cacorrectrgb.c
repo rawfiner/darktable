@@ -385,13 +385,14 @@ void reload_defaults(dt_iop_module_t *module)
   dt_iop_cacorrectrgb_params_t *d = (dt_iop_cacorrectrgb_params_t *)module->default_params;
 
   d->guide_channel = DT_CACORRECT_RGB_G;
-  d->radius = 1;
+  d->radius = 1.0f;
 
   dt_iop_cacorrectrgb_gui_data_t *g = (dt_iop_cacorrectrgb_gui_data_t *)module->gui_data;
   if(g)
   {
     dt_bauhaus_combobox_set_default(g->guide_channel, d->guide_channel);
     dt_bauhaus_slider_set_default(g->radius, d->radius);
+    dt_bauhaus_slider_set_soft_range(g->radius, 1.0, 20.0);
   }
 }
 
@@ -400,5 +401,12 @@ void gui_init(dt_iop_module_t *self)
   dt_iop_cacorrectrgb_gui_data_t *g = IOP_GUI_ALLOC(cacorrectrgb);
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
   g->guide_channel = dt_bauhaus_combobox_from_params(self, "guide_channel");
+  gtk_widget_set_tooltip_text(g->guide_channel, _("channel used as a reference to\n"
+                                           "correct the other channels.\n"
+                                           "use sharpest channel if some\n"
+                                           "channels are blurry.\n"
+                                           "try changing guide channel if you\n"
+                                           "have artefacts."));
   g->radius = dt_bauhaus_slider_from_params(self, "radius");
+  gtk_widget_set_tooltip_text(g->radius, _("increase for stronger correction\n"));
 }
