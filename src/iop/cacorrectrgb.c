@@ -87,6 +87,7 @@ static void ca_correct_rgb(const float* const restrict in, const size_t width, c
 {
   //TODO do all computation with downscaled image
 
+  //TODO blurred_in can be computed for guide only
   float *const restrict blurred_in = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_lower = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
@@ -181,10 +182,8 @@ dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher,
     }
   }
 
-// iterations to refine the manifolds. Usually useless.
-// can improve result on VERY degraded images
-for(int n = 0; n < 1; n++)
-{
+  // refine the manifolds
+  // improve result especially on very degraded images
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
 dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_manifold_lower, blurred_manifold_higher, width, height, guide) \
@@ -196,64 +195,29 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_man
     const float avgg = blurred_in[k * 4 + guide];
     float weighth = (pixelg >= avgg);
     float weightl = (pixelg <= avgg);
-    // const float log_range = logf(blurred_manifold_higher[k * 4 + guide] / fmaxf(blurred_manifold_lower[k * 4 + guide], 1E-6));
-    // const float min_log_diff = fminf(log_range, 1.0f);
-    // const float max_log_diff = fminf(log_range, 8.0f); //TODO not sure it is still needed
 
     for(size_t c = 0; c < 3; c++)
     {
       const float pixel = in[k * 4 + c];
-      // const float avg = blurred_in[k * 4 + c];
       float high = blurred_manifold_higher[k * 4 + c];
       float low = blurred_manifold_lower[k * 4 + c];
-      // if(high > low)
-      // {
-      //   low /= 2.0f;
-      //   high *= 2.0f;
-      // }
-      // else
-      // {
-      //   high /= 2.0f;
-      //   low *= 2.0f;
-      // }
-      // float log_diff_low = (pixel < fminf(low, high)) ? 1.0f : fmaxf(fminf(fabsf(logf(fmaxf(pixel, 1E-6) / fmaxf(low, 1E-6))), max_log_diff), min_log_diff) / max_log_diff;
-      // float log_diff_high = (pixel > fmaxf(low, high)) ? 1.0f : fmaxf(fminf(fabsf(logf(fmaxf(pixel, 1E-6) / fmaxf(high, 1E-6))), max_log_diff), min_log_diff) / max_log_diff;
-      float log_diff_low = (pixel < fminf(low, high)) ? 1.0f : fminf(fmaxf(pixel, 1E-6) / fmaxf(fminf(low, high), 1E-6), 2.0f);
-      float log_diff_high = (pixel > fmaxf(low, high)) ? 1.0f : fminf(fmaxf(fmaxf(low, high), 1E-6) / fmaxf(pixel, 1E-6), 2.0f);
+      float highc = fmaxf(high, low);
+      float lowc = fminf(high, low);
+      float log_diff_low = (pixel < lowc) ? 1.0f : fminf(fmaxf(pixel, 1E-6) / fmaxf(lowc, 1E-6), 2.0f);
+      float log_diff_high = (pixel > highc) ? 1.0f : fminf(fmaxf(highc, 1E-6) / fmaxf(pixel, 1E-6), 2.0f);
       log_diff_low *= log_diff_low;
       log_diff_high *= log_diff_high;
       if(high > low)
       {
         weighth /= log_diff_high;
         weightl /= log_diff_low;
-
-        // // for h, we want to be as far from low as possible
-        // if(pixel > low)
-        //   weighth /= log_diff_low;//fminf(pixel / low / 4.0f, 1.0f);
-        // else
-        //   weighth *= 0.0001f;
-        // if(pixel < high)
-        //   weightl *= log_diff_high;//fminf(high / pixel / 4.0f, 1.0f);
-        // else
-        //   weightl *= 0.0001f;
       }
       else
       {
         weighth /= log_diff_low;
         weightl /= log_diff_high;
-
-        // if(pixel > high)
-        //   weighth *= log_diff_high;//fminf(pixel / high / 4.0f, 1.0f);
-        // else
-        //   weighth *= 0.0001f;
-        // if(pixel < low)
-        //   weightl *= log_diff_low;//fminf(low / pixel / 4.0f, 1.0f);
-        // else
-        //   weightl *= 0.0001f;
       }
     }
-    // weighth = powf(weighth, 0.333f);
-    // weightl = powf(weightl, 0.333f);
     for(size_t c = 0; c < 3; c++)
     {
       const float pixel = in[k * 4 + c];
@@ -298,21 +262,18 @@ dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher,
       }
     }
   }
-}
   dt_gaussian_free(g);
 
   dt_free_align(manifold_lower);
   dt_free_align(manifold_higher);
 
-  //TODO also compute manifolds guided by each channel
-
   //TODO upscale blurred_manifolds and blurred_in here
   // for this to be worth it we need upscaling to be faster than gaussian blur
 
 #ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_higher, blurred_manifold_lower, out) \
-  schedule(static)
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_higher, blurred_manifold_lower, out, sigma) \
+  schedule(simd:static) aligned(in, blurred_in, blurred_manifold_higher, blurred_manifold_lower, out)
 #endif
   for(size_t i = 0; i < height; i++)
   {
@@ -320,7 +281,6 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
     {
       const float high_guide = fmaxf(blurred_manifold_higher[(i * width + j) * 4 + guide], 1E-6);
       const float low_guide = fmaxf(blurred_manifold_lower[(i * width + j) * 4 + guide], 1E-6);
-      const float log_range_guide = logf(high_guide / low_guide);
       for(size_t kc = 1; kc <= 2; kc++)
       {
         size_t c = (guide + kc) % 3;
@@ -330,20 +290,14 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
         const float log_pixg = logf(fminf(fmaxf(pixelg, low_guide), high_guide));
         float ratio_high_manifolds = blurred_manifold_higher[(i * width + j) * 4 + c] / high_guide;
         float ratio_low_manifolds = blurred_manifold_lower[(i * width + j) * 4 + c] / low_guide;
-        const float log_range_c = fabsf(logf(fmaxf(blurred_manifold_higher[(i * width + j) * 4 + c], 1E-6) / fmaxf(blurred_manifold_lower[(i * width + j) * 4 + c], 1E-6)));
-        const float w_ranges = 0.0f * fminf(fmaxf(log_range_c / (log_range_guide + 1.0f) - 1.0f, 0.0f), 1.f);
 
         const float log_high = logf(high_guide);
         const float log_low = logf(low_guide);
         dist = fabsf(log_high - log_pixg) / fmaxf(fabsf(log_high - log_low), 1E-6);
         dist = fminf(dist, 1.0f);
 
-        // if(dist < 0.5f) dist = dist * dist / 0.5f;
-        // if(dist > 0.5f) dist = 1.0f - (1.0f - dist) * (1.0f - dist) / 0.5f;
-
-        //float ratio = dist * ratio_means + (1.0f - dist) * ratio_means_manifold;
         float ratio = powf(ratio_low_manifolds, dist) * powf(ratio_high_manifolds, 1.0f - dist);
-        out[(i * width + j) * 4 + c] =  powf(in[(i * width + j) * 4 + c], w_ranges) *  powf(in[(i * width + j) * 4 + guide] * ratio, (1.0f - w_ranges));
+        out[(i * width + j) * 4 + c] =  in[(i * width + j) * 4 + guide] * ratio;
       }
       out[(i * width + j) * 4 + guide] = in[(i * width + j) * 4 + guide];
     }
@@ -401,8 +355,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // in order to have an adaptative correction depending on
   // the amount of chromatic aberration in each part of the
   // image
-  ca_correct_rgb(in, width, height, ch, d->radius / scale, guide, out, ratio_manifolds_guide_s);
-  return;
+
+  // ca_correct_rgb(in, width, height, ch, d->radius / scale, guide, out, ratio_manifolds_guide_s);
+  // return;
+
   ca_correct_rgb(in, width, height, ch, sigma, guide, out_s, ratio_manifolds_guide_s);
   ca_correct_rgb(in, width, height, ch, 4.0f * sigma, guide, out_4s, ratio_manifolds_guide_4s);
   ca_correct_rgb(in, width, height, ch, 16.0f * sigma, guide, out_16s, ratio_manifolds_guide_16s);
@@ -470,10 +426,12 @@ dt_omp_firstprivate(in, blurred_guide_in, out_s, out_4s, out_16s, out, ratio_man
     // out[k * 4 + 1] = blurry_vs_sharp_weight;
     // out[k * 4 + 2] = blurry_vs_sharp_weight;
     // continue;
+    //blurry_vs_sharp_weight = 1.0f;
 
-    float ratio = fmaxf(powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.33333f), 1.0f);
+    // float ratio = fmaxf(powf(ratio_manifolds_guide_s[k] * ratio_manifolds_guide_4s[k] * ratio_manifolds_guide_16s[k], 0.33333f), 1.0f);
+    float ratio = 2.0f;//fmaxf(fminf(fminf(ratio_manifolds_guide_s[k], ratio_manifolds_guide_4s[k]), ratio_manifolds_guide_16s[k]), 1.0f);
     //ratio *= ratio;
-    ratio = (ratio - 1.0f) * force * force * force * force * blurry_vs_sharp_weight;
+    ratio = (ratio - 1.0f) * force * force * blurry_vs_sharp_weight;
     size_t c1 = (guide + 1) % 3;
     size_t c2 = (guide + 2) % 3;
     if(ratio < sigma)
