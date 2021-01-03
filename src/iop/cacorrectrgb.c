@@ -335,6 +335,7 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
         out[(i * width + j) * 4 + c] =  in[(i * width + j) * 4 + guide] * ratio;
       }
       out[(i * width + j) * 4 + guide] = in[(i * width + j) * 4 + guide];
+      out[(i * width + j) * 4 + 3] = in[(i * width + j) * 4 + 3];
     }
   }
 
