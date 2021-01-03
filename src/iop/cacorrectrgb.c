@@ -85,19 +85,11 @@ static void ca_correct_rgb(const float* const restrict in, const size_t width, c
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
                           float* const restrict out)
 {
-  //TODO do all computation with downscaled image
-
-  clock_t begin = clock();
-  //TODO blurred_in can be computed for guide only
   float *const restrict blurred_in = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict manifold_lower = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict blurred_manifold_higher = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict blurred_manifold_lower = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
-
-  clock_t end = clock();
-  printf("alloc: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
 
   float minr = 10000000.0f;
   float maxr = 0.0f;
@@ -124,19 +116,12 @@ dt_omp_firstprivate(in, width, height) \
     if(pixelb < minb) minb = pixelb;
     if(pixelb > maxb) maxb = pixelb;
   }
-  end = clock();
-  printf("minmax: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
 
   float max[4] = {maxr, maxg, maxb, 1.0f};
   float min[4] = {fminf(minr, 0.0f), fminf(ming, 0.0f), fminf(minb, 0.0f), 0.0f};
   dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
   if(!g) return;
   dt_gaussian_blur_4c(g, in, blurred_in);
-
-  end = clock();
-  printf("first gaussian blur: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -159,16 +144,8 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
     manifold_lower[k * 4 + 3] = weightl;
   }
 
-  end = clock();
-  printf("manifold prepare: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
-
   dt_gaussian_blur_4c(g, manifold_higher, blurred_manifold_higher);
   dt_gaussian_blur_4c(g, manifold_lower, blurred_manifold_lower);
-
-  end = clock();
-  printf("manifold 2 blurs 4c: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -201,10 +178,6 @@ dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher,
       }
     }
   }
-
-  end = clock();
-  printf("manifold normalize: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
 
   // refine the manifolds
   // improve result especially on very degraded images
@@ -252,16 +225,8 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, blurred_man
     manifold_lower[k * 4 + 3] = weightl;
   }
 
-  end = clock();
-  printf("manifold refinement: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
-
   dt_gaussian_blur_4c(g, manifold_higher, blurred_manifold_higher);
   dt_gaussian_blur_4c(g, manifold_lower, blurred_manifold_lower);
-
-  end = clock();
-  printf("manifold 2 blurs: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -294,17 +259,11 @@ dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher,
       }
     }
   }
+
   dt_gaussian_free(g);
 
   dt_free_align(manifold_lower);
   dt_free_align(manifold_higher);
-
-  end = clock();
-  printf("manifold normalize: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
-  begin = clock();
-
-  //TODO upscale blurred_manifolds and blurred_in here
-  // for this to be worth it we need upscaling to be faster than gaussian blur
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -338,9 +297,6 @@ dt_omp_firstprivate(in, width, height, guide, blurred_in, blurred_manifold_highe
       out[(i * width + j) * 4 + 3] = in[(i * width + j) * 4 + 3];
     }
   }
-
-  end = clock();
-  printf("compute result: %lf\n",(double)(end - begin) / CLOCKS_PER_SEC);
 
   dt_free_align(blurred_in);
   dt_free_align(blurred_manifold_lower);
