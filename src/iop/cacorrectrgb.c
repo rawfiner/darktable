@@ -52,8 +52,8 @@ typedef enum dt_iop_cacorrectrgb_mode_t
 typedef struct dt_iop_cacorrectrgb_params_t
 {
   dt_iop_cacorrectrgb_guide_channel_t guide_channel; // $DEFAULT: DT_CACORRECT_RGB_G $DESCRIPTION: "guide"
-  float radius; // $MIN: 1 $MAX: 400 $DEFAULT: 5 $DESCRIPTION: "radius"
-  float force; // $MIN: 1 $MAX: 400 $DEFAULT: 5 $DESCRIPTION: "force"
+  float radius; // $MIN: 1 $MAX: 1000 $DEFAULT: 5 $DESCRIPTION: "radius"
+  float force; // $MIN: 1 $MAX: 1000 $DEFAULT: 5 $DESCRIPTION: "force"
   dt_iop_cacorrectrgb_mode_t mode; // $DEFAULT: DT_CACORRECT_MODE_STANDARD $DESCRIPTION: "correction mode"
 } dt_iop_cacorrectrgb_params_t;
 
@@ -375,7 +375,10 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t width = roi_out->width;
   const size_t height = roi_out->height;
   const float* in = (float*)ivoid;
-  float *const restrict transformed_in = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict transformed_in1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict transformed_in2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict corr1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict corr2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float* out = (float*)ovoid;
   const float sigma = MAX(d->radius / scale, 1.0f);
 
@@ -391,31 +394,35 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, transformed_in, width, height, guide, force) \
-  schedule(simd:static) aligned(in, transformed_in)
+dt_omp_firstprivate(in, transformed_in1, transformed_in2, width, height, guide, force) \
+  schedule(simd:static) aligned(in, transformed_in1, transformed_in2)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
     float guide_in = fmaxf(in[k * 4 + guide], 1E-6);
-    transformed_in[k * 4 + guide] = sqrtf(guide_in); // gamma correction
+    transformed_in1[k * 4 + guide] = sqrtf(guide_in); // gamma correction
+    transformed_in2[k * 4 + guide] = sqrtf(guide_in); // gamma correction
     for(size_t ci = 1; ci <= 2; ci++)
     {
       const size_t c = (guide + ci) % 3;
       float in_c = fmaxf(in[k * 4 + c], 1E-6);
       if(in_c > guide_in)
       {
-        transformed_in[k * 4 + c] = (2.0f - guide_in / in_c) / force;
+        transformed_in1[k * 4 + c] = (2.0f - guide_in / in_c);
+        transformed_in2[k * 4 + c] = (2.0f - guide_in / in_c);
       }
       else
       {
-        transformed_in[k * 4 + c] = (in_c / guide_in) / force;
+        transformed_in1[k * 4 + c] = (in_c / guide_in);
+        transformed_in2[k * 4 + c] = (in_c / guide_in);
       }
     }
+    transformed_in1[k * 4 + ((guide + 1) % 3)] /= force;
+    transformed_in2[k * 4 + ((guide + 2) % 3)] /= force;
   }
 
   const float w = 1.f;
   const float norm[4] = {w, w, w, 1.0f };
-  // TODO correct in 2 steps to avoid scattering artefacts
   const dt_nlmeans_param_t params = { .scattering = (float)(d->radius) / 100.0f,
                                       .scale = scale,
                                       .luma = 1.0,    //no blending
@@ -423,32 +430,40 @@ dt_omp_firstprivate(in, transformed_in, width, height, guide, force) \
                                       .center_weight = 1.0f,
                                       .sharpness = 4000.0f / d->force,
                                       .patch_radius = 0,
-                                      .search_radius = 7,
+                                      .search_radius = 6,
                                       .decimate = 0,
                                       .norm = norm };
-  nlmeans_denoise(transformed_in, out, roi_in, roi_out, &params);
+  nlmeans_denoise(transformed_in1, corr1, roi_in, roi_out, &params);
+  nlmeans_denoise(transformed_in2, corr2, roi_in, roi_out, &params);
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, out, width, height, guide, force) \
-  schedule(simd:static) aligned(in, out)
+dt_omp_firstprivate(in, corr1, corr2, out, width, height, guide, force) \
+  schedule(simd:static) aligned(in, corr1, corr2, out)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
     float guide_out = in[k * 4 + guide];
     out[k * 4 + guide] = guide_out;
-    for(size_t ci = 1; ci <= 2; ci++)
+    size_t c1 = (guide + 1) % 3;
+    size_t c2 = (guide + 2) % 3;
+    float tin_c1 = corr1[k * 4 + c1] * force;
+    float tin_c2 = corr2[k * 4 + c2] * force;
+    if(tin_c1 > 1.0f)
     {
-      const size_t c = (guide + ci) % 3;
-      float tin_c = out[k * 4 + c] * force;
-      if(tin_c > 1.0f)
-      {
-        out[k * 4 + c] = guide_out / (2.0f - tin_c);
-      }
-      else
-      {
-        out[k * 4 + c] = guide_out * tin_c;
-      }
+      out[k * 4 + c1] = guide_out / (2.0f - tin_c1);
+    }
+    else
+    {
+      out[k * 4 + c1] = guide_out * tin_c1;
+    }
+    if(tin_c2 > 1.0f)
+    {
+      out[k * 4 + c2] = guide_out / (2.0f - tin_c2);
+    }
+    else
+    {
+      out[k * 4 + c2] = guide_out * tin_c2;
     }
   }
   return;
