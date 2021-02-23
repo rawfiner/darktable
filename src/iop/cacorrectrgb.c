@@ -53,12 +53,13 @@ typedef struct dt_iop_cacorrectrgb_params_t
 {
   dt_iop_cacorrectrgb_guide_channel_t guide_channel; // $DEFAULT: DT_CACORRECT_RGB_G $DESCRIPTION: "guide"
   float radius; // $MIN: 1 $MAX: 400 $DEFAULT: 5 $DESCRIPTION: "radius"
+  float force; // $MIN: 1 $MAX: 400 $DEFAULT: 5 $DESCRIPTION: "force"
   dt_iop_cacorrectrgb_mode_t mode; // $DEFAULT: DT_CACORRECT_MODE_STANDARD $DESCRIPTION: "correction mode"
 } dt_iop_cacorrectrgb_params_t;
 
 typedef struct dt_iop_cacorrectrgb_gui_data_t
 {
-  GtkWidget *guide_channel, *radius, *mode;
+  GtkWidget *guide_channel, *radius, *force, *mode;
 } dt_iop_cacorrectrgb_gui_data_t;
 
 // this returns a translatable name
@@ -420,7 +421,7 @@ dt_omp_firstprivate(in, transformed_in, width, height, guide, force) \
                                       .luma = 1.0,    //no blending
                                       .chroma = 1.0,
                                       .center_weight = 1.0f,
-                                      .sharpness = 4000.0f / (d->radius * d->radius),
+                                      .sharpness = 4000.0f / d->force,
                                       .patch_radius = 0,
                                       .search_radius = 7,
                                       .decimate = 0,
@@ -479,6 +480,7 @@ void gui_update(dt_iop_module_t *self)
 
   dt_bauhaus_combobox_set_from_value(g->guide_channel, p->guide_channel);
   dt_bauhaus_slider_set_soft(g->radius, p->radius);
+  dt_bauhaus_slider_set_soft(g->force, p->force);
   dt_bauhaus_combobox_set_from_value(g->mode, p->mode);
 }
 
@@ -490,6 +492,7 @@ void reload_defaults(dt_iop_module_t *module)
 
   d->guide_channel = DT_CACORRECT_RGB_G;
   d->radius = 5.0f;
+  d->force = 5.0f;
   d->mode = DT_CACORRECT_MODE_STANDARD;
 
   dt_iop_cacorrectrgb_gui_data_t *g = (dt_iop_cacorrectrgb_gui_data_t *)module->gui_data;
@@ -498,6 +501,8 @@ void reload_defaults(dt_iop_module_t *module)
     dt_bauhaus_combobox_set_default(g->guide_channel, d->guide_channel);
     dt_bauhaus_slider_set_default(g->radius, d->radius);
     dt_bauhaus_slider_set_soft_range(g->radius, 1.0, 20.0);
+    dt_bauhaus_slider_set_default(g->force, d->force);
+    dt_bauhaus_slider_set_soft_range(g->force, 1.0, 20.0);
     dt_bauhaus_combobox_set_default(g->mode, d->mode);
   }
 }
@@ -515,6 +520,9 @@ void gui_init(dt_iop_module_t *self)
                                            "have artefacts."));
   g->radius = dt_bauhaus_slider_from_params(self, "radius");
   gtk_widget_set_tooltip_text(g->radius, _("increase for stronger correction\n"));
+
+  g->force = dt_bauhaus_slider_from_params(self, "force");
+  gtk_widget_set_tooltip_text(g->force, _("increase for stronger correction\n"));
 
   gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_label_new(_("advanced parameters:")), TRUE, TRUE, 0);
   g->mode = dt_bauhaus_combobox_from_params(self, "mode");
