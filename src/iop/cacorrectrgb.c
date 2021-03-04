@@ -366,6 +366,39 @@ dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode) \
   }
 }
 
+void rbf(const float* const restrict in, float* const restrict out, const size_t width, const size_t height, const int guide, const float spatial_force, const float range_force)
+{
+  // copy-paste first row
+  for(size_t k = 0; k < 4 * width; k++)
+  {
+    out[k] = in[k];
+  }
+  // iterate over the rows
+  for(size_t i = 1; i < height; i++)
+  {
+    // handle j == 0
+    for(size_t j = 1; j < width-1; j++)
+    {
+      // compute distance between pixel and it 3 top pixels
+      float dist_top_in = in[(i * width + j) * 4 + guide] - in[((i-1) * width + j) * 4 + guide];
+      dist_top_in *= dist_top_in;
+      float dist_top_mean = in[(i * width + j) * 4 + guide] - out[((i-1) * width + j) * 4 + guide];
+      dist_top_mean *= dist_top_mean;
+      float dist_top = fmaxf(dist_top_in, dist_top_mean);
+      dist_top = exp2f(-dist_top * 10000.0f / range_force);
+      float total_weight = dist_top + 1.0f / spatial_force;
+      for(size_t c = 0; c < 3; c++)
+      {
+        float result = dist_top * out[((i-1) * width + j) * 4 + c] + in[(i * width + j) * 4 + c] / spatial_force;
+        result /= total_weight;
+        out[(i * width + j) * 4 + c] = result;
+      }
+    }
+    // handle j == width
+  }
+}
+
+
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -379,6 +412,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   float *const restrict transformed_in2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict corr1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict corr2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  memcpy(corr2, corr1, sizeof(float)); //TODO remove. Only here to silent a warning.
   float* out = (float*)ovoid;
   const float sigma = MAX(d->radius / scale, 1.0f);
 
@@ -390,7 +424,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
 
   const dt_iop_cacorrectrgb_guide_channel_t guide = d->guide_channel;
   const dt_iop_cacorrectrgb_mode_t mode = d->mode;
-  const float force = 100.0f;
+  const float force = d->force;
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -400,8 +434,8 @@ dt_omp_firstprivate(in, transformed_in1, transformed_in2, width, height, guide, 
   for(size_t k = 0; k < width * height; k++)
   {
     float guide_in = fmaxf(in[k * 4 + guide], 1E-6);
-    transformed_in1[k * 4 + guide] = sqrtf(guide_in); // gamma correction
-    transformed_in2[k * 4 + guide] = sqrtf(guide_in); // gamma correction
+    transformed_in1[k * 4 + guide] = log2f(guide_in); // gamma correction
+    transformed_in2[k * 4 + guide] = log2f(guide_in); // gamma correction
     for(size_t ci = 1; ci <= 2; ci++)
     {
       const size_t c = (guide + ci) % 3;
@@ -417,24 +451,26 @@ dt_omp_firstprivate(in, transformed_in1, transformed_in2, width, height, guide, 
         transformed_in2[k * 4 + c] = (in_c / guide_in);
       }
     }
-    transformed_in1[k * 4 + ((guide + 1) % 3)] /= force;
-    transformed_in2[k * 4 + ((guide + 2) % 3)] /= force;
+    // transformed_in1[k * 4 + ((guide + 1) % 3)] /= force; // useless with rbf
+    // transformed_in2[k * 4 + ((guide + 2) % 3)] /= force; // useless with rbf
   }
 
-  const float w = 1.f;
-  const float norm[4] = {w, w, w, 1.0f };
-  const dt_nlmeans_param_t params = { .scattering = (float)(d->radius) / 100.0f,
-                                      .scale = scale,
-                                      .luma = 1.0,    //no blending
-                                      .chroma = 1.0,
-                                      .center_weight = 1.0f,
-                                      .sharpness = 4000.0f / d->force,
-                                      .patch_radius = 0,
-                                      .search_radius = 6,
-                                      .decimate = 0,
-                                      .norm = norm };
-  nlmeans_denoise(transformed_in1, corr1, roi_in, roi_out, &params);
-  nlmeans_denoise(transformed_in2, corr2, roi_in, roi_out, &params);
+  rbf(transformed_in1, corr1, width, height, guide, d->radius, exp2f(force-10.0f));
+
+  // const float w = 1.f;
+  // const float norm[4] = {w, w, w, 1.0f };
+  // const dt_nlmeans_param_t params = { .scattering = (float)(d->radius) / 100.0f,
+  //                                     .scale = scale,
+  //                                     .luma = 1.0,    //no blending
+  //                                     .chroma = 1.0,
+  //                                     .center_weight = 1.0f,
+  //                                     .sharpness = 4000.0f / d->force,
+  //                                     .patch_radius = 0,
+  //                                     .search_radius = 6,
+  //                                     .decimate = 0,
+  //                                     .norm = norm };
+  // nlmeans_denoise(transformed_in1, corr1, roi_in, roi_out, &params);
+  // nlmeans_denoise(transformed_in2, corr2, roi_in, roi_out, &params);
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
@@ -447,8 +483,8 @@ dt_omp_firstprivate(in, corr1, corr2, out, width, height, guide, force) \
     out[k * 4 + guide] = guide_out;
     size_t c1 = (guide + 1) % 3;
     size_t c2 = (guide + 2) % 3;
-    float tin_c1 = corr1[k * 4 + c1] * force;
-    float tin_c2 = corr2[k * 4 + c2] * force;
+    float tin_c1 = corr1[k * 4 + c1];// * force;
+    float tin_c2 = corr1[k * 4 + c2];// * force;//corr2
     if(tin_c1 > 1.0f)
     {
       out[k * 4 + c1] = guide_out / (2.0f - tin_c1);
