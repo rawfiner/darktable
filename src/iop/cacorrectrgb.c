@@ -366,36 +366,153 @@ dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode) \
   }
 }
 
-void rbf(const float* const restrict in, float* const restrict out, const size_t width, const size_t height, const int guide, const float spatial_force, const float range_force)
+void rbf(const float* const restrict in, float* const restrict out, const size_t width, const size_t height, const int guide, const float* spatial_force, const float range_force)
 {
+  // alloc temporary buffers for top-bottom and bottom-top results
+  float *const restrict tb = dt_alloc_sse_ps(dt_round_size_sse(width * height * 4));
+  float *const restrict bt = dt_alloc_sse_ps(dt_round_size_sse(width * height * 4));
+  // first pass: top to bottom
   // copy-paste first row
-  for(size_t k = 0; k < 4 * width; k++)
+  for(size_t j = 0; j < width; j++)
   {
-    out[k] = in[k];
+    for(size_t c = 0; c < 3; c++)
+    {
+      tb[j * 4 + c] = in[j * 4 + c];
+    }
+    tb[j * 4 + 3] = 1.0f;
   }
   // iterate over the rows
   for(size_t i = 1; i < height; i++)
   {
     // handle j == 0
+    for(size_t c = 0; c < 3; c++)
+    {
+      tb[i * width * 4 + c] = in[i * width * 4 + c];
+    }
+    tb[i * width * 4 + 3] = 1.0f;
     for(size_t j = 1; j < width-1; j++)
     {
       // compute distance between pixel and it 3 top pixels
-      float dist_top_in = in[(i * width + j) * 4 + guide] - in[((i-1) * width + j) * 4 + guide];
-      dist_top_in *= dist_top_in;
-      float dist_top_mean = in[(i * width + j) * 4 + guide] - out[((i-1) * width + j) * 4 + guide];
-      dist_top_mean *= dist_top_mean;
-      float dist_top = fmaxf(dist_top_in, dist_top_mean);
+      float dist_top = in[(i * width + j) * 4 + guide] - in[((i-1) * width + j) * 4 + guide];
+      dist_top *= dist_top;
+      float distm_top = in[(i * width + j) * 4 + guide] - tb[((i-1) * width + j) * 4 + guide];
+      distm_top *= distm_top;
+      dist_top = fmaxf(dist_top, distm_top);
       dist_top = exp2f(-dist_top * 10000.0f / range_force);
-      float total_weight = dist_top + 1.0f / spatial_force;
+
+      float dist_top_left = in[(i * width + j) * 4 + guide] - in[((i-1) * width + j-1) * 4 + guide];
+      dist_top_left *= dist_top_left;
+      float distm_top_left = in[(i * width + j) * 4 + guide] - tb[((i-1) * width + j-1) * 4 + guide];
+      distm_top_left *= distm_top_left;
+      dist_top_left = fmaxf(dist_top_left, distm_top_left);
+      dist_top_left = exp2f(-dist_top_left * 10000.0f / range_force);
+
+      float dist_top_right = in[(i * width + j) * 4 + guide] - in[((i-1) * width + j+1) * 4 + guide];
+      dist_top_right *= dist_top_right;
+      float distm_top_right = in[(i * width + j) * 4 + guide] - tb[((i-1) * width + j+1) * 4 + guide];
+      distm_top_right *= distm_top_right;
+      dist_top_right = fmaxf(dist_top_right, distm_top_right);
+      dist_top_right = exp2f(-dist_top_right * 10000.0f / range_force);
+
+      float total_weight = dist_top + dist_top_left + dist_top_right + spatial_force[i * width + j];
+      tb[(i * width + j) * 4 + 3] = total_weight;
       for(size_t c = 0; c < 3; c++)
       {
-        float result = dist_top * out[((i-1) * width + j) * 4 + c] + in[(i * width + j) * 4 + c] / spatial_force;
-        result /= total_weight;
-        out[(i * width + j) * 4 + c] = result;
+        tb[(i * width + j) * 4 + c] = dist_top * tb[((i-1) * width + j) * 4 + c] + dist_top_left * tb[((i-1) * width + j-1) * 4 + c] + dist_top_right * tb[((i-1) * width + j+1) * 4 + c] + in[(i * width + j) * 4 + c] * spatial_force[i * width + j];
+        tb[(i * width + j) * 4 + c] /= total_weight;
       }
+      tb[(i * width + j) * 4 + 3] = total_weight;
     }
     // handle j == width
+    for(size_t c = 0; c < 3; c++)
+    {
+      tb[(i * width + width-1) * 4 + c] = in[(i * width + width-1) * 4 + c];
+    }
+    tb[(i * width + width-1) * 4 + 3] = 1.0f;
   }
+
+  // second pass: bottom to top
+  // copy-paste last row
+  for(size_t j = 0; j < width; j++)
+  {
+    for(size_t c = 0; c < 3; c++)
+    {
+      bt[((height-1) * width + j) * 4 + c] = in[((height-1) * width + j) * 4 + c];
+    }
+    bt[((height-1) * width + j) * 4 + 3] = 1.0f;
+  }
+  // iterate over the rows
+  for(int64_t i = height-2; i >= 0; i--)
+  {
+    // handle j == 0
+    for(size_t c = 0; c < 3; c++)
+    {
+      bt[i * width * 4 + c] = in[i * width * 4 + c];
+    }
+    bt[i * width * 4 + 3] = 1.0f;
+    for(size_t j = 1; j < width-1; j++)
+    {
+      // compute distance between pixel and it 3 bottom pixels
+      // compute distance between pixel and it 3 top pixels
+      float dist_bottom = in[(i * width + j) * 4 + guide] - in[((i+1) * width + j) * 4 + guide];
+      dist_bottom *= dist_bottom;
+      float distm_bottom = in[(i * width + j) * 4 + guide] - bt[((i+1) * width + j) * 4 + guide];
+      distm_bottom *= distm_bottom;
+      dist_bottom = fmaxf(dist_bottom, distm_bottom);
+      dist_bottom = exp2f(-dist_bottom * 10000.0f / range_force);
+
+      float dist_bottom_left = in[(i * width + j) * 4 + guide] - in[((i+1) * width + j-1) * 4 + guide];
+      dist_bottom_left *= dist_bottom_left;
+      float distm_bottom_left = in[(i * width + j) * 4 + guide] - bt[((i+1) * width + j-1) * 4 + guide];
+      distm_bottom_left *= distm_bottom_left;
+      dist_bottom_left = fmaxf(dist_bottom_left, distm_bottom_left);
+      dist_bottom_left = exp2f(-dist_bottom_left * 10000.0f / range_force);
+
+      float dist_bottom_right = in[(i * width + j) * 4 + guide] - in[((i+1) * width + j+1) * 4 + guide];
+      dist_bottom_right *= dist_bottom_right;
+      float distm_bottom_right = in[(i * width + j) * 4 + guide] - bt[((i+1) * width + j+1) * 4 + guide];
+      distm_bottom_right *= distm_bottom_right;
+      dist_bottom_right = fmaxf(dist_bottom_right, distm_bottom_right);
+      dist_bottom_right = exp2f(-dist_bottom_right * 10000.0f / range_force);
+
+      float total_weight = dist_bottom + dist_bottom_left + dist_bottom_right + spatial_force[i * width + j];
+      bt[(i * width + j) * 4 + 3] = total_weight;
+      for(size_t c = 0; c < 3; c++)
+      {
+        bt[(i * width + j) * 4 + c] = dist_bottom * bt[((i+1) * width + j) * 4 + c] + dist_bottom_left * bt[((i+1) * width + j-1) * 4 + c] + dist_bottom_right * bt[((i+1) * width + j+1) * 4 + c] + in[(i * width + j) * 4 + c] * spatial_force[i * width + j];
+        bt[(i * width + j) * 4 + c] /= total_weight;
+      }
+      bt[(i * width + j) * 4 + 3] = total_weight;
+    }
+    // handle j == width
+    for(size_t c = 0; c < 3; c++)
+    {
+      bt[(i * width + width-1) * 4 + c] = in[(i * width + width-1) * 4 + c];
+    }
+    bt[(i * width + width-1) * 4 + 3] = 1.0f;
+  }
+
+  // fusion of the 2 passes using the total weights
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j++)
+    {
+      const float weight_tb = tb[(i * width + j) * 4 + 3];
+      const float weight_bt = bt[(i * width + j) * 4 + 3];
+      const float total_weight = weight_tb + weight_bt;
+      for(size_t c = 0; c < 3; c++)
+      {
+        const float value_tb = tb[(i * width + j) * 4 + c] * weight_tb;
+        const float value_bt = bt[(i * width + j) * 4 + c] * weight_bt;
+        out[(i * width + j) * 4 + c] = (value_tb + value_bt) / total_weight;
+      }
+    }
+  }
+
+  dt_free_align(tb);
+  dt_free_align(bt);
+
+  //TODO copy alpha channel
 }
 
 
@@ -410,6 +527,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const float* in = (float*)ivoid;
   float *const restrict transformed_in1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict transformed_in2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float *const restrict laplacian_log = dt_alloc_sse_ps(dt_round_size_sse(width * height));
+  float *const restrict spatial_weight = dt_alloc_sse_ps(dt_round_size_sse(width * height));
   float *const restrict corr1 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   float *const restrict corr2 = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
   memcpy(corr2, corr1, sizeof(float)); //TODO remove. Only here to silent a warning.
@@ -433,13 +552,13 @@ dt_omp_firstprivate(in, transformed_in1, transformed_in2, width, height, guide, 
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
-    float guide_in = fmaxf(in[k * 4 + guide], 1E-6);
+    float guide_in = fmaxf(in[k * 4 + guide], 1E-4);
     transformed_in1[k * 4 + guide] = log2f(guide_in); // gamma correction
     transformed_in2[k * 4 + guide] = log2f(guide_in); // gamma correction
     for(size_t ci = 1; ci <= 2; ci++)
     {
       const size_t c = (guide + ci) % 3;
-      float in_c = fmaxf(in[k * 4 + c], 1E-6);
+      float in_c = fmaxf(in[k * 4 + c], 1E-4);
       if(in_c > guide_in)
       {
         transformed_in1[k * 4 + c] = (2.0f - guide_in / in_c);
@@ -455,7 +574,43 @@ dt_omp_firstprivate(in, transformed_in1, transformed_in2, width, height, guide, 
     // transformed_in2[k * 4 + ((guide + 2) % 3)] /= force; // useless with rbf
   }
 
-  rbf(transformed_in1, corr1, width, height, guide, d->radius, exp2f(force-10.0f));
+  memset(laplacian_log, 0, sizeof(float) * width * height);
+  // compute max diff at each pixel
+  for(size_t i = 1; i < height-1; i++)
+  {
+    for(size_t j = 1; j < width-1; j++)
+    {
+      float max_diff = 0.0f;
+      float center = transformed_in1[(i * width + j) * 4 + guide];
+      for(size_t ii = i-1; ii <= i+1; ii++)
+      {
+        for(size_t jj = j-1; jj <= j+1; jj++)
+        {
+          float diff = fabsf(center - transformed_in1[(ii * width + jj) * 4 + guide]);
+          if(diff > max_diff)
+            max_diff = diff;
+        }
+      }
+      laplacian_log[i * width + j] = max_diff;
+    }
+  }
+
+  // smooth this difference with a gaussian blur
+  float max = INFINITY;
+  float min = 0.0f;
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 1, &max, &min, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur(g, laplacian_log, spatial_weight);
+  dt_gaussian_free(g);
+
+  // convert from log difference to ratio
+  for(size_t k = 0; k < width * height; k++)
+  {
+    spatial_weight[k] = fmaxf(exp2f(-spatial_weight[k] * (2.0f * sigma + 1.0f) / 10.0f) / sigma, 0.0001f / sigma);
+  }
+
+  // use the smoothed difference in the rbf as spatial_force
+  rbf(transformed_in1, corr1, width, height, guide, spatial_weight, exp2f(force-10.0f));
 
   // const float w = 1.f;
   // const float norm[4] = {w, w, w, 1.0f };
@@ -474,13 +629,13 @@ dt_omp_firstprivate(in, transformed_in1, transformed_in2, width, height, guide, 
 
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, corr1, corr2, out, width, height, guide, force) \
+dt_omp_firstprivate(in, spatial_weight, corr1, corr2, out, width, height, guide, force) \
   schedule(simd:static) aligned(in, corr1, corr2, out)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
     float guide_out = in[k * 4 + guide];
-    out[k * 4 + guide] = guide_out;
+    out[k * 4 + guide] = guide_out + 0.0f * spatial_weight[k];//guide_out;
     size_t c1 = (guide + 1) % 3;
     size_t c2 = (guide + 2) % 3;
     float tin_c1 = corr1[k * 4 + c1];// * force;
@@ -502,6 +657,10 @@ dt_omp_firstprivate(in, corr1, corr2, out, width, height, guide, force) \
       out[k * 4 + c2] = guide_out * tin_c2;
     }
   }
+
+  //FIXME free!
+  dt_free_align(laplacian_log);
+  dt_free_align(spatial_weight);
   return;
 
   const float downsize = 3.0f;
