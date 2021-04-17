@@ -52,12 +52,13 @@ typedef struct dt_iop_cacorrectrgb_params_t
 {
   dt_iop_cacorrectrgb_guide_channel_t guide_channel; // $DEFAULT: DT_CACORRECT_RGB_G $DESCRIPTION: "guide"
   float radius; // $MIN: 1 $MAX: 400 $DEFAULT: 5 $DESCRIPTION: "radius"
+  float strength; // $MIN: 0 $MAX: 5 $DEFAULT: 3 $DESCRIPTION: "strength"
   dt_iop_cacorrectrgb_mode_t mode; // $DEFAULT: DT_CACORRECT_MODE_STANDARD $DESCRIPTION: "correction mode"
 } dt_iop_cacorrectrgb_params_t;
 
 typedef struct dt_iop_cacorrectrgb_gui_data_t
 {
-  GtkWidget *guide_channel, *radius, *mode;
+  GtkWidget *guide_channel, *radius, *strength, *mode;
 } dt_iop_cacorrectrgb_gui_data_t;
 
 // this returns a translatable name
@@ -182,7 +183,7 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
   // as it is the average of the values where the guide is higher than its
   // average, and the lower manifold of the guided channel is equal to 1.
 
-for(size_t p = 0; p < log2f(sigma)+1; p++)
+for(size_t p = 0; p < 3; p++)
 {
   // refine the manifolds
   // improve result especially on very degraded images
@@ -308,12 +309,13 @@ static void apply_correction(const float* const restrict in,
                           const size_t ch, const float sigma,
                           const dt_iop_cacorrectrgb_guide_channel_t guide,
                           const dt_iop_cacorrectrgb_mode_t mode,
+                          const float strength,
                           float* const restrict out)
 
 {
 #ifdef _OPENMP
 #pragma omp parallel for simd default(none) \
-dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode) \
+dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode, strength) \
   schedule(simd:static) aligned(in, manifolds, out)
 #endif
   for(size_t k = 0; k < width * height; k++)
@@ -357,7 +359,7 @@ dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode) \
       const float dist_to_good_2 = sqrtf((x - xh) * (x - xh) + (y - yh) * (y - yh));
       const float dist_to_good = fminf(dist_to_good_1, dist_to_good_2);
 
-      const float weight_corr = exp2f(-dist_to_bad / ((dist_to_good + 0.01f) * 10.0f));
+      const float weight_corr = exp2f(-dist_to_bad / ((dist_to_good + 0.01f) * strength));
 
       //const float weight_corr = exp2f(-fmaxf(dist_to_bad - strength, 0.0f) / fmaxf(40.0f * strength, 1E-6));
 
@@ -431,7 +433,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // upscale manifolds
   interpolate_bilinear(ds_manifolds, ds_width, ds_height, manifolds, width, height, 6);
   dt_free_align(ds_manifolds);
-  apply_correction(in, manifolds, width, height, ch, sigma, guide, mode, out);
+  apply_correction(in, manifolds, width, height, ch, sigma, guide, mode, powf(10.0f, d->strength - 2.0f), out);
   dt_free_align(manifolds);
 }
 
@@ -443,6 +445,7 @@ void gui_update(dt_iop_module_t *self)
 
   dt_bauhaus_combobox_set_from_value(g->guide_channel, p->guide_channel);
   dt_bauhaus_slider_set_soft(g->radius, p->radius);
+  dt_bauhaus_slider_set_soft(g->strength, p->strength);
   dt_bauhaus_combobox_set_from_value(g->mode, p->mode);
 }
 
@@ -454,6 +457,7 @@ void reload_defaults(dt_iop_module_t *module)
 
   d->guide_channel = DT_CACORRECT_RGB_G;
   d->radius = 5.0f;
+  d->strength = 3.0f;
   d->mode = DT_CACORRECT_MODE_STANDARD;
 
   dt_iop_cacorrectrgb_gui_data_t *g = (dt_iop_cacorrectrgb_gui_data_t *)module->gui_data;
@@ -462,6 +466,7 @@ void reload_defaults(dt_iop_module_t *module)
     dt_bauhaus_combobox_set_default(g->guide_channel, d->guide_channel);
     dt_bauhaus_slider_set_default(g->radius, d->radius);
     dt_bauhaus_slider_set_soft_range(g->radius, 1.0, 20.0);
+    dt_bauhaus_slider_set_default(g->strength, d->strength);
     dt_bauhaus_combobox_set_default(g->mode, d->mode);
   }
 }
@@ -479,6 +484,8 @@ void gui_init(dt_iop_module_t *self)
                                            "have artefacts."));
   g->radius = dt_bauhaus_slider_from_params(self, "radius");
   gtk_widget_set_tooltip_text(g->radius, _("increase for stronger correction\n"));
+  g->strength = dt_bauhaus_slider_from_params(self, "strength");
+  gtk_widget_set_tooltip_text(g->strength, _("increase for stronger correction\n"));
 
   gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_label_new(_("advanced parameters:")), TRUE, TRUE, 0);
   g->mode = dt_bauhaus_combobox_from_params(self, "mode");
