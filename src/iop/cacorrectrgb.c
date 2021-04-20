@@ -183,7 +183,7 @@ dt_omp_firstprivate(in, blurred_in, manifold_lower, manifold_higher, width, heig
   // as it is the average of the values where the guide is higher than its
   // average, and the lower manifold of the guided channel is equal to 1.
 
-for(size_t p = 0; p < 3; p++)
+for(size_t p = 0; p < 15; p++)
 {
   // refine the manifolds
   // improve result especially on very degraded images
@@ -351,15 +351,35 @@ dt_omp_firstprivate(in, width, height, guide, manifolds, out, sigma, mode, stren
       // float strength = 1.0f; //in EV
       // strength = fminf(strength, dist_bad_good * 0.9f);
 
+      const float w_bad = 1.0f;
+
       const float dist_to_bad_1 = sqrtf((x - xl) * (x - xl) + (y - yh) * (y - yh));
+      const float dist_bad_h1 = fabsf((x - xl) + (y - yh)) / sqrtf(2.0f);
+      const float dist_bad_perp_1 = sqrtf(fmaxf(dist_to_bad_1 * dist_to_bad_1 - dist_bad_h1 * dist_bad_h1, 0.0f));
+
       const float dist_to_bad_2 = sqrtf((x - xh) * (x - xh) + (y - yl) * (y - yl));
-      const float dist_to_bad = fminf(dist_to_bad_1, dist_to_bad_2);
+      const float dist_bad_h2 = fabsf((x - xh) + (y - yl)) / sqrtf(2.0f);
+      const float dist_bad_perp_2 = sqrtf(fmaxf(dist_to_bad_2 * dist_to_bad_2 - dist_bad_h2 * dist_bad_h2, 0.0f));
+
+      const float dist_to_bad = fminf((1.0f - w_bad) * dist_bad_perp_1 + w_bad * dist_to_bad_1, (1.0f - w_bad) * dist_bad_perp_2 + w_bad * dist_to_bad_2);
+
+      const float w_good = 1.0f;
 
       const float dist_to_good_1 = sqrtf((x - xl) * (x - xl) + (y - yl) * (y - yl));
-      const float dist_to_good_2 = sqrtf((x - xh) * (x - xh) + (y - yh) * (y - yh));
-      const float dist_to_good = fminf(dist_to_good_1, dist_to_good_2);
+      const float dist_good_h1 = fabsf((x - xl) + (y - yl)) / sqrtf(2.0f);
+      const float dist_good_perp_1 = sqrtf(fmaxf(dist_to_good_1 * dist_to_good_1 - dist_good_h1 * dist_good_h1, 0.0f));
 
-      const float weight_corr = exp2f(-dist_to_bad / ((dist_to_good + 0.01f) * strength));
+      const float dist_to_good_2 = sqrtf((x - xh) * (x - xh) + (y - yh) * (y - yh));
+      const float dist_good_h2 = fabsf((x - xh) + (y - yh)) / sqrtf(2.0f);
+      const float dist_good_perp_2 = sqrtf(fmaxf(dist_to_good_2 * dist_to_good_2 - dist_good_h2 * dist_good_h2, 0.0f));
+
+      const float dist_to_good = fminf((1.0f - w_good) * dist_good_perp_1 + w_good * dist_to_good_1, (1.0f - w_good) * dist_good_perp_2 + w_good * dist_to_good_2);
+
+      const float dist_lh_g = fabsf(xl - xh);
+      const float dist_lh_c = fabsf(yl - yh);
+      const float confidence = 1.0f + 0.0f * exp2f((1.0f - fmaxf(dist_lh_c, dist_lh_g) / dist_lh_g) * 4.0f);
+
+      const float weight_corr = confidence * exp2f(-dist_to_bad / ((dist_to_good + 0.01f) * strength));
 
       //const float weight_corr = exp2f(-fmaxf(dist_to_bad - strength, 0.0f) / fmaxf(40.0f * strength, 1E-6));
 
