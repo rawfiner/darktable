@@ -453,8 +453,58 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   // upscale manifolds
   interpolate_bilinear(ds_manifolds, ds_width, ds_height, manifolds, width, height, 6);
   dt_free_align(ds_manifolds);
-  apply_correction(in, manifolds, width, height, ch, sigma, guide, mode, powf(10.0f, d->strength - 2.0f), out);
+  apply_correction(in, manifolds, width, height, ch, sigma, guide, mode, 1000.0f/*powf(10.0f, d->strength - 2.0f)*/, out);
   dt_free_align(manifolds);
+
+
+  // reduce artifacts
+
+  // contains 2 guided channels of in, and of out
+  float *const restrict in_out = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, out, in_out, width, height, guide, ch) \
+  schedule(simd:static) aligned(in, out, in_out:64)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    for(size_t kc = 0; kc <= 1; kc++)
+    {
+      size_t c = (guide + kc + 1) % 3;
+      in_out[k * ch + kc * 2 + 0] = log2f(fmaxf(in[k * 4 + c], 0.000016f)) + 16.0f;
+      in_out[k * ch + kc * 2 + 1] = log2f(fmaxf(out[k * 4 + c], 0.000016f)) + 16.0f;
+    }
+  }
+
+  float *const restrict blurred_in_out = dt_alloc_sse_ps(dt_round_size_sse(width * height * ch));
+  float max[4] = {INFINITY, INFINITY, INFINITY, INFINITY};
+  float min[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  dt_gaussian_t *g = dt_gaussian_init(width, height, 4, max, min, sigma, 0);
+  if(!g) return;
+  dt_gaussian_blur_4c(g, in_out, blurred_in_out);
+  dt_gaussian_free(g);
+  dt_free_align(in_out);
+
+  const float stren = powf(20.0f, 2.0f - d->strength);
+#ifdef _OPENMP
+#pragma omp parallel for simd default(none) \
+dt_omp_firstprivate(in, out, blurred_in_out, width, height, guide, stren, ch) \
+  schedule(simd:static) aligned(in, out, blurred_in_out:64)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    for(size_t kc = 0; kc <= 1; kc++)
+    {
+      size_t c = (guide + kc + 1) % 3;
+      const float avg_in = blurred_in_out[k * ch + kc * 2 + 0];
+      const float avg_out = blurred_in_out[k * ch + kc * 2 + 1];
+      const float w = expf(-fmaxf(fabsf(avg_out - avg_in), 0.01f) * stren);
+      out[k * ch + c] = fmaxf(1.0f - w, 0.0f) * fmaxf(in[k * ch + c], 0.0f) + w * fmaxf(out[k * ch + c], 0.0f);
+    }
+  }
+
+
+
 }
 
 /** gui setup and update, these are needed. */
