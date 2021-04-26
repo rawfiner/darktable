@@ -2586,7 +2586,9 @@ gboolean dt_dev_write_luminance_mask(dt_dev_pixelpipe_iop_t *piece, float *const
   p->luminance_mask_data = mask;
   memcpy(&p->luminance_mask_roi, roi_in, sizeof(dt_iop_roi_t));
 
-  dt_masks_calc_luminance_mask(rgb, mask, width, height);
+  const float wb[3] = {piece->pipe->dsc.temperature.coeffs[0], piece->pipe->dsc.temperature.coeffs[1], piece->pipe->dsc.temperature.coeffs[2]};
+
+  dt_masks_calc_luminance_mask(rgb, mask, width, height, wb);
   return FALSE;
 }
 

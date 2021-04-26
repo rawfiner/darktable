@@ -185,18 +185,18 @@ void dt_masks_blur_9x9(float *const restrict src, float *const restrict out, con
   dt_masks_extend_border(out, width, height, 4);
 }
 
-void dt_masks_calc_luminance_mask(float *const restrict src, float *const restrict mask, const int width, const int height)
+void dt_masks_calc_luminance_mask(float *const restrict src, float *const restrict mask, const int width, const int height, const float wb[3])
 {
   const int msize = width * height;
 #ifdef _OPENMP
   #pragma omp parallel for simd default(none) \
-  dt_omp_firstprivate(mask, src, msize) \
+  dt_omp_firstprivate(mask, src, msize, wb) \
   schedule(simd:static) aligned(mask, src : 64)
 #endif
   for(int idx =0; idx < msize; idx++)
   {
-    const float val = 0.333333333f * (src[4 * idx] + src[4 * idx + 1] + src[4 * idx + 2]);
-    mask[idx] = lab_f(val);
+    const float val = 0.333333333f * (src[4 * idx] / wb[0] + src[4 * idx + 1] / wb[1] + src[4 * idx + 2] / wb[2]);
+    mask[idx] = val;
   }
 }
 
@@ -205,7 +205,8 @@ static inline float calcBlendFactor(float val, float threshold)
     // sigmoid function
     // result is in ]0;1] range
     // inflexion point is at (x, y) (threshold, 0.5)
-    return 1.0f / (1.0f + dt_fast_expf(16.0f - (16.0f / threshold) * val));
+    return val / (val + 5.0f * threshold);
+    //return 1.0f / (1.0f + dt_fast_expf(16.0f - (16.0f / threshold) * val));
 }
 
 void dt_masks_calc_detail_mask(float *const restrict src, float *const restrict out, float *const restrict tmp, const int width, const int height, const float threshold, const gboolean detail)
@@ -220,8 +221,21 @@ void dt_masks_calc_detail_mask(float *const restrict src, float *const restrict 
   {
     for(int col = 2, idx = row * width + col; col < width - 2; col++, idx++)
     {
-      tmp[idx] = scale * sqrtf(sqrf(src[idx+1] - src[idx-1]) + sqrf(src[idx + width]   - src[idx - width]) +
-                               sqrf(src[idx+2] - src[idx-2]) + sqrf(src[idx + 2*width] - src[idx - 2*width]));
+      float avg = 0.0f;
+      float var = 0.0f;
+      for(int r = -2; r <= 2; r++)
+      {
+        for(int c = -2; c <= 2; c++)
+        {
+          float val = src[idx+r*width+c];
+          avg += val;
+          var += sqrf(val);
+        }
+      }
+      avg /= 25.0f;
+      var /= 24.0f;
+      var = (var - sqrf(avg)) / sqrf(avg);
+      tmp[idx] = scale * var;
     }
   }
   dt_masks_extend_border(tmp, width, height, 2);
