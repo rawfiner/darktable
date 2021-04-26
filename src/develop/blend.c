@@ -226,7 +226,7 @@ int dt_develop_blendif_init_masking_profile(struct dt_dev_pixelpipe_iop_t *piece
 static inline float _detail_mask_threshold(const float level, const gboolean detail)
 {
   // this does some range calculation for smoother ui experience
-  return 0.01f * (detail ? powf(level, 1.5f) : 1.0f - powf(fabs(level), 0.75f ));
+  return 0.005f * (detail ? powf(level, 2.0f) : 1.0f - powf(fabs(level), 0.5f ));
 }
 
 static void _refine_with_detail_mask(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece, float *mask, const struct dt_iop_roi_t *const roi_in, const struct dt_iop_roi_t *const roi_out, const float level)

@@ -195,8 +195,8 @@ void dt_masks_calc_luminance_mask(float *const restrict src, float *const restri
 #endif
   for(int idx =0; idx < msize; idx++)
   {
-    const float val = 0.333333333f * (src[4 * idx] / wb[0] + src[4 * idx + 1] / wb[1] + src[4 * idx + 2] / wb[2]);
-    mask[idx] = val;
+    const float val = 0.333333333f * (fmaxf(src[4 * idx], 0.0f) / wb[0] + fmaxf(src[4 * idx + 1], 0.0f) / wb[1] + fmaxf(src[4 * idx + 2], 0.0f) / wb[2]);
+    mask[idx] = sqrtf(val); // add a gamma. sqrtf should make noise variance the same for all image
   }
 }
 
@@ -205,8 +205,7 @@ static inline float calcBlendFactor(float val, float threshold)
     // sigmoid function
     // result is in ]0;1] range
     // inflexion point is at (x, y) (threshold, 0.5)
-    return val / (val + 5.0f * threshold);
-    //return 1.0f / (1.0f + dt_fast_expf(16.0f - (16.0f / threshold) * val));
+    return 1.0f / (1.0f + dt_fast_expf(16.0f - (16.0f / threshold) * val));
 }
 
 void dt_masks_calc_detail_mask(float *const restrict src, float *const restrict out, float *const restrict tmp, const int width, const int height, const float threshold, const gboolean detail)
@@ -221,21 +220,15 @@ void dt_masks_calc_detail_mask(float *const restrict src, float *const restrict 
   {
     for(int col = 2, idx = row * width + col; col < width - 2; col++, idx++)
     {
-      float avg = 0.0f;
-      float var = 0.0f;
-      for(int r = -2; r <= 2; r++)
-      {
-        for(int c = -2; c <= 2; c++)
-        {
-          float val = src[idx+r*width+c];
-          avg += val;
-          var += sqrf(val);
-        }
-      }
-      avg /= 25.0f;
-      var /= 24.0f;
-      var = (var - sqrf(avg)) / sqrf(avg);
-      tmp[idx] = scale * var;
+      // scharr operator
+      float gx = 47.0f * (src[idx-width-1] - src[idx-width+1])
+               + 162.0f * (src[idx-1] - src[idx+1])
+               + 47.0f * (src[idx+width-1] - src[idx+width+1]);
+      float gy = 47.0f * (src[idx-width-1] - src[idx+width-1])
+               + 162.0f * (src[idx-width] - src[idx+width])
+               + 47.0f * (src[idx-width+1] - src[idx+width+1]);
+      float gradient_magnitude = sqrtf(sqrf(gx / 256.0f) + sqrf(gy / 256.0f));
+      tmp[idx] = scale * gradient_magnitude;
     }
   }
   dt_masks_extend_border(tmp, width, height, 2);
