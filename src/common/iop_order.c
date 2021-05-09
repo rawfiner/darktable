@@ -205,8 +205,8 @@ const dt_iop_order_entry_t v30_order[] = {
                                   //    of further edits (styles etc.)
   { {31.0f }, "defringe", 0},        // desaturate fringes in Lab, so needs properly calibrated colours
                                   //    in order for chromaticity to be meaningful,
-  { {31.5f }, "localcontrastrgb", 0} // frequential operation, needs a signal as scene-referred as possible to avoid halos
-  { {32.0f }, "atrous", 0},          // frequential operation, needs a signal as scene-referred as possible to avoid halos
+  { {31.5f }, "localcontrastrgb", 0},// frequential operation, needs a signal as scene-referred as possible to avoid halos
+  { {32.0f }, "atrous", 0},          // same
   { {33.0f }, "lowpass", 0},         // same
   { {34.0f }, "highpass", 0},        // same
   { {35.0f }, "sharpen", 0},         // same, worst than atrous in same use-case, less control overall
