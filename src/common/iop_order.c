@@ -92,6 +92,7 @@ const dt_iop_order_entry_t legacy_order[] = {
   { {13.0f }, "spots", 0},
   { {14.0f }, "retouch", 0},
   { {15.0f }, "lens", 0},
+  { {15.25f }, "deblur", 0},
   { {15.5f }, "cacorrectrgb", 0},
   { {16.0f }, "ashift", 0},
   { {17.0f }, "liquify", 0},
@@ -180,6 +181,10 @@ const dt_iop_order_entry_t v30_order[] = {
   { {11.0f }, "rotatepixels", 0},
   { {12.0f }, "scalepixels", 0},
   { {13.0f }, "lens", 0},
+  { {13.25f }, "deblur", 0}, // after lens to be able to help debluring parts that are blurry
+                             // due to distortion transformation. before cacorrectrgb because
+                             // cacorrectrgb may help getting a consistent deblurring result
+                             // accross channels.
   { {13.5f }, "cacorrectrgb", 0}, // correct chromatic aberrations after lens correction so that lensfun
                                   // does not reintroduce chromatic aberrations when trying to correct them
   { {14.0f }, "hazeremoval", 0},
@@ -289,6 +294,7 @@ const dt_iop_order_entry_t v30_jpg_order[] = {
   { { 28.0f }, "rotatepixels", 0},
   { { 28.0f }, "scalepixels", 0},
   { { 28.0f }, "lens", 0},
+  { { 28.0f }, "deblur", 0},
   { { 28.0f }, "cacorrectrgb", 0}, // correct chromatic aberrations after lens correction so that lensfun
                                   // does not reintroduce chromatic aberrations when trying to correct them
   { { 28.0f }, "hazeremoval", 0},
