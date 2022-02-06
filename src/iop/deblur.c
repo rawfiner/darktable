@@ -165,6 +165,7 @@ DT_MODULE_INTROSPECTION(1, dt_iop_deblur_params_t)
  * ----------------------------
  * The approach may be improved by the following ideas:
  * - use a scaling factor inside the arctan, for instance using arctan(2x) instead of arctan(x)
+ *   (see in example below)
  * - perform a gaussian blur of small radius to make the blur applied on the image due to lens
  *   blur followed by the gaussian blur closer to the blur we are able to handle. This may
  *   improve the result because it may not be possible to decompose lens blurs as 1D blurs.
@@ -175,17 +176,141 @@ DT_MODULE_INTROSPECTION(1, dt_iop_deblur_params_t)
  * ========================
  * EXAMPLE OF THE ALGORITHM
  * ========================
- * ---------------------------------------
- ** (1) blur parameters
- * ---------------------------------------
  *
- * ---------------------------------------
- ** (2) image interpolation
- * ---------------------------------------
+ * Our example will be made for this (sharp) line of pixel:
+ *         _ _ _
  *
- * ---------------------------------------
- ** (3) sharp image recovery
- * ---------------------------------------
+ *
+ * _ _ _ _       _ _
+ * 0 0 0 0 1 1 1 0 0
+ *
+ * We will consider a simple blur that blurs 3 pixels together.
+ * The radius will be 1.5.
+ * The line becomes:
+ *           _
+ *         _   _
+ *       _       _
+ *   _ _
+ * ? 0 0 ⅓ ⅔ 1 ⅔ ⅓ ?
+ *         ^
+ * We want to recover the original value of the central pixel.
+ * We will need 4r+1=7 pixels to invert the blur.
+ *
+ * Our sum of f functions is:
+ * s(x) = a1 f(x+2.5, 1.5) + a2 f(x+1.5, 1.5) + a3 f(x+0.5, 1.5)
+ *        + a4 f(x-0.5, 1.5) + a5 f(x-1.5, 1.5) + a6 f(x-2.5, 1.5) + c
+ *
+ * Note how each f function is centered in between 2 pixels.
+ *
+ * Let's find the coefficients.
+ * We have a set of 7 equations:
+ * s(-3) = 0
+ * s(-2) = 0
+ * s(-1) = 1/3
+ * s(0)  = 2/3
+ * s(1)  = 1
+ * s(2)  = 2/3
+ * s(3)  = 1/3
+ *
+ * Rewriten in matrix vector notation:
+ *
+ *      ⎡a1⎤   ⎡0⎤
+ *      |a2|   |0|
+ *      |a3|   |⅓|
+ *      |a4|   |⅔|
+ *      |a5|   |1|
+ *      |a6|   |⅔|
+ *  M x ⎣ c⎦ = ⎣⅓⎦
+ *
+ * each line of M is defined using one of the equation, the top line being:
+ * (the r in f(y,r) is omitted here to save space)
+ *  | f(-3+2.5), f(-3+1.5), f(-3+0.5), f(-3-0.5), f(-3-1.5), f(-3-2.5), 1/3 | <- corresponds to s(-3) = 0
+ *
+ * M =
+ *  ⎡ f(-0.5), f(-1.5), f(-2.5), f(-3.5), f(-4.5), f(-5.5), 1/3 ⎤
+ *  |  f(0.5), f(-0.5), f(-1.5), f(-2.5), f(-3.5), f(-4.5), 1/3 |
+ *  |  f(1.5),  f(0.5), f(-0.5), f(-1.5), f(-2.5), f(-3.5), 1/3 |
+ *  |  f(2.5),  f(1.5),  f(0.5), f(-0.5), f(-1.5), f(-2.5), 1/3 |
+ *  |  f(3.5),  f(2.5),  f(1.5),  f(0.5), f(-0.5), f(-1.5), 1/3 |
+ *  |  f(4.5),  f(3.5),  f(2.5),  f(1.5),  f(0.5), f(-0.5), 1/3 |
+ *  ⎣  f(5.5),  f(4.5),  f(3.5),  f(2.5),  f(1.5),  f(0.5), 1/3 ⎦
+ *
+ * Let's compute all the f(x).
+ * M =
+ *  ⎡  0.476299757397,    1.2490457724,   1.50595749709,   1.55090213305,   1.56224952636,   1.56634141689, 0.3333333333 ⎤
+ *  | -0.476299757397,  0.476299757397,    1.2490457724,   1.50595749709,   1.55090213305,   1.56224952636, 0.3333333333 |
+ *  |   -1.2490457724, -0.476299757397,  0.476299757397,    1.2490457724,   1.50595749709,   1.55090213305, 0.3333333333 |
+ *  |  -1.50595749709,   -1.2490457724, -0.476299757397,  0.476299757397,    1.2490457724,   1.50595749709, 0.3333333333 |
+ *  |  -1.55090213305,  -1.50595749709,   -1.2490457724, -0.476299757397,  0.476299757397,    1.2490457724, 0.3333333333 |
+ *  |  -1.56224952636,  -1.55090213305,  -1.50595749709,   -1.2490457724, -0.476299757397,  0.476299757397, 0.3333333333 |
+ *  ⎣  -1.56634141689,  -1.56224952636,  -1.55090213305,  -1.50595749709,   -1.2490457724, -0.476299757397, 0.3333333333 ⎦
+ *
+ * Now, let's invert M.
+ * M⁻¹ =
+ * [[ -9.66909668  26.16063717 -25.73193133   2.63325878  22.73593626  -27.14947387  11.02066968]
+ * [ 16.49154048 -41.72731856  39.10432859  -4.3091701  -33.14364462   39.71306842 -16.1288042 ]
+ * [ -9.24039084  23.10894135 -21.03092342   3.69552722  13.0262261  -16.16651247   6.60713206]
+ * [ -6.60713206  16.16651247 -13.0262261   -3.69552722  21.03092342  -23.10894135   9.24039084]
+ * [ 16.1288042  -39.71306842  33.14364462   4.3091701  -39.10432859   41.72731856 -16.49154048]
+ * [-11.02066968  27.14947387 -22.73593626  -2.63325878  25.73193133  -26.16063717   9.66909668]
+ * [  3.70279557  -2.09507846  -2.63792858   5.06042293  -2.63792858   -2.09507846   3.70279557]]
+ *
+ * Note: M construction and inversion can be done once, it does not vary with considered pixel.
+ *
+ * Now, we can compute the a1...a6,c coefficients.
+ * ⎡a1⎤         ⎡0⎤
+ * |a2|         |0|
+ * |a3|         |⅓|
+ * |a4|         |⅔|
+ * |a5|         |1|
+ * |a6|         |⅔|
+ * ⎣ c⎦ = M⁻¹ x ⎣⅓⎦
+ *
+ * ⎡a1⎤   ⎡  9.59296953⎤
+ * |a2|   |-18.22074268|
+ * |a3|   | 12.51142956|
+ * |a4|   |  3.811045  |
+ * |a5|   |-12.85539939|
+ * |a6|   |  8.63605949|
+ * ⎣ c⎦ = ⎣  0.28049264⎦
+ *
+ * Now, we can estimate our pixel value as:
+ * p(x) = a1 f(x+2.5, 0.5) + a2 f(x+1.5, 0.5) + a3 f(x+0.5, 0.5)
+ *        + a4 f(x-0.5, 0.5) + a5 f(x-1.5, 0.5) + a6 f(x-2.5, 0.5) + c
+ * evaluated in 0.
+ *
+ * p(0) = 1.1256
+ *
+ * Even though the value is not perfectly reconstructed, it is much closer
+ * to the sharp value than before.
+ *
+ * Using a large scaling factor inside the arctan of f improves the estimate a lot
+ *  f: x, blur_radius -> ((x-blur_radius)arctan((x-blur_radius)*scaling_factor)
+ *                    -((x+blur_radius)arctan((x+blur_radius)*scaling_factor))) / (2*blur_radius)
+ *
+ * A scaling factor of 8 leads to the following result:
+ *
+ * ⎡a1⎤   ⎡ 0.01498434⎤
+ * |a2|   |-0.00133442|
+ * |a3|   |-0.34631693|
+ * |a4|   | 0.03102008|
+ * |a5|   |-0.03168486|
+ * |a6|   | 0.3476704 |
+ * ⎣ c⎦ = ⎣-0.00695036⎦   (note that the vector is much more sparse)
+ *
+ * p(0) = 1.0137
+ *
+ * A scaling factor of 100 leads to the following result:
+ *
+ * ⎡a1⎤   ⎡ 1.02624874e-03⎤
+ * |a2|   |-6.59300098e-06|
+ * |a3|   |-3.20352518e-01|   < a3 and a6 contain almost all the information for this example
+ * |a4|   | 2.05897921e-03|
+ * |a5|   |-2.06227428e-03|
+ * |a6|   | 3.20359118e-01|   < a3 and a6 contain almost all the information for this example
+ * ⎣ c⎦ = ⎣-5.32232281e-04⎦   (note that the vector is even more sparse)
+ *
+ * p(0) = 1.0011
  *
  **/
 
