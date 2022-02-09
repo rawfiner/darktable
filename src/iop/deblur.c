@@ -318,7 +318,7 @@ DT_MODULE_INTROSPECTION(1, dt_iop_deblur_params_t)
 
 typedef struct dt_iop_deblur_params_t
 {
-  int radius; // $MIN: 1 $MAX: 30 $DEFAULT: 1 $DESCRIPTION: "blur radius"
+  float radius; // $MIN: 1.0 $MAX: 30.0 $DEFAULT: 1.0 $DESCRIPTION: "blur radius"
 } dt_iop_deblur_params_t;
 
 typedef struct dt_iop_deblur_gui_data_t
