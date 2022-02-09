@@ -103,6 +103,74 @@ static int gauss_solve(double *A, double *b, int n)
   return err_code;
 }
 
+// matrix invertion with Gaussian elimination
+// returns NULL is elimination failed, otherwise
+// returns the inverse of A.
+// WARNING: A is erased by the process.
+static inline double* gauss_invert(double *A, const size_t n)
+{
+  double* I = (double*)calloc(n * n, sizeof(double));
+  // init identity matrix
+  for(size_t i = 0; i < n; i++)
+  {
+    I[i * n + i] = 1.0;
+  }
+
+  // gaussian elimination. everything is done on A and I at the same time.
+  // for all columns:
+  for(size_t c = 0; c < n; c++)
+  {
+    //look for the row with the maximum absolute value at this position
+    //among the rows below row c
+    double max = fabs(A[c * n + c]);
+    size_t r_max = c;
+    for(size_t r = c + 1; r < n; r++)
+    {
+      double current = fabs(A[r * n + c]);
+      if(current > max)
+      {
+        max = current;
+        r_max = r;
+      }
+    }
+
+    //if max is null, no solution, return.
+    if(max == 0.0) return NULL;
+
+    //normalize the line
+    max = A[r_max * n + c]; // max may have been of wrong sign
+    for(size_t k = 0; k < n; k++)
+    {
+      A[r_max * n + k] /= max;
+      I[r_max * n + k] /= max;
+    }
+
+    //swap line with line c (e.g. for first iteration, swap it with first line)
+    for(size_t k = 0; k < n; k++)
+    {
+      double tmp = A[c * n + k];
+      A[c * n + k] = A[r_max * n + k];
+      A[r_max * n + k] = tmp;
+      tmp = I[c * n + k];
+      I[c * n + k] = I[r_max * n + k];
+      I[r_max * n + k] = tmp;
+    }
+
+    //subtract all other rows r with this row' values multiplied by r[c]
+    for(size_t r = 0; r < n; r++)
+    {
+      if(r == c) continue;
+      double coef = A[r * n + c];
+      for(size_t k = 0; k < n; k++)
+      {
+        A[r * n + k] -= A[c * n + k] * coef;
+        I[r * n + k] -= I[c * n + k] * coef;
+      }
+    }
+  }
+
+  return I;
+}
 
 __DT_CLONE_TARGETS__
 static inline int transpose_dot_matrix(double *const restrict A, // input

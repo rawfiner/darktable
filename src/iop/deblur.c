@@ -25,6 +25,7 @@
 #include "gui/color_picker_proxy.h"
 #include "gui/gtk.h"
 #include "iop/iop_api.h"
+#include "iop/gaussian_elimination.h"
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
@@ -373,11 +374,11 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t ch = piece->colors;
   const size_t width = roi_in->width;
   const size_t height = roi_in->height;
+  double test[9] = {0.1, 0.5, 0.7, 0.8, 0.1, 0.5, 0.7, 0.7, 0.9};
+  double* inv = gauss_invert((double*)test, 3);
+  if(inv != NULL)
+    printf("%lf  %lf  %lf\n%lf  %lf  %lf\n%lf  %lf  %lf\n", inv[0], inv[1], inv[2], inv[3], inv[4], inv[5], inv[6], inv[7], inv[8]);
   memcpy(ovoid, ivoid, ch * width * height * sizeof(float));
-  //TODO essai avec rayon 1 :
-  // flouter horizontalement, puis déflouter en faisant à chaque pixel la multiplication matricielle pour trouver les coefs
-
-
 }
 
 void gui_update(dt_iop_module_t *self)
