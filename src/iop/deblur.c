@@ -449,6 +449,48 @@ static inline float f(float x, float r)
           - (x + r) * atanf(scaling_factor * (x + r))) / (2.0f * r);
 }
 
+// returns m
+static inline size_t get_m(const float r)
+{
+  const size_t r_int = (size_t)ceilf(r);
+  // we assume scaling factor is large enough so that a margin of 1 is sufficient.
+  return r_int + 1;
+}
+
+// returns n
+static size_t get_matrix_size(const float r)
+{
+  const size_t m = get_m(r);
+  // system has 4 * m f coefficients and 1 constant
+  return 4 * m + 1;
+}
+
+// init the matrix M according to the system of linear equations
+static void fill_matrix(double* M, const size_t n, float r)
+{
+  const size_t m = get_m(r);
+  // system has 4m f coefficients and 1 constant
+  // none of the f functions is centered on 0, all of them are centered
+  // in between 2 pixels.
+
+  // line corresponds to system in various x positions
+  // x varies from -m to +m included
+  for(int64_t x = -m; x <= m; x++)
+  {
+    const int64_t line = x + m;
+    // column corresponds to our 2m f functions with various centers
+    // centers go from -m+0.5 to m-0.5=m-1+0.5
+    for(int64_t center = -m; center < m; center++)
+    {
+      const int64_t column = center + m;
+      // function for this column is symmetrical around x = -center - 0.5f
+      M[line * n + column] = (double)f(x + center + 0.5f, r);
+    }
+    // last column is constant function
+    M[line * n + n-1] = 1.0;
+  }
+}
+
 static float* convert_to_float(double* M, size_t n)
 {
   if(M == NULL) return NULL;
@@ -460,24 +502,28 @@ static float* convert_to_float(double* M, size_t n)
   return Mf;
 }
 
-
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  //dt_iop_deblur_params_t *d = (dt_iop_deblur_params_t *)piece->data;
+  dt_iop_deblur_params_t *d = (dt_iop_deblur_params_t *)piece->data;
   const size_t ch = piece->colors;
   const size_t width = roi_in->width;
   const size_t height = roi_in->height;
-  double test[9] = {0.1, 0.5, 0.7, 0.8, 0.1, 0.5, 0.7, 0.7, 0.9};
-  const size_t n = 3;
+  const float r = d->radius;
+  const size_t n = get_matrix_size(r);
+  double* M = malloc(sizeof(double) * n * n);
+  fill_matrix(M, n, r);
   // matrix inversion is done in double as it is quite critical for the precision
   // of the whole algorithm
-  double* inv = gauss_invert((double*)test, n);
+  double* inv = gauss_invert(M, n);
   // no need to be in double for the execution of the algorithm however.
   float* invf = convert_to_float(inv, n);
   if(inv != NULL) free(inv);
   if(invf != NULL)
-    printf("%lf  %lf  %lf\n%lf  %lf  %lf\n%lf  %lf  %lf\n", invf[0], invf[1], invf[2], invf[3], invf[4], invf[5], invf[6], invf[7], invf[8]);
+  {
+    printf("%lf\n", invf[0]);
+    dt_free_align(invf);
+  }
   memcpy(ovoid, ivoid, ch * width * height * sizeof(float));
 }
 
