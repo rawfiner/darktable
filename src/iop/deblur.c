@@ -448,6 +448,18 @@ static inline float f(float x, float r)
           - (x + r) * atanf(scaling_factor * (x + r))) / (2.0f * r);
 }
 
+static float* convert_to_float(double* M, size_t n)
+{
+  if(M == NULL) return NULL;
+  float* Mf = dt_alloc_align_float(n * n);
+  for(size_t i = 0; i < n * n; i++)
+  {
+    Mf[i] = (float)M[i];
+  }
+  return M;
+}
+
+
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
              const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
@@ -456,9 +468,15 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t width = roi_in->width;
   const size_t height = roi_in->height;
   double test[9] = {0.1, 0.5, 0.7, 0.8, 0.1, 0.5, 0.7, 0.7, 0.9};
-  double* inv = gauss_invert((double*)test, 3);
-  if(inv != NULL)
-    printf("%lf  %lf  %lf\n%lf  %lf  %lf\n%lf  %lf  %lf\n", inv[0], inv[1], inv[2], inv[3], inv[4], inv[5], inv[6], inv[7], inv[8]);
+  const n = 3;
+  // matrix inversion is done in double as it is quite critical for the precision
+  // of the whole algorithm
+  double* inv = gauss_invert((double*)test, n);
+  // no need to be in double for the execution of the algorithm however.
+  float* invf = convert_to_float(inv, n);
+  if(inv != NULL) free(inv);
+  if(invf != NULL)
+    printf("%lf  %lf  %lf\n%lf  %lf  %lf\n%lf  %lf  %lf\n", invf[0], invf[1], invf[2], invf[3], invf[4], invf[5], invf[6], invf[7], invf[8]);
   memcpy(ovoid, ivoid, ch * width * height * sizeof(float));
 }
 
