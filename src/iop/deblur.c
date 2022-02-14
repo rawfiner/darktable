@@ -128,50 +128,122 @@ DT_MODULE_INTROSPECTION(1, dt_iop_deblur_params_t)
  * We now have all the background of the approach to explain it.
  * The approach consist in doing a local interpolation of a row of the image
  * with a weighted sum of f.
- * For a blur of radius r, we consider the 4r+1 pixels around a center pixel:
- * 2r pixels to the left, 2r pixels to the right.
- * Then, we consider a sum of 4r f functions, centered in the 4r x positions that
+ * For a blur of radius r, we consider the 2m+1 pixels around a center pixel:
+ * m pixels to the left, m pixels to the right. (The choice of the value of
+ * m will be discussed in part (12)).
+ * Then, we consider a sum of 2m f functions, centered in the 2m x positions that
  * exist between pixels (this allows to create a dirac ).
  * We also consider a constant in this sum as well.
  * The sum looks like this:
- *     a_1 f(x-2r+0.5,r)
- *   + a_2 f(x-2r+1+.5,r)
- *   + a_3 f(x-2r+2+.5,r)
- *   + a_4 f(x-2r+3+.5,r)
+ *     a_1 f(x-m+0.5,r)
+ *   + a_2 f(x-m+1+.5,r)
+ *   + a_3 f(x-m+2+.5,r)
+ *   + a_4 f(x-m+3+.5,r)
  *   + ...
- *   + a_4r f(x+2r-0.5,r)
+ *   + a_2m f(x+m-0.5,r)
  *   + c
  *
- * We thus have 4r+1 variables (a_1 to a_4r, plus c), and 4r+1 pixel values.
+ * We thus have 2m+1 variables (a_1 to a_2m, plus c), and 2m+1 pixel values.
  * We can use gaussian elimination to solve the system.
- * Once we known all the 4r+1 variables, we get the sharp estimate of the image
+ * Once we known all the 2m+1 variables, we get the sharp estimate of the image
  * by computing the same sum, but with a blur radius no larger than a pixel (see
  * r is replaced by 0.5 in the formula):
- *     a_1 f(x-2r+0.5,0.5)
- *   + a_2 f(x-2r+1+.5,0.5)
- *   + a_3 f(x-2r+2+.5,0.5)
- *   + a_4 f(x-2r+3+.5,0.5)
+ *     a_1 f(x-m+0.5,0.5)
+ *   + a_2 f(x-m+1+.5,0.5)
+ *   + a_3 f(x-m+2+.5,0.5)
+ *   + a_4 f(x-m+3+.5,0.5)
  *   + ...
- *   + a_4r f(x+2r-0.5,0.5)
+ *   + a_4r f(x+m-0.5,0.5)
  *   + c
  *
  * Once the blur is reverted along one axis, do the same along the other axis.
  *
  * Note: the matrix of the left part of the system of equation can be inverted once for all.
  * Then, for each pixel we get the result with a matrix-vector product between the
- * inverted matrix and the vector of 4r+1 pixel values.
+ * inverted matrix and the vector of 2m+1 pixel values.
+ *
+ * -----------------------------------------------
+ ** (12) adding a scaling factor inside the arctan
+ * -----------------------------------------------
+ * A scaling factor can be used inside the arctan: for instance we can use
+ * arctan(2x) instead of arctan(x).
+ * See in the example of the algorithm below.
+ *
+ * ------------------------------
+ ** (13) choosing the value of m
+ * ------------------------------
+ * The use of an interpolation based on arctan allows to keep the problem
+ * local: at some points, adding more f functions centered far away from the
+ * pixel will be equivalent to change the constant value, as the f functions
+ * have a derivative that is almost null for points far away from their center.
+ * The question is: how far away can we consider that the f functions are well
+ * approximated by a constant function at the considered pixel position.
+ *
+ * We experimentally looked at the value of the f function for various blur
+ * at x >= r.
+ * The scaling factor heavily influence the margin we need to take
+ * Here are the m values we need to take to have a derivative <= 0.001:
+ * scaling_factor |   r | m-r
+ * 1              |   1 | 7
+ * 1              | 100 | 8.69
+ * 10             |   1 | 0.861
+ * 10             | 100 | 0.869
+ * 100            |   1 | 0.0869
+ * 100            | 100 | 0.0869
+ * 1000           |   1 | 0.0087
+ * 1000           | 100 | 0.0087
+ *
+ * The width of the inflexion part of the curve is very stable
+ * forall radius (m-r variation is very small when changing r).
+ *
+ * We want m-r as small as possible in order to make the algorithm faster.
+ * Taking m=r+1 is a sufficient margin (for our threshold of 0.001)
+ * as soon as the scaling_factor becomes higher than 8.6.
+ *
+ * -------------------------
+ ** (15) complexity analysis
+ * -------------------------
+ * The algorithm complexity is decomposed as (r begin the blur radius and n the
+ * number of pixels in the image):
+ * - matrix invertion: O(r^3)
+ * - for all pixels, matrix-vector product: O(r²n)
+ * - for all pixels, evaluation of the sum of 2m f functions: O(rn)
+ *
+ * The matrix-vector products dominates the overall complexity (n being way
+ * larger than r in our case).
+ *
+ * --------------------------
+ ** (15) from O(r²n) to O(rn)
+ * --------------------------
+ * The algorithm can be sped-up by solving a larger system of linear equations
+ * that gives solutions simultaneously for several pixels.
+ * If we consider 2 side-by-side pixels, and solving the system of the 2m+2
+ * surrounding pixels gives solutions for both of these pixels.
+ * The optimal number of pixels to recover at once is 2m: complexity is (2m+c)²/c
+ * Having c multiple of m is optimal, and removes the squaring. Then, if we consider
+ * the simplified fraction (2+d)²/d and we derivate it for d, we can see that d=2
+ * gives the minimum value. So c = dm = 2m is optimal.
+ * This gives a system of 2m+2m equations.
+ * The complexity of the algorithm becomes in this case:
+ * - matrix invertion: complexity remains O(r^3) but constant is multiplied by 8.
+ * - for each set of 2m pixels, we do one matrix-vector product: O((4m)²n/(2m)) = O(4mn) = O(rn)
+ * - for all pixels, we evaluate of the sum of 4m f functions (complexity remains O(rn)
+ *   but constant is multiplied by 2). Note that we don't really need to evaluate
+ *   4m functions, but 2m+1 is enough: all the f functions centered far away from the
+ *   considered pixel can be considered as constant, and we can evaluate them
+ *   by doing the sum of their coefficients multiplied by PI/2 (arctan(inf))
+ *   or -PI/2 (arctan(-inf)) depending if the f functions were on the left or
+ *   the right of the considered pixel.
  *
  * ----------------------------
- ** (12) improving the approach
+ ** (16) improving the approach
  * ----------------------------
  * The approach may be improved by the following ideas:
- * - use a scaling factor inside the arctan, for instance using arctan(2x) instead of arctan(x)
- *   (see in example below)
  * - perform a gaussian blur of small radius to make the blur applied on the image due to lens
  *   blur followed by the gaussian blur closer to the blur we are able to handle. This may
  *   improve the result because it may not be possible to decompose lens blurs as 1D blurs.
  * - in noisy context, or in the context of an image with sharp and blurry areas, it may
- *   be interesting weight the result depending on the sparsity of the a_1...a_4r
+ *   be interesting weight the result depending on the sparsity of the a_1...a_2m
  *   coefficients, as we expect them to be quite sparse if the blur radius is correct.
  *
  * ========================
