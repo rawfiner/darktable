@@ -456,7 +456,7 @@ static float* convert_to_float(double* M, size_t n)
   {
     Mf[i] = (float)M[i];
   }
-  return M;
+  return Mf;
 }
 
 
@@ -468,7 +468,7 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
   const size_t width = roi_in->width;
   const size_t height = roi_in->height;
   double test[9] = {0.1, 0.5, 0.7, 0.8, 0.1, 0.5, 0.7, 0.7, 0.9};
-  const n = 3;
+  const size_t n = 3;
   // matrix inversion is done in double as it is quite critical for the precision
   // of the whole algorithm
   double* inv = gauss_invert((double*)test, n);
