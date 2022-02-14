@@ -29,6 +29,7 @@
 
 #include <gtk/gtk.h>
 #include <stdlib.h>
+#include <math.h>
 
 
 DT_MODULE_INTROSPECTION(1, dt_iop_deblur_params_t)
@@ -437,6 +438,14 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
   memcpy(piece->data, p1, self->params_size);
+}
+
+static inline float f(float x, float r)
+{
+  // big scaling_factor seems to give better results
+  const float scaling_factor = 100.0f;
+  return ((x - r) * atanf(scaling_factor * (x - r))
+          - (x + r) * atanf(scaling_factor * (x + r))) / (2.0f * r);
 }
 
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid, void *const ovoid,
