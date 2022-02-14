@@ -224,7 +224,7 @@ DT_MODULE_INTROSPECTION(1, dt_iop_deblur_params_t)
  * Having c multiple of m is optimal, and removes the squaring. Then, if we consider
  * the simplified fraction (2+d)²/d and we derivate it for d, we can see that d=2
  * gives the minimum value. So c = dm = 2m is optimal.
- * This gives a system of 2m+2m equations.
+ * This gives a system of 2m+2m=4m equations.
  * The complexity of the algorithm becomes in this case:
  * - matrix invertion: complexity remains O(r^3) but constant is multiplied by 8.
  * - for each set of 2m pixels, we do one matrix-vector product: O((4m)²n/(2m)) = O(4mn) = O(rn)
@@ -268,7 +268,8 @@ DT_MODULE_INTROSPECTION(1, dt_iop_deblur_params_t)
  * ? 0 0 ⅓ ⅔ 1 ⅔ ⅓ ?
  *         ^
  * We want to recover the original value of the central pixel.
- * We will need 4r+1=7 pixels to invert the blur.
+ * We will need 4r+1=7 pixels to invert the blur (for this example we do the
+ * O(r²n) algorithm, without the optimisation that brings it to O(rn)).
  *
  * Our sum of f functions is:
  * s(x) = a1 f(x+2.5, 1.5) + a2 f(x+1.5, 1.5) + a3 f(x+0.5, 1.5)
