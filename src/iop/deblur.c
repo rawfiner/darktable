@@ -466,9 +466,9 @@ static size_t get_matrix_size(const float r)
 }
 
 // init the matrix M according to the system of linear equations
-static void fill_matrix(double* M, const size_t n, float r)
+static void fill_matrix(double* M, const size_t n, const float r)
 {
-  const size_t m = get_m(r);
+  const int64_t m = get_m(r);
   // system has 4m f coefficients and 1 constant
   // none of the f functions is centered on 0, all of them are centered
   // in between 2 pixels.
@@ -483,8 +483,8 @@ static void fill_matrix(double* M, const size_t n, float r)
     for(int64_t center = -m; center < m; center++)
     {
       const int64_t column = center + m;
-      // function for this column is symmetrical around x = -center - 0.5f
-      M[line * n + column] = (double)f(x + center + 0.5f, r);
+      // function for this column is symmetrical around x = center + 0.5f
+      M[line * n + column] = (double)f(x - center - 0.5f, r);
     }
     // last column is constant function
     M[line * n + n-1] = 1.0;
