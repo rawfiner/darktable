@@ -74,7 +74,8 @@ typedef enum dt_iop_denoiseprofile_mode_t {
   MODE_WAVELETS = 1,
   MODE_VARIANCE = 2,
   MODE_NLMEANS_AUTO = 3,
-  MODE_WAVELETS_AUTO = 4
+  MODE_WAVELETS_AUTO = 4,
+  MODE_SYMRBF = 5
 } dt_iop_denoiseprofile_mode_t;
 
 typedef enum dt_iop_denoiseprofile_wavelet_mode_t {
@@ -1259,6 +1260,47 @@ static void variance_stabilizing_xform(dt_aligned_pixel_t thrs, const int scale,
   }
   for_each_channel(c)
     thrs[c] = adjt[c] * sb2 / std_x[c];
+}
+
+
+static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
+                             const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
+                             const dt_iop_roi_t *const roi_out)
+{
+  const dt_iop_denoiseprofile_data_t *const d = (dt_iop_denoiseprofile_data_t *)piece->data;
+  const float* const in = (float*)ivoid;
+  float* out = (float*)ovoid;
+  //float* restrict symfactors = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
+  float* restrict precond = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
+
+  const float in_scale = fminf(roi_in->scale / piece->iscale, 1.0f);
+  const size_t width = roi_out->width;
+  const size_t height = roi_out->height;
+
+  dt_aligned_pixel_t wb;  // the "unused" fourth element enables vectorization
+  const dt_aligned_pixel_t wb_weights = { 2.0f, 1.0f, 2.0f, 0.0f };
+  compute_wb_factors(wb,d,piece,wb_weights);
+
+  // adaptive p depending on white balance (the "unused" fourth element enables vectorization
+  const dt_aligned_pixel_t p = { MAX(d->shadows + 0.1 * logf(in_scale / wb[0]), 0.0f),
+                                 MAX(d->shadows + 0.1 * logf(in_scale / wb[1]), 0.0f),
+                                 MAX(d->shadows + 0.1 * logf(in_scale / wb[2]), 0.0f),
+                                 0.0f };
+
+  const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
+
+  // conversion to Y0U0V0 space as defined in Secrets of image denoising cuisine
+  dt_colormatrix_t toY0U0V0 = { { 1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f },
+                                { 0.5f,      0.0f,      -0.5f },
+                                {  0.25f,     -0.5f,     0.25f } };
+  dt_colormatrix_t toRGB = { { 0.0f, 0.0f, 0.0f }, // "unused" fourth element enables vectorization
+                             { 0.0f, 0.0f, 0.0f },
+                             { 0.0f, 0.0f, 0.0f } };
+  set_up_conversion_matrices(toY0U0V0, toRGB, wb);
+  precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
+
+  memcpy(out, in, roi_out->width * roi_out->height * piece->colors * sizeof(float));
+  dt_free_align(precond);
 }
 
 static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
@@ -2632,6 +2674,8 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const 
     process_nlmeans(self, piece, ivoid, ovoid, roi_in, roi_out);
   else if(d->mode == MODE_WAVELETS || d->mode == MODE_WAVELETS_AUTO)
     process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_dn_decompose, eaw_synthesize);
+  else if(d->mode == MODE_SYMRBF)
+    process_symrbf(self, piece, ivoid, ovoid, roi_in, roi_out);
   else
     process_variance(self, piece, ivoid, ovoid, roi_in, roi_out);
 }
@@ -2645,6 +2689,8 @@ void process_sse2(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, c
     process_nlmeans_sse(self, piece, ivoid, ovoid, roi_in, roi_out);
   else if(d->mode == MODE_WAVELETS || d->mode == MODE_WAVELETS_AUTO)
     process_wavelets(self, piece, ivoid, ovoid, roi_in, roi_out, eaw_dn_decompose_sse, eaw_synthesize_sse2);
+  else if(d->mode == MODE_SYMRBF)
+    process_symrbf(self, piece, ivoid, ovoid, roi_in, roi_out);
   else
     process_variance(self, piece, ivoid, ovoid, roi_in, roi_out);
 }
@@ -2972,6 +3018,12 @@ static void mode_callback(GtkWidget *w, dt_iop_module_t *self)
       gtk_widget_set_visible(GTK_WIDGET(g->channel_tabs_Y0U0V0), p->use_new_vst && (p->wavelet_color_mode == MODE_Y0U0V0));
       break;
     case 4:
+      p->mode = MODE_SYMRBF;
+      gtk_widget_hide(g->box_variance);
+      gtk_widget_hide(g->box_wavelets);
+      gtk_widget_show_all(g->box_nlm); //FIXME
+      break;
+    case 5:
       p->mode = MODE_VARIANCE;
       gtk_widget_hide(g->box_wavelets);
       gtk_widget_hide(g->box_nlm);
@@ -3055,6 +3107,7 @@ void gui_update(dt_iop_module_t *self)
   unsigned combobox_index = 0;
   switch (p->mode)
   {
+    case MODE_SYMRBF:
     case MODE_NLMEANS:
       combobox_index = 0;
       gtk_widget_hide(g->box_wavelets);
@@ -3667,6 +3720,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_combobox_add(g->mode, _("non-local means auto"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets"));
   dt_bauhaus_combobox_add(g->mode, _("wavelets auto"));
+  dt_bauhaus_combobox_add(g->mode, _("symrbf"));
   const gboolean compute_variance = dt_conf_get_bool("plugins/darkroom/denoiseprofile/show_compute_variance_mode");
   if(compute_variance) dt_bauhaus_combobox_add(g->mode, _("compute variance"));
   g_signal_connect(G_OBJECT(g->mode), "value-changed", G_CALLBACK(mode_callback), self);
