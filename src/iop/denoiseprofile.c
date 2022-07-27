@@ -1309,7 +1309,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       {
         for(int64_t jj = 1; jj <= radius; jj++)
         {
-          float diff = precond[(width * (i + ii) + j + jj) * 4 + 1] - precond[(width * (i + ii) + j - jj) * 4 + 1];
+          float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i + ii) + j - jj) * 4 + 0];
           avg_diff += diff * diff;
         }
       }
@@ -1327,7 +1327,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
     }
     for(int64_t j = 1; j < width; j++)
     {
-      const float weight = 10.0f * d->strength * expf(-symfactors[(width * i) + j] / d->nbhood);
+      const float weight = 100.0f * d->strength * expf(-symfactors[(width * i) + j] / (10.0f * d->nbhood));
       for(size_t c = 0; c < 4; c++)
       {
         float res = (precond[((width * i) + j) * 4 + c] + weight * prev[c]) / (1.0f + weight);
