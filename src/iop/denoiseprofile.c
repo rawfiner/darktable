@@ -1297,7 +1297,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                              { 0.0f, 0.0f, 0.0f },
                              { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
-  const int64_t radius = 3;
+  const int64_t radius = 10; //TODO to be put in GUI
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
   for(int64_t i = radius; i < height-radius; i++)
   {
@@ -1327,7 +1327,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
     }
     for(int64_t j = 1; j < width; j++)
     {
-      const float weight = 100.0f * d->strength * expf(-symfactors[(width * i) + j] / d->nbhood);
+      const float weight = 10.0f * d->strength * expf(-symfactors[(width * i) + j] / d->nbhood);
       for(size_t c = 0; c < 4; c++)
       {
         float res = (precond[((width * i) + j) * 4 + c] + weight * prev[c]) / (1.0f + weight);
