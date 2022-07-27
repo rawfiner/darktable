@@ -1298,8 +1298,8 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                              { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
-
-  memcpy(out, in, roi_out->width * roi_out->height * piece->colors * sizeof(float));
+  memcpy(out, precond, width * height * piece->colors * sizeof(float));
+  backtransform_Y0U0V0(out, width, height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(in_scale), wb, toRGB);
   dt_free_align(precond);
 }
 
