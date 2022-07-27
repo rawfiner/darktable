@@ -1270,7 +1270,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   const dt_iop_denoiseprofile_data_t *const d = (dt_iop_denoiseprofile_data_t *)piece->data;
   const float* const in = (float*)ivoid;
   float* out = (float*)ovoid;
-  //float* restrict symfactors = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
+  float* restrict symfactors = (float*)dt_alloc_align_float(roi_out->width * roi_out->height);
   float* restrict precond = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
 
   const float in_scale = fminf(roi_in->scale / piece->iscale, 1.0f);
@@ -1297,10 +1297,49 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                              { 0.0f, 0.0f, 0.0f },
                              { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
+  const int64_t radius = 3;
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
-  memcpy(out, precond, width * height * piece->colors * sizeof(float));
+  for(int64_t i = radius; i < height-radius; i++)
+  {
+    for(int64_t j = radius; j < width-radius; j++)
+    {
+      // looking for symmetry along the vertical axis.
+      float avg_diff = 0.0f;
+      for(int64_t ii = -radius; ii <= radius; ii++)
+      {
+        for(int64_t jj = 1; jj <= radius; jj++)
+        {
+          float diff = precond[(width * (i + ii) + j + jj) * 4 + 1] - precond[(width * (i + ii) + j - jj) * 4 + 1];
+          avg_diff += diff * diff;
+        }
+      }
+      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      symfactors[(width * i) + j] = avg_diff;
+    }
+  }
+  for(int64_t i = 0; i < height; i++)
+  {
+    float prev[4];
+    for(size_t c = 0; c < 4; c++)
+    {
+      prev[c] = precond[((width * i) + 0) * 4 + c];
+      out[((width * i) + 0) * 4 + c] = precond[((width * i) + 0) * 4 + c];
+    }
+    for(int64_t j = 1; j < width; j++)
+    {
+      const float weight = 100.0f * d->strength * expf(-symfactors[(width * i) + j] / d->nbhood);
+      for(size_t c = 0; c < 4; c++)
+      {
+        float res = (precond[((width * i) + j) * 4 + c] + weight * prev[c]) / (1.0f + weight);
+        prev[c] = res;
+        out[((width * i) + j) * 4 + c] = res;
+      }
+    }
+  }
+  //memcpy(out, precond, width * height * piece->colors * sizeof(float));
   backtransform_Y0U0V0(out, width, height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(in_scale), wb, toRGB);
   dt_free_align(precond);
+  dt_free_align(symfactors);
 }
 
 static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
