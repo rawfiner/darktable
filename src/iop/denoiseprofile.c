@@ -95,6 +95,14 @@ typedef enum dt_iop_denoiseprofile_channel_t
   DT_DENOISE_PROFILE_NONE = 6
 } dt_iop_denoiseprofile_channel_t;
 
+typedef enum dt_iop_denoiseprofile_symmetry_axis_t {
+  DT_DENOISE_PROFILE_SYM_VERT_AXIS = 0,
+  DT_DENOISE_PROFILE_SYM_HORIZ_AXIS = 1,
+  DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS = 2,
+  DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS = 3
+} dt_iop_denoiseprofile_symmetry_axis_t;
+
+
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
 DT_MODULE_INTROSPECTION(11, dt_iop_denoiseprofile_params_t)
@@ -1270,7 +1278,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   const dt_iop_denoiseprofile_data_t *const d = (dt_iop_denoiseprofile_data_t *)piece->data;
   const float* const in = (float*)ivoid;
   float* out = (float*)ovoid;
-  float* restrict symfactors = (float*)dt_alloc_align_float(roi_out->width * roi_out->height);
+  float* restrict symfactors = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * 4);
   float* restrict precond = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
 
   const float in_scale = fminf(roi_in->scale / piece->iscale, 1.0f);
@@ -1314,7 +1322,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[(width * i) + j] = avg_diff;
+      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = avg_diff;
     }
   }
   for(int64_t i = 0; i < height; i++)
@@ -1327,7 +1335,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
     }
     for(int64_t j = 1; j < width; j++)
     {
-      const float weight = 100.0f * d->strength * expf(-symfactors[(width * i) + j] / (10.0f * d->nbhood));
+      const float weight = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] / (10.0f * d->nbhood));
       for(size_t c = 0; c < 4; c++)
       {
         float res = (precond[((width * i) + j) * 4 + c] + weight * prev[c]) / (1.0f + weight);
