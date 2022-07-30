@@ -1339,7 +1339,20 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = avg_diff;
+      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = avg_diff;
+
+      // looking for symmetry along the horizontal axis
+      avg_diff = 0.0f;
+      for(int64_t ii = 1; ii <= radius; ii++)
+      {
+        for(int64_t jj = -radius; jj <= radius; jj++)
+        {
+          float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i - ii) + j + jj) * 4 + 0];
+          avg_diff += diff * diff;
+        }
+      }
+      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = avg_diff;
 
     }
   }
@@ -1370,14 +1383,19 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
     }
     for(int64_t j = 1; j < width; j++)
     {
-      const float weightv = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] / (50.0f * d->nbhood));
-      const float weighttrbl = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] / (50.0f * d->nbhood));
+      // maybe: adapt the strength factor in front of weightv depending
+      // on the quantity of pixels already involved in the average? Or to the
+      // maximum weight of a pixel currently in the average?
+      const float weighth = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] / (50.0f * d->nbhood));
+      const float weightv = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] / (50.0f * d->nbhood));
+      const float weighttrbl = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] / (50.0f * d->nbhood));
       const float weightc[4] = {10.0f, 1.0f, 1.0f, 1.0f}; // smooth less Y0
       for(size_t c = 0; c < 4; c++)
       {
         out[((width * i) + j) * 4 + c] = (weightc[c] * precond[((width * i) + j) * 4 + c]
-                                        + weightv * out[((width * i) + j-1) * 4 + c]
-                                        + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weightv + weighttrbl);
+                                        + weighth * out[((width * i) + j-1) * 4 + c]
+                                        + weightv * out[((width * (i-1)) + j) * 4 + c]
+                                        + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttrbl);
       }
     }
   }
