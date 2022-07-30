@@ -1305,7 +1305,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                              { 0.0f, 0.0f, 0.0f },
                              { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
-  const int64_t radius = 10; //TODO to be put in GUI
+  const int64_t radius = d->radius;
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
   for(int64_t i = radius; i < height-radius; i++)
   {
@@ -1323,24 +1323,61 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
       symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = avg_diff;
+
+      // looking for symmetry along the top-left -> bottom-right axis
+      avg_diff = 0.0f;
+      // iterate on top left corner
+      for(int64_t ii = -radius; ii <= radius; ii++)
+      {
+        for(int64_t jj = -radius; jj <= -ii-1; jj++)
+        {
+          // coordinates of symmetry point
+          int64_t symi = -jj;
+          int64_t symj = -ii;
+          float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i + symi) + j +  symj) * 4 + 0];
+          avg_diff += diff * diff;
+        }
+      }
+      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = avg_diff;
+
     }
   }
+  // first pass:
+  // from top to bottom and left to right.
+  // we diffuse using left, top left, top, and top right pixels
   for(int64_t i = 0; i < height; i++)
   {
-    float prev[4];
+    // copy first line
+    if(i == 0)
+    {
+      for(int64_t j = 1; j < width; j++)
+      {
+        for(size_t c = 0; c < 4; c++)
+        {
+          out[((width * i) + j) * 4 + c] = precond[((width * i) + j) * 4 + c];
+        }
+      }
+      continue;
+    }
+
+    // for all other lines, diffuse
+
+    // copy first column
     for(size_t c = 0; c < 4; c++)
     {
-      prev[c] = precond[((width * i) + 0) * 4 + c];
       out[((width * i) + 0) * 4 + c] = precond[((width * i) + 0) * 4 + c];
     }
     for(int64_t j = 1; j < width; j++)
     {
-      const float weight = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] / (10.0f * d->nbhood));
+      const float weightv = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] / (50.0f * d->nbhood));
+      const float weighttrbl = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] / (50.0f * d->nbhood));
+      const float weightc[4] = {10.0f, 1.0f, 1.0f, 1.0f}; // smooth less Y0
       for(size_t c = 0; c < 4; c++)
       {
-        float res = (precond[((width * i) + j) * 4 + c] + weight * prev[c]) / (1.0f + weight);
-        prev[c] = res;
-        out[((width * i) + j) * 4 + c] = res;
+        out[((width * i) + j) * 4 + c] = (weightc[c] * precond[((width * i) + j) * 4 + c]
+                                        + weightv * out[((width * i) + j-1) * 4 + c]
+                                        + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weightv + weighttrbl);
       }
     }
   }
