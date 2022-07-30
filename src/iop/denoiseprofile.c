@@ -1403,11 +1403,11 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
       // maximum weight of a pixel currently in the average?
-      const float weighth = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] / (50.0f * d->nbhood));
-      const float weightv = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] / (50.0f * d->nbhood));
-      const float weighttrbl = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] / (50.0f * d->nbhood));
-      const float weighttlbr = 100.0f * d->strength * expf(-symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] / (50.0f * d->nbhood));
-      const float weightc[4] = {10.0f, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+      const float weighth = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS], 0.001f);
+      const float weightv = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS], 0.001f);
+      const float weighttrbl = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
+      const float weighttlbr = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
+      const float weightc[4] = {10.0f * d->central_pixel_weight, 1.0f, 1.0f, 1.0f}; // smooth less Y0
       for(size_t c = 0; c < 4; c++)
       {
         out[((width * i) + j) * 4 + c] = (weightc[c] * precond[((width * i) + j) * 4 + c]
