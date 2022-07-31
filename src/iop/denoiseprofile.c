@@ -1372,32 +1372,19 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = avg_diff;
     }
   }
+  memcpy(out, precond, width * height * 4 * sizeof(float));
   // first pass:
   // from top to bottom and left to right.
   // we diffuse using left, top left, top, and top right pixels
-  for(int64_t i = 0; i < height; i++)
-  {
-    // copy first line
-    if(i == 0)
-    {
-      for(int64_t j = 1; j < width; j++)
-      {
-        for(size_t c = 0; c < 4; c++)
-        {
-          out[((width * i) + j) * 4 + c] = precond[((width * i) + j) * 4 + c];
-        }
-      }
-      continue;
-    }
+  //TODO copy first radius+1 lines
 
+  for(int64_t i = radius+1; i < height-radius-1; i++)//FIXME: start at radius, not 0
+  {
     // for all other lines, diffuse
 
-    // copy first column
-    for(size_t c = 0; c < 4; c++)
-    {
-      out[((width * i) + 0) * 4 + c] = precond[((width * i) + 0) * 4 + c];
-    }
-    for(int64_t j = 1; j < width; j++)
+    //TODO copy first radius+1 column
+
+    for(int64_t j = radius+1; j < width-radius-1; j++)
     {
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
@@ -1446,8 +1433,18 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                                         + weighttlbr * out[((width * (i-1)) + j-1) * 4 + c]
                                         + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
       }
+      //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
+      //for instance, if we had one pixel in the blur, the max weight will be 1.
+      // if we had 2 pixels in the blur, the max weight will be 1/2, so the max
+      // weighth will be 2.
+      // this makes sure that border pixels don't get an overwhelming importance
     }
+
+    //TODO copy last radius+1 columns
+
   }
+  //TODO copy last radius+1 lines
+
   //memcpy(out, precond, width * height * piece->colors * sizeof(float));
   backtransform_Y0U0V0(out, width, height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(in_scale), wb, toRGB);
   dt_free_align(precond);
