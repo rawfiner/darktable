@@ -1425,6 +1425,13 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       if(min_address != NULL)
         *min_address = 0.0f;
 
+      weighth = fminf(weighth, (j-radius) * 0.2f);
+      weightv = fminf(weightv, (i-radius) * 0.2f);
+      weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
+      weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
+      weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
+      weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+
       for(size_t c = 0; c < 3; c++)
       {
         out[((width * i) + j) * 4 + c] = (weightc[c] * precond[((width * i) + j) * 4 + c]
