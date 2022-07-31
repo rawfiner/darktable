@@ -1339,7 +1339,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = avg_diff;
+      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = avg_diff;
 
       // looking for symmetry along the horizontal axis
       avg_diff = 0.0f;
@@ -1369,8 +1369,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = avg_diff;
-
+      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = avg_diff;
     }
   }
   // first pass:
