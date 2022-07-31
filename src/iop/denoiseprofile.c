@@ -1362,8 +1362,8 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
         for(int64_t jj = ii+1; jj <= radius; jj++)
         {
           // coordinates of symmetry point
-          int64_t symi = -jj;
-          int64_t symj = -ii;
+          int64_t symi = jj;
+          int64_t symj = ii;
           float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i + symi) + j +  symj) * 4 + 0];
           avg_diff += diff * diff;
         }
