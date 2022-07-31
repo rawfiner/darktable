@@ -1402,12 +1402,43 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
       // maximum weight of a pixel currently in the average?
-      const float weighth = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS], 0.001f);
-      const float weightv = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS], 0.001f);
-      const float weighttrbl = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
-      const float weighttlbr = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
+      float weighth = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS], 0.001f);
+      float weightv = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS], 0.001f);
+      float weighttrbl = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
+      float weighttlbr = 10000.0f * d->strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
       const float weightc[4] = {10.0f * d->central_pixel_weight, 1.0f, 1.0f, 1.0f}; // smooth less Y0
-      for(size_t c = 0; c < 4; c++)
+      // keep only the 2 best directions
+      float* weights[4];
+      weights[0] = &weighth;
+      weights[1] = &weightv;
+      weights[2] = &weighttrbl;
+      weights[3] = &weighttlbr;
+      float min = weighth;
+      float* min_address = &weighth;
+      for(int k = 1; k < 4; k++)
+      {
+        if(weights[k][0] < min)
+        {
+          min = weights[k][0];
+          min_address = weights[k];
+        }
+      }
+      *min_address = 0.0f;
+      min = 10000000000000.0f;
+      min_address = NULL;
+      for(int k = 0; k < 4; k++)
+      {
+        if(weights[k][0] == 0.0f) continue;
+        if(weights[k][0] < min)
+        {
+          min = weights[k][0];
+          min_address = weights[k];
+        }
+      }
+      if(min_address != NULL)
+        *min_address = 0.0f;
+
+      for(size_t c = 0; c < 3; c++)
       {
         out[((width * i) + j) * 4 + c] = (weightc[c] * precond[((width * i) + j) * 4 + c]
                                         + weighth * out[((width * i) + j-1) * 4 + c]
