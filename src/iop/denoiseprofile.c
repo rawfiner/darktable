@@ -1270,6 +1270,76 @@ static void variance_stabilizing_xform(dt_aligned_pixel_t thrs, const int scale,
     thrs[c] = adjt[c] * sb2 / std_x[c];
 }
 
+// compute the local symmetry accross 4 considered axis, and put the
+// result in symmetry_diffs.
+static void compute_symmetry(const float* const restrict in, float* restrict symmetry_diffs, const size_t height, const size_t width, const int64_t radius)
+{
+  for(int64_t i = radius; i < height-radius; i++)
+  {
+    for(int64_t j = radius; j < width-radius; j++)
+    {
+      // looking for symmetry along the vertical axis.
+      float avg_diff = 0.0f;
+      for(int64_t ii = -radius; ii <= radius; ii++)
+      {
+        for(int64_t jj = 1; jj <= radius; jj++)
+        {
+          float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + ii) + j - jj) * 4 + 0];
+          avg_diff += diff * diff;
+        }
+      }
+      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = avg_diff;
+
+      // looking for symmetry along the top-left -> bottom-right axis
+      avg_diff = 0.0f;
+      // iterate on top left corner
+      for(int64_t ii = -radius; ii <= radius; ii++)
+      {
+        for(int64_t jj = -radius; jj <= -ii-1; jj++)
+        {
+          // coordinates of symmetry point
+          int64_t symi = -jj;
+          int64_t symj = -ii;
+          float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
+          avg_diff += diff * diff;
+        }
+      }
+      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = avg_diff;
+
+      // looking for symmetry along the horizontal axis
+      avg_diff = 0.0f;
+      for(int64_t ii = 1; ii <= radius; ii++)
+      {
+        for(int64_t jj = -radius; jj <= radius; jj++)
+        {
+          float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i - ii) + j + jj) * 4 + 0];
+          avg_diff += diff * diff;
+        }
+      }
+      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = avg_diff;
+
+      // looking for symmetry along the top-right -> bottom-left axis
+      avg_diff = 0.0f;
+      // iterate on top right corner
+      for(int64_t ii = -radius; ii <= radius; ii++)
+      {
+        for(int64_t jj = ii+1; jj <= radius; jj++)
+        {
+          // coordinates of symmetry point
+          int64_t symi = jj;
+          int64_t symj = ii;
+          float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
+          avg_diff += diff * diff;
+        }
+      }
+      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = avg_diff;
+    }
+  }
+}
 
 static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                              const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
@@ -1307,71 +1377,9 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
   const int64_t radius = d->radius;
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
-  for(int64_t i = radius; i < height-radius; i++)
-  {
-    for(int64_t j = radius; j < width-radius; j++)
-    {
-      // looking for symmetry along the vertical axis.
-      float avg_diff = 0.0f;
-      for(int64_t ii = -radius; ii <= radius; ii++)
-      {
-        for(int64_t jj = 1; jj <= radius; jj++)
-        {
-          float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i + ii) + j - jj) * 4 + 0];
-          avg_diff += diff * diff;
-        }
-      }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = avg_diff;
 
-      // looking for symmetry along the top-left -> bottom-right axis
-      avg_diff = 0.0f;
-      // iterate on top left corner
-      for(int64_t ii = -radius; ii <= radius; ii++)
-      {
-        for(int64_t jj = -radius; jj <= -ii-1; jj++)
-        {
-          // coordinates of symmetry point
-          int64_t symi = -jj;
-          int64_t symj = -ii;
-          float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i + symi) + j +  symj) * 4 + 0];
-          avg_diff += diff * diff;
-        }
-      }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = avg_diff;
+  compute_symmetry(precond, symfactors, height, width, radius);
 
-      // looking for symmetry along the horizontal axis
-      avg_diff = 0.0f;
-      for(int64_t ii = 1; ii <= radius; ii++)
-      {
-        for(int64_t jj = -radius; jj <= radius; jj++)
-        {
-          float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i - ii) + j + jj) * 4 + 0];
-          avg_diff += diff * diff;
-        }
-      }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = avg_diff;
-
-      // looking for symmetry along the top-right -> bottom-left axis
-      avg_diff = 0.0f;
-      // iterate on top right corner
-      for(int64_t ii = -radius; ii <= radius; ii++)
-      {
-        for(int64_t jj = ii+1; jj <= radius; jj++)
-        {
-          // coordinates of symmetry point
-          int64_t symi = jj;
-          int64_t symj = ii;
-          float diff = precond[(width * (i + ii) + j + jj) * 4 + 0] - precond[(width * (i + symi) + j +  symj) * 4 + 0];
-          avg_diff += diff * diff;
-        }
-      }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = avg_diff;
-    }
-  }
   memcpy(out, precond, width * height * 4 * sizeof(float));
   // first pass:
   // from top to bottom and left to right.
