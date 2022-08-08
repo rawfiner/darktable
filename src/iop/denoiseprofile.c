@@ -1364,43 +1364,13 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
       float weighttrbl = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
       float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
-      // keep only the 2 best directions
-      // float* weights[4];
-      // weights[0] = &weighth;
-      // weights[1] = &weightv;
-      // weights[2] = &weighttrbl;
-      // weights[3] = &weighttlbr;
-      // float min = weighth;
-      // float* min_address = &weighth;
-      // for(int k = 1; k < 4; k++)
-      // {
-      //   if(weights[k][0] < min)
-      //   {
-      //     min = weights[k][0];
-      //     min_address = weights[k];
-      //   }
-      // }
-      // *min_address = 0.0f;
-      // min = 10000000000000.0f;
-      // min_address = NULL;
-      // for(int k = 0; k < 4; k++)
-      // {
-      //   if(weights[k][0] == 0.0f) continue;
-      //   if(weights[k][0] < min)
-      //   {
-      //     min = weights[k][0];
-      //     min_address = weights[k];
-      //   }
-      // }
-      // if(min_address != NULL)
-      //   *min_address = 0.0f;
 
-      weighth = fminf(weighth, (j-radius) * 0.2f);
-      weightv = fminf(weightv, (i-radius) * 0.2f);
-      weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
-      weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
-      weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
-      weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+      // weighth = fminf(weighth, (j-radius) * 0.2f);
+      // weightv = fminf(weightv, (i-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
 
       for(size_t c = 0; c < 3; c++)
       {
@@ -1420,6 +1390,186 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
   }
 }
 
+static void rbf_topright_bottomleft(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
+{
+  memcpy(out, in, width * height * 4 * sizeof(float));
+  //TODO copy first radius+1 lines
+
+  for(int64_t i = radius+1; i < height-radius-1; i++)
+  {
+    // for all other lines, diffuse
+
+    //TODO copy first radius+1 column
+
+    for(int64_t j = width-radius-1; j > radius+1; j--)
+    {
+      // maybe: adapt the strength factor in front of weightv depending
+      // on the quantity of pixels already involved in the average? Or to the
+      // maximum weight of a pixel currently in the average?
+      float weighth = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS], 0.001f);
+      float weightv = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS], 0.001f);
+      float weighttrbl = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
+      float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
+      const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+
+      // weighth = fminf(weighth, (j-radius) * 0.2f);
+      // weightv = fminf(weightv, (i-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+
+      for(size_t c = 0; c < 3; c++)
+      {
+        out[((width * i) + j) * 4 + c] = (weightc[c] * in[((width * i) + j) * 4 + c]
+                                        + weighth * out[((width * i) + j+1) * 4 + c]
+                                        + weightv * out[((width * (i-1)) + j) * 4 + c]
+                                        + weighttlbr * out[((width * (i-1)) + j-1) * 4 + c]
+                                        + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
+      }
+      //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
+      //for instance, if we had one pixel in the blur, the max weight will be 1.
+      // if we had 2 pixels in the blur, the max weight will be 1/2, so the max
+      // weighth will be 2.
+      // this makes sure that border pixels don't get an overwhelming importance
+    }
+    //TODO copy last radius+1 columns
+  }
+}
+
+static void rbf_bottomleft_topright(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
+{
+  memcpy(out, in, width * height * 4 * sizeof(float));
+  // pass from top to bottom and left to right.
+  // we diffuse using left, top left, top, and top right pixels
+  //TODO copy first radius+1 lines
+
+  for(int64_t i = height-radius-1; i > radius+1; i--)
+  {
+    // for all other lines, diffuse
+
+    //TODO copy first radius+1 column
+
+    for(int64_t j = radius+1; j < width-radius-1; j++)
+    {
+      // maybe: adapt the strength factor in front of weightv depending
+      // on the quantity of pixels already involved in the average? Or to the
+      // maximum weight of a pixel currently in the average?
+      float weighth = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS], 0.001f);
+      float weightv = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS], 0.001f);
+      float weighttrbl = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
+      float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
+      const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+
+      // weighth = fminf(weighth, (j-radius) * 0.2f);
+      // weightv = fminf(weightv, (i-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+
+      for(size_t c = 0; c < 3; c++)
+      {
+        out[((width * i) + j) * 4 + c] = (weightc[c] * in[((width * i) + j) * 4 + c]
+                                        + weighth * out[((width * i) + j-1) * 4 + c]
+                                        + weightv * out[((width * (i+1)) + j) * 4 + c]
+                                        + weighttlbr * out[((width * (i+1)) + j-1) * 4 + c]
+                                        + weighttrbl * out[((width * (i+1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
+      }
+      //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
+      //for instance, if we had one pixel in the blur, the max weight will be 1.
+      // if we had 2 pixels in the blur, the max weight will be 1/2, so the max
+      // weighth will be 2.
+      // this makes sure that border pixels don't get an overwhelming importance
+    }
+    //TODO copy last radius+1 columns
+  }
+}
+
+static void rbf_bottomright_topleft(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
+{
+  memcpy(out, in, width * height * 4 * sizeof(float));
+  //TODO copy first radius+1 lines
+
+  for(int64_t i = height-radius-1; i > radius+1; i--)
+  {
+    // for all other lines, diffuse
+
+    //TODO copy first radius+1 column
+
+    for(int64_t j = width-radius-1; j > radius+1; j--)
+    {
+      // maybe: adapt the strength factor in front of weightv depending
+      // on the quantity of pixels already involved in the average? Or to the
+      // maximum weight of a pixel currently in the average?
+      float weighth = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS], 0.001f);
+      float weightv = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS], 0.001f);
+      float weighttrbl = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
+      float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
+      const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+
+      // weighth = fminf(weighth, (j-radius) * 0.2f);
+      // weightv = fminf(weightv, (i-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
+      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
+      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+
+      for(size_t c = 0; c < 3; c++)
+      {
+        out[((width * i) + j) * 4 + c] = (weightc[c] * in[((width * i) + j) * 4 + c]
+                                        + weighth * out[((width * i) + j+1) * 4 + c]
+                                        + weightv * out[((width * (i+1)) + j) * 4 + c]
+                                        + weighttlbr * out[((width * (i+1)) + j-1) * 4 + c]
+                                        + weighttrbl * out[((width * (i+1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
+      }
+      //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
+      //for instance, if we had one pixel in the blur, the max weight will be 1.
+      // if we had 2 pixels in the blur, the max weight will be 1/2, so the max
+      // weighth will be 2.
+      // this makes sure that border pixels don't get an overwhelming importance
+    }
+    //TODO copy last radius+1 columns
+  }
+}
+
+static void combine_runs(float* restrict out, const float* const restrict precond, const float* const restrict outtlbr, const float* const restrict outtrbl, const float* const restrict outbltr, const float* const restrict outbrtl, const size_t height, const size_t width)
+{
+  for(int i = 0; i < height * width; i++)
+  {
+    const float inpix = precond[i * 4];
+    float min_dist = 10000000000.0f;
+    if(fabsf(outtlbr[i * 4] - inpix) < min_dist) //we do the comparison on Y0
+    {
+      out[i * 4 + 0] = outtlbr[i * 4];
+      out[i * 4 + 1] = outtlbr[i * 4 + 1];
+      out[i * 4 + 2] = outtlbr[i * 4 + 2];
+      min_dist = fabsf(outtlbr[i * 4] - inpix);
+    }
+    if(fabsf(outtrbl[i * 4] - inpix) < min_dist)
+    {
+      out[i * 4 + 0] = outtrbl[i * 4];
+      out[i * 4 + 1] = outtrbl[i * 4 + 1];
+      out[i * 4 + 2] = outtrbl[i * 4 + 2];
+      min_dist = fabsf(outtrbl[i * 4] - inpix);
+    }
+    if(fabsf(outbltr[i * 4] - inpix) < min_dist)
+    {
+      out[i * 4 + 0] = outbltr[i * 4];
+      out[i * 4 + 1] = outbltr[i * 4 + 1];
+      out[i * 4 + 2] = outbltr[i * 4 + 2];
+      min_dist = fabsf(outbltr[i * 4] - inpix);
+    }
+    if(fabsf(outbrtl[i * 4] - inpix) < min_dist)
+    {
+      out[i * 4 + 0] = outbrtl[i * 4];
+      out[i * 4 + 1] = outbrtl[i * 4 + 1];
+      out[i * 4 + 2] = outbrtl[i * 4 + 2];
+      min_dist = fabsf(outbrtl[i * 4] - inpix);
+    }
+  }
+}
+
 
 static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                              const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
@@ -1430,6 +1580,10 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   float* out = (float*)ovoid;
   float* restrict symfactors = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * 4);
   float* restrict precond = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
+  float* restrict outtlbr = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
+  float* restrict outtrbl = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
+  float* restrict outbltr = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
+  float* restrict outbrtl = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
 
   const float in_scale = fminf(roi_in->scale / piece->iscale, 1.0f);
   const size_t width = roi_out->width;
@@ -1459,16 +1613,29 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
 
   compute_symmetry(precond, symfactors, height, width, radius * 2);
-  rbf_topleft_bottomright(out, precond, symfactors, height, width, radius * 2, d->strength, d->central_pixel_weight);
+  //MAYBE: in first pass, set weightY0 to 0.1
+  rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, radius * 2, d->strength, d->central_pixel_weight);
+  rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, radius * 2, d->strength, d->central_pixel_weight);
+  rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, radius * 2, d->strength, d->central_pixel_weight);
+  rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, radius * 2, d->strength, d->central_pixel_weight);
+  combine_runs(out, precond, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //TODO copy last radius+1 lines
   compute_symmetry(out, symfactors, height, width, radius);
-  rbf_topleft_bottomright(out, precond, symfactors, height, width, radius, d->strength, d->central_pixel_weight);
+  rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, radius, d->strength, d->central_pixel_weight);
+  rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, radius, d->strength, d->central_pixel_weight);
+  rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, radius, d->strength, d->central_pixel_weight);
+  rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, radius, d->strength, d->central_pixel_weight);
+  combine_runs(out, precond, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //memcpy(out, precond, width * height * piece->colors * sizeof(float));
   backtransform_Y0U0V0(out, width, height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(in_scale), wb, toRGB);
   dt_free_align(precond);
   dt_free_align(symfactors);
+  dt_free_align(outbltr);
+  dt_free_align(outbrtl);
+  dt_free_align(outtlbr);
+  dt_free_align(outtrbl);
 }
 
 static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
