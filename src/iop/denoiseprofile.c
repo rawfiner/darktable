@@ -23,6 +23,7 @@
 #include "common/exif.h"
 #include "common/imagebuf.h"
 #include "common/nlmeans_core.h"
+#include "common/box_filters.h"
 #include "common/noiseprofiles.h"
 #include "common/opencl.h"
 #include "control/control.h"
@@ -1270,6 +1271,218 @@ static void variance_stabilizing_xform(dt_aligned_pixel_t thrs, const int scale,
     thrs[c] = adjt[c] * sb2 / std_x[c];
 }
 
+
+// we compute r and b such as:
+// rR+G+bB ~= cst
+// to do that, we compute the average on each channel, as well
+// as the upper and lower manifolds.
+// then, we find r, b, and cst such as:
+// r*Ravg + Gavg + b*Bavg +cst = 0
+// r*Rhigh + Ghigh + b*Bhigh +cst = 0
+// r*Rlow + Glow + b*Blow +cst = 0
+// in other words, r, b and cst make the channels cancel each other
+// in average, in their high manifold, and in their low manifold.
+//
+// Once these coefs are known, we can use them to
+// infer an estimate of each channel noise variance:
+// V[Gnoise] ~= cov(G, r*R + G + b*B + cst)
+// V[Rnoise] ~= cov(R, R + G/r + bB/r + cst/r)
+// V[Bnoise] ~= cov(B, rR/b + G/b + B + cst/b)
+// (because cov of Bnoise and Gnoise and Rnoise should be null,
+// and rR+G+bB should have a null signal variance)
+//
+// after that, we can plot noise variance depending on pixel values
+// and infer the profile coefficients doing a linear regression or
+// something similar.
+//
+// Everything is done on data that had an anscombe transform
+// in order to ease the computation (variance should be constant,
+// we just need to find the constant).
+static void compute_profile(const float* const restrict in, const size_t width, const size_t height, float a[3], float* out)
+{
+  //for now, we only try to infer the "a" coefficient (i.e. the multiplicative
+  // coefficient, we do not infer the additive one, nor the power)
+
+  float* restrict stabilized = dt_alloc_align_float(width * height * 4);
+  for(size_t i = 0; i < width * height * 4; i++)
+  {
+    stabilized[i] = sqrtf(fmaxf(in[i], 0.0f));
+  }
+
+  //TODO mutualize this code with cacorrectrgb
+  float *const restrict blurred_in = dt_alloc_align_float(width * height * 4);
+  float *const restrict manifold_higher = dt_alloc_align_float(width * height * 4);
+  float *const restrict manifold_lower = dt_alloc_align_float(width * height * 4);
+  float *const restrict blurred_manifold_higher = dt_alloc_align_float(width * height * 4);
+  float *const restrict blurred_manifold_lower = dt_alloc_align_float(width * height * 4);
+  const size_t radius = 100;
+  memcpy(blurred_in, stabilized, width * height * 4 * sizeof(float));
+  dt_box_mean(blurred_in, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+
+  // construct the manifolds
+  // higher manifold is the blur of all pixels that are above average,
+  // lower manifold is the blur of all pixels that are below average
+  // we use the green channel to categorize the pixels as above or below average
+  // construct the manifolds
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+dt_omp_firstprivate(stabilized, blurred_in, manifold_lower, manifold_higher, width, height) \
+  schedule(simd:static)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    const float pixelg = stabilized[k * 4 + 1];
+    const float avg = blurred_in[k * 4 + 1];
+    float weighth = (pixelg >= avg);
+    float weightl = (pixelg <= avg);
+    manifold_higher[k * 4 + 0] = stabilized[k * 4 + 0] * weighth;
+    manifold_lower[k * 4 + 0] = stabilized[k * 4 + 0] * weightl;
+    manifold_higher[k * 4 + 1] = pixelg * weighth;
+    manifold_lower[k * 4 + 1] = pixelg * weightl;
+    manifold_higher[k * 4 + 2] = stabilized[k * 4 + 2] * weighth;
+    manifold_lower[k * 4 + 2] = stabilized[k * 4 + 2] * weightl;
+    manifold_higher[k * 4 + 3] = weighth;
+    manifold_lower[k * 4 + 3] = weightl;
+  }
+  memcpy(blurred_manifold_higher, manifold_higher, width * height * 4 * sizeof(float));
+  dt_box_mean(blurred_manifold_higher, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+  memcpy(blurred_manifold_lower, manifold_lower, width * height * 4 * sizeof(float));
+  dt_box_mean(blurred_manifold_lower, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+
+  dt_free_align(manifold_lower);
+  dt_free_align(manifold_higher);
+
+  //normalize manifolds
+#ifdef _OPENMP
+#pragma omp parallel for default(none) \
+dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher, width, height) \
+  schedule(simd:static)
+#endif
+  for(size_t k = 0; k < width * height; k++)
+  {
+    const float weighth = fmaxf(blurred_manifold_higher[k * 4 + 3], 1E-2f);
+    const float weightl = fmaxf(blurred_manifold_lower[k * 4 + 3], 1E-2f);
+
+    // normalize
+    blurred_manifold_higher[k * 4 + 0] /= weighth;
+    blurred_manifold_lower[k * 4 + 0] /= weightl;
+    blurred_manifold_higher[k * 4 + 1] /= weighth;
+    blurred_manifold_lower[k * 4 + 1] /= weightl;
+    blurred_manifold_higher[k * 4 + 2] /= weighth;
+    blurred_manifold_lower[k * 4 + 2] /= weightl;
+  }
+
+  float *const restrict canceled_signal = dt_alloc_align_float(width * height * 4);
+  for(size_t k = 0; k < width * height; k++)
+  {
+    float Ravg = blurred_in[k * 4];
+    float Gavg = blurred_in[k * 4 + 1];
+    float Bavg = blurred_in[k * 4 + 2];
+    float Rlow = blurred_manifold_lower[k * 4];
+    float Glow = blurred_manifold_lower[k * 4 + 1];
+    float Blow = blurred_manifold_lower[k * 4 + 2];
+    float Rhigh = blurred_manifold_higher[k * 4];
+    float Ghigh = blurred_manifold_higher[k * 4 + 1];
+    float Bhigh = blurred_manifold_higher[k * 4 + 2];
+
+    dt_colormatrix_t matrix;
+    dt_colormatrix_t inverse;
+    // r*Ravg + Gavg + b*Bavg +cst = 0
+    // r*Rhigh + Ghigh + b*Bhigh +cst = 0
+    // r*Rlow + Glow + b*Blow +cst = 0
+    // <=>
+    // x*Ravg + y*Bavg + z = -Gavg
+    // x*Rhigh + y*Bhigh + z = -Ghigh
+    // x*Rlow + y*Blow + z = -Glow
+    // <=>
+    // /  Ravg,  Bavg, 1 \   |-Gavg |
+    // | Rhigh, Bhigh, 1 | = |-Ghigh|
+    // \  Rlow,  Blow, 1 /   |-Glow |
+    matrix[0][0] = Ravg;
+    matrix[0][1] = Bavg;
+    matrix[0][2] = 1.0f;
+    matrix[1][0] = Rhigh;
+    matrix[1][1] = Bhigh;
+    matrix[1][2] = 1.0f;
+    matrix[2][0] = Rlow;
+    matrix[2][1] = Blow;
+    matrix[2][2] = 1.0f;
+
+    //TODO do something if matrix is not invertible
+    invert_matrix(matrix, inverse);
+
+    //solve the system
+    float r = -(inverse[0][0] * Gavg + inverse[0][1] * Ghigh + inverse[0][2] * Glow);
+    float b = -(inverse[1][0] * Gavg + inverse[1][1] * Ghigh + inverse[1][2] * Glow);
+    float cst = -(inverse[2][0] * Gavg + inverse[2][1] * Ghigh + inverse[2][2] * Glow);
+
+    // //check we made no mistake
+    // if(fabsf(r*Ravg + Gavg + b*Bavg +cst) > 1E-5)
+    //   printf("error in system solving: avg. %f\n", r*Ravg + Gavg + b*Bavg +cst);
+    // if(fabsf(r*Rhigh + Ghigh + b*Bhigh +cst) > 1E-5)
+    //   printf("error in system solving: high. %f\n", r*Rhigh + Ghigh + b*Bhigh +cst);
+    // if(fabsf(r*Rlow + Glow + b*Blow +cst) > 1E-5)
+    //   printf("error in system solving: low. %f\n", r*Rlow + Glow + b*Blow +cst);
+
+    //now that we know the coefficients, we can compute the "canceled" image
+    float canceled_value = r*stabilized[k * 4] + stabilized[k * 4 + 1] + b*stabilized[k * 4 + 2] + cst;
+    float weight = (r != 0.0f) * (b != 0.0f) / (fabsf(r) + fabsf(b) + fabsf(1.0f/r) + fabsf(1.0f/b));
+    if((r == 0.0f) || (b == 0.0f))
+    {
+      canceled_signal[k * 4] = 0.0f;
+      canceled_signal[k * 4 + 1] = 0.0f;
+      canceled_signal[k * 4 + 2] = 0.0f;
+      canceled_signal[k * 4 + 3] = 0.0f;
+      continue;
+    }
+    canceled_signal[k * 4] = weight * canceled_value / r; //normalize for R
+    canceled_signal[k * 4 + 1] = weight * canceled_value; //already normalized for G
+    canceled_signal[k * 4 + 2] = weight * canceled_value / b; //normalize for B
+    canceled_signal[k * 4 + 3] = weight;
+    // we have everything to compute (X-E[X])*(Y-E[Y]) here:
+    // the avg of canceled_signal is null, and the average of stabilized is known
+    canceled_signal[k * 4] *= (stabilized[k * 4] - blurred_in[k * 4]);
+    canceled_signal[k * 4 + 1] *= (stabilized[k * 4 + 1] - blurred_in[k * 4 + 1]);
+    canceled_signal[k * 4 + 2] *= (stabilized[k * 4 + 2] - blurred_in[k * 4 + 2]);
+  }
+  float *const restrict covariance = dt_alloc_align_float(width * height * 4);
+  //TODO average canceled_signal to get the covariance (and check it is positive...)
+  memcpy(covariance, canceled_signal, width * height * 4 * sizeof(float));
+  dt_box_mean(covariance, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+
+  //TODO compute the average ratio V[x]/E[x] for all channels, and deduce "a".
+  for(int i = 0; i < 3; i++)
+    a[i] = 0.0f;
+  size_t sum[3] = {0};
+  for(size_t k = 0; k < width * height; k++)
+  {
+    float norm = covariance[k * 4 + 3];
+    for(size_t c = 0; c < 3; c++)
+    {
+      float coef = covariance[k * 4 + c] / (norm * blurred_in[k * 4 + c]);
+      if(!isnan(coef) && coef > 0.0f)
+      {
+        a[c] += coef;
+        sum[c]++;
+      }
+    }
+  }
+  for(int i = 0; i < 3; i++)
+  {
+    if(sum[i] == 0) printf("issue\n");
+    a[i] = a[i] / sum[i];
+  }
+
+  memcpy(out, blurred_in, width * height * 4 * sizeof(float));
+  dt_free_align(blurred_in);
+  dt_free_align(blurred_manifold_lower);
+  dt_free_align(blurred_manifold_higher);
+  dt_free_align(stabilized);
+  dt_free_align(canceled_signal);
+  dt_free_align(covariance);
+}
+
+
 // compute the local symmetry accross 4 considered axis, and put the
 // result in symmetry_diffs.
 static void compute_symmetry(const float* const restrict in, float* restrict symmetry_diffs, const size_t height, const size_t width, const int64_t radius)
@@ -1289,7 +1502,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = avg_diff;
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
       // looking for symmetry along the top-left -> bottom-right axis
       avg_diff = 0.0f;
@@ -1306,7 +1519,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = avg_diff;
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
       // looking for symmetry along the horizontal axis
       avg_diff = 0.0f;
@@ -1319,7 +1532,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = avg_diff;
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
       // looking for symmetry along the top-right -> bottom-left axis
       avg_diff = 0.0f;
@@ -1336,7 +1549,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         }
       }
       avg_diff /= ((2.0f * radius + 1.0f) * radius);
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = avg_diff;
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
     }
   }
 }
@@ -1364,6 +1577,12 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
       float weighttrbl = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
       float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+
+      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      weighth /= sumw;
+      weightv /= sumw;
+      weighttrbl /= sumw;
+      weighttlbr /= sumw;
 
       // weighth = fminf(weighth, (j-radius) * 0.2f);
       // weightv = fminf(weightv, (i-radius) * 0.2f);
@@ -1411,6 +1630,12 @@ static void rbf_topright_bottomleft(float* restrict out, const float* const rest
       float weighttrbl = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS], 0.001f);
       float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+
+      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      weighth /= sumw;
+      weightv /= sumw;
+      weighttrbl /= sumw;
+      weighttlbr /= sumw;
 
       // weighth = fminf(weighth, (j-radius) * 0.2f);
       // weightv = fminf(weightv, (i-radius) * 0.2f);
@@ -1461,6 +1686,12 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
       float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
+      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      weighth /= sumw;
+      weightv /= sumw;
+      weighttrbl /= sumw;
+      weighttlbr /= sumw;
+
       // weighth = fminf(weighth, (j-radius) * 0.2f);
       // weightv = fminf(weightv, (i-radius) * 0.2f);
       // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
@@ -1508,6 +1739,12 @@ static void rbf_bottomright_topleft(float* restrict out, const float* const rest
       float weighttlbr = 10000.0f * strength / fmaxf(symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS], 0.001f);
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
+      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      weighth /= sumw;
+      weightv /= sumw;
+      weighttrbl /= sumw;
+      weighttlbr /= sumw;
+
       // weighth = fminf(weighth, (j-radius) * 0.2f);
       // weightv = fminf(weightv, (i-radius) * 0.2f);
       // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
@@ -1537,36 +1774,9 @@ static void combine_runs(float* restrict out, const float* const restrict precon
 {
   for(int i = 0; i < height * width; i++)
   {
-    const float inpix = precond[i * 4];
-    float min_dist = 10000000000.0f;
-    if(fabsf(outtlbr[i * 4] - inpix) < min_dist) //we do the comparison on Y0
-    {
-      out[i * 4 + 0] = outtlbr[i * 4];
-      out[i * 4 + 1] = outtlbr[i * 4 + 1];
-      out[i * 4 + 2] = outtlbr[i * 4 + 2];
-      min_dist = fabsf(outtlbr[i * 4] - inpix);
-    }
-    if(fabsf(outtrbl[i * 4] - inpix) < min_dist)
-    {
-      out[i * 4 + 0] = outtrbl[i * 4];
-      out[i * 4 + 1] = outtrbl[i * 4 + 1];
-      out[i * 4 + 2] = outtrbl[i * 4 + 2];
-      min_dist = fabsf(outtrbl[i * 4] - inpix);
-    }
-    if(fabsf(outbltr[i * 4] - inpix) < min_dist)
-    {
-      out[i * 4 + 0] = outbltr[i * 4];
-      out[i * 4 + 1] = outbltr[i * 4 + 1];
-      out[i * 4 + 2] = outbltr[i * 4 + 2];
-      min_dist = fabsf(outbltr[i * 4] - inpix);
-    }
-    if(fabsf(outbrtl[i * 4] - inpix) < min_dist)
-    {
-      out[i * 4 + 0] = outbrtl[i * 4];
-      out[i * 4 + 1] = outbrtl[i * 4 + 1];
-      out[i * 4 + 2] = outbrtl[i * 4 + 2];
-      min_dist = fabsf(outbrtl[i * 4] - inpix);
-    }
+    out[i * 4 + 0] = 0.25f * (outtlbr[i * 4] + outtrbl[i * 4] + outbltr[i * 4] + outbrtl[i * 4]);
+    out[i * 4 + 1] = 0.25f * (outtlbr[i * 4 + 1] + outtrbl[i * 4 + 1] + outbltr[i * 4 + 1] + outbrtl[i * 4 + 1]);
+    out[i * 4 + 2] = 0.25f * (outtlbr[i * 4 + 2] + outtrbl[i * 4 + 2] + outbltr[i * 4 + 2] + outbrtl[i * 4 + 2]);
   }
 }
 
@@ -1578,6 +1788,11 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   const dt_iop_denoiseprofile_data_t *const d = (dt_iop_denoiseprofile_data_t *)piece->data;
   const float* const in = (float*)ivoid;
   float* out = (float*)ovoid;
+  float a[3];
+  compute_profile(in, roi_out->width, roi_out->height, a, out);
+  printf("%f, %f, %f\n", a[0], a[1], a[2]);
+  return;
+
   float* restrict symfactors = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * 4);
   float* restrict precond = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
   float* restrict outtlbr = (float*)dt_alloc_align_float(roi_out->width * roi_out->height * piece->colors);
@@ -1610,7 +1825,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                              { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
   const int64_t radius = d->radius;
-  precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
+  precondition_Y0U0V0(in, precond, width, height, a[1] * compensate_p, p, d->b[1], toY0U0V0);
 
   compute_symmetry(precond, symfactors, height, width, radius * 2);
   //MAYBE: in first pass, set weightY0 to 0.1
@@ -2000,10 +2215,15 @@ static void process_nlmeans_cpu(dt_dev_pixelpipe_iop_t *piece,
     dt_iop_alpha_copy(ivoid, ovoid, roi_out->width, roi_out->height);
 }
 
+static void process_variance(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *const ivoid,
+                             void *const ovoid, const dt_iop_roi_t *const roi_in,
+                             const dt_iop_roi_t *const roi_out);
+
 static void process_nlmeans(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                             const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                             const dt_iop_roi_t *const roi_out)
 {
+  process_variance(self,piece,ivoid,ovoid,roi_in,roi_out);
   process_nlmeans_cpu(piece,ivoid,ovoid,roi_in,roi_out,nlmeans_denoise);
   return;
 }
@@ -2013,6 +2233,7 @@ static void process_nlmeans_sse(struct dt_iop_module_t *self, dt_dev_pixelpipe_i
                                 const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                                 const dt_iop_roi_t *const roi_out)
 {
+  process_variance(self,piece,ivoid,ovoid,roi_in,roi_out);
   process_nlmeans_cpu(piece,ivoid,ovoid,roi_in,roi_out,nlmeans_denoise_sse2);
   return;
 }
@@ -2080,6 +2301,7 @@ static void process_variance(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
                              void *const ovoid, const dt_iop_roi_t *const roi_in,
                              const dt_iop_roi_t *const roi_out)
 {
+  printf("HERE\n");
   const dt_iop_denoiseprofile_data_t *const d = piece->data;
   dt_iop_denoiseprofile_gui_data_t *g = (dt_iop_denoiseprofile_gui_data_t*)self->gui_data;
 
@@ -2101,16 +2323,32 @@ static void process_variance(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   compute_wb_factors(wb,d,piece,wb_weights);
 
   // adaptive p depending on white balance
-  const dt_aligned_pixel_t p = { MAX(d->shadows - 0.1 * logf(wb[0]), 0.0f),
-                                 MAX(d->shadows - 0.1 * logf(wb[1]), 0.0f),
-                                 MAX(d->shadows - 0.1 * logf(wb[2]), 0.0f),
-                                 0.0f };
+  // const dt_aligned_pixel_t p = { MAX(d->shadows - 0.1 * logf(wb[0]), 0.0f),
+  //                                MAX(d->shadows - 0.1 * logf(wb[1]), 0.0f),
+  //                                MAX(d->shadows - 0.1 * logf(wb[2]), 0.0f),
+  //                                0.0f };
 
   // update the coeffs with strength
   for_each_channel(i) wb[i] *= d->strength;
 
-  const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
-  precondition_v2((float *)ivoid, (float *)ovoid, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], wb);
+  // const float compensate_p = DT_IOP_DENOISE_PROFILE_P_FULCRUM / powf(DT_IOP_DENOISE_PROFILE_P_FULCRUM, d->shadows);
+  // // conversion to Y0U0V0 space as defined in Secrets of image denoising cuisine
+  // dt_colormatrix_t toY0U0V0 = { { 1.0f/3.0f, 1.0f/3.0f, 1.0f/3.0f },
+  //                               { 0.5f,      0.0f,      -0.5f },
+  //                               {  0.25f,     -0.5f,     0.25f } };
+  // dt_colormatrix_t toRGB = { { 0.0f, 0.0f, 0.0f }, // "unused" fourth element enables vectorization
+  //                            { 0.0f, 0.0f, 0.0f },
+  //                            { 0.0f, 0.0f, 0.0f } };
+  // set_up_conversion_matrices(toY0U0V0, toRGB, wb);
+  // precondition_Y0U0V0((float *)ivoid, in, roi_in->width, roi_in->height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
+  float a[4];
+  compute_profile((float *)ivoid, roi_out->width, roi_out->height, a, (float*)ovoid);
+
+  float b[4] = {0};
+  precondition((float *)ivoid, in, roi_in->width, roi_in->height, a, b);
+  // precondition_v2((float *)ivoid, in, roi_in->width, roi_in->height, a[1] * compensate_p, p, d->b[1], wb);
+  // for(size_t i = 0; i < roi_in->width * roi_in->height; i++)
+  //   in[i * 4] = (in[i * 4] + in[i * 4 + 1] + in[i * 4 + 2]) / 3.0f;
 
   float *out = (float *)ovoid;
   // we use out as a temporary buffer here
@@ -2130,6 +2368,7 @@ static void process_variance(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_
   g->variance_R = var[0];
   g->variance_G = var[1];
   g->variance_B = var[2];
+  printf("%f, %f, %f\n", var[0], var[1], var[2]);
 
   memcpy(ovoid, ivoid, sizeof(float) * 4 * npixels);
 }
