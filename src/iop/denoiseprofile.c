@@ -1271,6 +1271,7 @@ static void variance_stabilizing_xform(dt_aligned_pixel_t thrs, const int scale,
     thrs[c] = adjt[c] * sb2 / std_x[c];
 }
 
+#define SQR(x) ((x) * (x))
 
 // we compute r and b such as:
 // rR+G+bB ~= cst
@@ -1304,182 +1305,110 @@ static void compute_profile(const float* const restrict in, const size_t width, 
   // coefficient, we do not infer the additive one, nor the power)
 
   float* restrict stabilized = dt_alloc_align_float(width * height * 4);
+
+  float *const restrict blurred_in = dt_alloc_align_float(width * height * 4);
   for(size_t i = 0; i < width * height * 4; i++)
   {
     stabilized[i] = sqrtf(fmaxf(in[i], 0.0f));
   }
 
-  //TODO mutualize this code with cacorrectrgb
-  float *const restrict blurred_in = dt_alloc_align_float(width * height * 4);
-  float *const restrict manifold_higher = dt_alloc_align_float(width * height * 4);
-  float *const restrict manifold_lower = dt_alloc_align_float(width * height * 4);
-  float *const restrict blurred_manifold_higher = dt_alloc_align_float(width * height * 4);
-  float *const restrict blurred_manifold_lower = dt_alloc_align_float(width * height * 4);
+  float *const restrict manifolds_and_variance_r = dt_alloc_align_float(width * height * 4);
+  float *const restrict manifolds_and_variance_g = dt_alloc_align_float(width * height * 4);
+  float *const restrict manifolds_and_variance_b = dt_alloc_align_float(width * height * 4);
   const size_t radius = 100;
   memcpy(blurred_in, stabilized, width * height * 4 * sizeof(float));
   dt_box_mean(blurred_in, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+  // 3 blurs for manifolds R, G, and B
+  // 4 channels:
+  // - pixel value if in high
+  // - pixel value if in low
+  // - weight high
+  // - (pixel value - avg)² (to compute variance)
 
   // construct the manifolds
   // higher manifold is the blur of all pixels that are above average,
   // lower manifold is the blur of all pixels that are below average
-  // we use the green channel to categorize the pixels as above or below average
-  // construct the manifolds
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-dt_omp_firstprivate(stabilized, blurred_in, manifold_lower, manifold_higher, width, height) \
+dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_and_variance_g, manifolds_and_variance_b, width, height) \
   schedule(simd:static)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
-    const float pixelg = stabilized[k * 4 + 1];
-    const float avg = blurred_in[k * 4 + 1];
-    float weighth = (pixelg >= avg);
-    float weightl = (pixelg <= avg);
-    manifold_higher[k * 4 + 0] = stabilized[k * 4 + 0] * weighth;
-    manifold_lower[k * 4 + 0] = stabilized[k * 4 + 0] * weightl;
-    manifold_higher[k * 4 + 1] = pixelg * weighth;
-    manifold_lower[k * 4 + 1] = pixelg * weightl;
-    manifold_higher[k * 4 + 2] = stabilized[k * 4 + 2] * weighth;
-    manifold_lower[k * 4 + 2] = stabilized[k * 4 + 2] * weightl;
-    manifold_higher[k * 4 + 3] = weighth;
-    manifold_lower[k * 4 + 3] = weightl;
+    const float pixel_r = stabilized[k * 4];
+    const float avg_r = blurred_in[k * 4];
+    const float diff_r = pixel_r - avg_r;
+    const float weighth_r = (pixel_r >= avg_r);
+    manifolds_and_variance_r[k * 4] = pixel_r * weighth_r;
+    manifolds_and_variance_r[k * 4 + 1] = pixel_r * (1.0f - weighth_r);
+    manifolds_and_variance_r[k * 4 + 2] = weighth_r;
+    manifolds_and_variance_r[k * 4 + 3] = diff_r * diff_r;
+
+    const float pixel_g = stabilized[k * 4 + 1];
+    const float avg_g = blurred_in[k * 4 + 1];
+    const float diff_g = pixel_g - avg_g;
+    const float weighth_g = (pixel_g >= avg_g);
+    manifolds_and_variance_g[k * 4] = pixel_g * weighth_g;
+    manifolds_and_variance_g[k * 4 + 1] = pixel_g * (1.0f - weighth_g);
+    manifolds_and_variance_g[k * 4 + 2] = weighth_g;
+    manifolds_and_variance_g[k * 4 + 3] = diff_g * diff_g;
+
+    const float pixel_b = stabilized[k * 4 + 2];
+    const float avg_b = blurred_in[k * 4 + 2];
+    const float diff_b = pixel_b - avg_b;
+    const float weighth_b = (pixel_b >= avg_b);
+    manifolds_and_variance_b[k * 4] = pixel_b * weighth_b;
+    manifolds_and_variance_b[k * 4 + 1] = pixel_b * (1.0f - weighth_b);
+    manifolds_and_variance_b[k * 4 + 2] = weighth_b;
+    manifolds_and_variance_b[k * 4 + 3] = diff_b * diff_b;
   }
-  memcpy(blurred_manifold_higher, manifold_higher, width * height * 4 * sizeof(float));
-  dt_box_mean(blurred_manifold_higher, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
-  memcpy(blurred_manifold_lower, manifold_lower, width * height * 4 * sizeof(float));
-  dt_box_mean(blurred_manifold_lower, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+  dt_box_mean(manifolds_and_variance_r, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+  dt_box_mean(manifolds_and_variance_g, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+  dt_box_mean(manifolds_and_variance_b, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
 
-  dt_free_align(manifold_lower);
-  dt_free_align(manifold_higher);
-
-  //normalize manifolds
-#ifdef _OPENMP
-#pragma omp parallel for default(none) \
-dt_omp_firstprivate(blurred_in, blurred_manifold_lower, blurred_manifold_higher, width, height) \
-  schedule(simd:static)
-#endif
-  for(size_t k = 0; k < width * height; k++)
-  {
-    const float weighth = fmaxf(blurred_manifold_higher[k * 4 + 3], 1E-2f);
-    const float weightl = fmaxf(blurred_manifold_lower[k * 4 + 3], 1E-2f);
-
-    // normalize
-    blurred_manifold_higher[k * 4 + 0] /= weighth;
-    blurred_manifold_lower[k * 4 + 0] /= weightl;
-    blurred_manifold_higher[k * 4 + 1] /= weighth;
-    blurred_manifold_lower[k * 4 + 1] /= weightl;
-    blurred_manifold_higher[k * 4 + 2] /= weighth;
-    blurred_manifold_lower[k * 4 + 2] /= weightl;
-  }
-
-  float *const restrict canceled_signal = dt_alloc_align_float(width * height * 4);
-  for(size_t k = 0; k < width * height; k++)
-  {
-    float Ravg = blurred_in[k * 4];
-    float Gavg = blurred_in[k * 4 + 1];
-    float Bavg = blurred_in[k * 4 + 2];
-    float Rlow = blurred_manifold_lower[k * 4];
-    float Glow = blurred_manifold_lower[k * 4 + 1];
-    float Blow = blurred_manifold_lower[k * 4 + 2];
-    float Rhigh = blurred_manifold_higher[k * 4];
-    float Ghigh = blurred_manifold_higher[k * 4 + 1];
-    float Bhigh = blurred_manifold_higher[k * 4 + 2];
-
-    dt_colormatrix_t matrix;
-    dt_colormatrix_t inverse;
-    // r*Ravg + Gavg + b*Bavg +cst = 0
-    // r*Rhigh + Ghigh + b*Bhigh +cst = 0
-    // r*Rlow + Glow + b*Blow +cst = 0
-    // <=>
-    // x*Ravg + y*Bavg + z = -Gavg
-    // x*Rhigh + y*Bhigh + z = -Ghigh
-    // x*Rlow + y*Blow + z = -Glow
-    // <=>
-    // /  Ravg,  Bavg, 1 \   |-Gavg |
-    // | Rhigh, Bhigh, 1 | = |-Ghigh|
-    // \  Rlow,  Blow, 1 /   |-Glow |
-    matrix[0][0] = Ravg;
-    matrix[0][1] = Bavg;
-    matrix[0][2] = 1.0f;
-    matrix[1][0] = Rhigh;
-    matrix[1][1] = Bhigh;
-    matrix[1][2] = 1.0f;
-    matrix[2][0] = Rlow;
-    matrix[2][1] = Blow;
-    matrix[2][2] = 1.0f;
-
-    //TODO do something if matrix is not invertible
-    invert_matrix(matrix, inverse);
-
-    //solve the system
-    float r = -(inverse[0][0] * Gavg + inverse[0][1] * Ghigh + inverse[0][2] * Glow);
-    float b = -(inverse[1][0] * Gavg + inverse[1][1] * Ghigh + inverse[1][2] * Glow);
-    float cst = -(inverse[2][0] * Gavg + inverse[2][1] * Ghigh + inverse[2][2] * Glow);
-
-    // //check we made no mistake
-    // if(fabsf(r*Ravg + Gavg + b*Bavg +cst) > 1E-5)
-    //   printf("error in system solving: avg. %f\n", r*Ravg + Gavg + b*Bavg +cst);
-    // if(fabsf(r*Rhigh + Ghigh + b*Bhigh +cst) > 1E-5)
-    //   printf("error in system solving: high. %f\n", r*Rhigh + Ghigh + b*Bhigh +cst);
-    // if(fabsf(r*Rlow + Glow + b*Blow +cst) > 1E-5)
-    //   printf("error in system solving: low. %f\n", r*Rlow + Glow + b*Blow +cst);
-
-    //now that we know the coefficients, we can compute the "canceled" image
-    float canceled_value = r*stabilized[k * 4] + stabilized[k * 4 + 1] + b*stabilized[k * 4 + 2] + cst;
-    float weight = (r != 0.0f) * (b != 0.0f) / (fabsf(r) + fabsf(b) + fabsf(1.0f/r) + fabsf(1.0f/b));
-    if((r == 0.0f) || (b == 0.0f))
-    {
-      canceled_signal[k * 4] = 0.0f;
-      canceled_signal[k * 4 + 1] = 0.0f;
-      canceled_signal[k * 4 + 2] = 0.0f;
-      canceled_signal[k * 4 + 3] = 0.0f;
-      continue;
-    }
-    canceled_signal[k * 4] = weight * canceled_value / r; //normalize for R
-    canceled_signal[k * 4 + 1] = weight * canceled_value; //already normalized for G
-    canceled_signal[k * 4 + 2] = weight * canceled_value / b; //normalize for B
-    canceled_signal[k * 4 + 3] = weight;
-    // we have everything to compute (X-E[X])*(Y-E[Y]) here:
-    // the avg of canceled_signal is null, and the average of stabilized is known
-    canceled_signal[k * 4] *= (stabilized[k * 4] - blurred_in[k * 4]);
-    canceled_signal[k * 4 + 1] *= (stabilized[k * 4 + 1] - blurred_in[k * 4 + 1]);
-    canceled_signal[k * 4 + 2] *= (stabilized[k * 4 + 2] - blurred_in[k * 4 + 2]);
-  }
-  float *const restrict covariance = dt_alloc_align_float(width * height * 4);
-  //TODO average canceled_signal to get the covariance (and check it is positive...)
-  memcpy(covariance, canceled_signal, width * height * 4 * sizeof(float));
-  dt_box_mean(covariance, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
-
-  //TODO compute the average ratio V[x]/E[x] for all channels, and deduce "a".
+  // compute the average ratio V[x]/E[x] for all channels, and deduce "a".
   for(int i = 0; i < 3; i++)
     a[i] = 0.0f;
-  size_t sum[3] = {0};
   for(size_t k = 0; k < width * height; k++)
   {
-    float norm = covariance[k * 4 + 3];
-    for(size_t c = 0; c < 3; c++)
-    {
-      float coef = covariance[k * 4 + c] / (norm * blurred_in[k * 4 + c]);
-      if(!isnan(coef) && coef > 0.0f)
-      {
-        a[c] += coef;
-        sum[c]++;
-      }
-    }
+    const float weight_high_r = manifolds_and_variance_r[k * 4 + 2];
+    const float high_r = manifolds_and_variance_r[k * 4] / weight_high_r;
+    const float low_r = manifolds_and_variance_r[k * 4 + 1] / (1.0f - weight_high_r);
+    const float var_r = manifolds_and_variance_r[k * 4 + 3];
+    const float avg_r = blurred_in[k * 4];
+    const float var_signal_r = SQR(high_r - avg_r) * weight_high_r + SQR(low_r - avg_r) * (1.0f - weight_high_r);
+    const float var_noise_r = fmaxf(var_r - var_signal_r, 0.0f);
+    a[0] += var_noise_r;// / avg_r;
+
+    const float weight_high_g = manifolds_and_variance_g[k * 4 + 2];
+    const float high_g = manifolds_and_variance_g[k * 4] / weight_high_g;
+    const float low_g = manifolds_and_variance_g[k * 4 + 1] / (1.0f - weight_high_g);
+    const float var_g = manifolds_and_variance_g[k * 4 + 3];
+    const float avg_g = blurred_in[k * 4 + 1];
+    const float var_signal_g = SQR(high_g - avg_g) * weight_high_g + SQR(low_g - avg_g) * (1.0f - weight_high_g);
+    const float var_noise_g = fmaxf(var_g - var_signal_g, 0.0f);
+    a[1] += var_noise_g;// / avg_g;
+
+    const float weight_high_b = manifolds_and_variance_b[k * 4 + 2];
+    const float high_b = manifolds_and_variance_b[k * 4] / weight_high_b;
+    const float low_b = manifolds_and_variance_b[k * 4 + 1] / (1.0f - weight_high_b);
+    const float var_b = manifolds_and_variance_b[k * 4 + 3];
+    const float avg_b = blurred_in[k * 4 + 2];
+    const float var_signal_b = SQR(high_b - avg_b) * weight_high_b + SQR(low_b - avg_b) * (1.0f - weight_high_b);
+    const float var_noise_b = fmaxf(var_b - var_signal_b, 0.0f);
+    a[2] += var_noise_b;// / avg_b;
   }
   for(int i = 0; i < 3; i++)
   {
-    if(sum[i] == 0) printf("issue\n");
-    a[i] = a[i] / sum[i];
+    a[i] = a[i] / (width * height);
   }
 
   memcpy(out, blurred_in, width * height * 4 * sizeof(float));
   dt_free_align(blurred_in);
-  dt_free_align(blurred_manifold_lower);
-  dt_free_align(blurred_manifold_higher);
   dt_free_align(stabilized);
-  dt_free_align(canceled_signal);
-  dt_free_align(covariance);
+  dt_free_align(manifolds_and_variance_r);
+  dt_free_align(manifolds_and_variance_g);
+  dt_free_align(manifolds_and_variance_b);
 }
 
 
