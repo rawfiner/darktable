@@ -1273,38 +1273,6 @@ static void variance_stabilizing_xform(dt_aligned_pixel_t thrs, const int scale,
 
 #define SQR(x) ((x) * (x))
 
-static float get_diff_signal_minus_avg(const float high_diff, const float var_noise)
-{
-  float old_diff;
-  float new_diff = high_diff - var_noise / sqrtf(2.f * M_PI);
-  do
-  {
-    old_diff = new_diff;
-    new_diff = high_diff - var_noise / sqrtf(2.f * M_PI) * expf(-SQR(new_diff)/(2.f * var_noise));
-  }
-  while(new_diff / old_diff > 1.001f);
-  return new_diff;
-}
-
-static float iterative_variance_updater(const float total_var, const float high_diff, const float low_diff, const float weight_high)
-{
-  float high_diff_signal_minus_avg = 0.0f;
-  float low_diff_avg_minus_signal = 0.0f;
-  float var_signal = SQR(high_diff) * weight_high + SQR(low_diff) * (1.0f - weight_high);
-  float var_noise = total_var - var_signal;
-  float old_var_noise = total_var - var_signal;
-  do
-  {
-    high_diff_signal_minus_avg = get_diff_signal_minus_avg(high_diff, var_noise);
-    low_diff_avg_minus_signal = get_diff_signal_minus_avg(fabsf(low_diff), var_noise);
-    old_var_noise = var_noise;
-    var_signal = SQR(high_diff_signal_minus_avg) * weight_high + SQR(low_diff_avg_minus_signal) * (1.0f - weight_high);
-    var_noise = total_var - var_signal;
-  }
-  while(var_noise / old_var_noise > 1.001f);
-  return var_noise;
-}
-
 // we compute r and b such as:
 // rR+G+bB ~= cst
 // to do that, we compute the average on each channel, as well
@@ -1341,7 +1309,7 @@ static void compute_profile(const float* const restrict in, const size_t width, 
   float *const restrict blurred_in = dt_alloc_align_float(width * height * 4);
   for(size_t i = 0; i < width * height * 4; i++)
   {
-    stabilized[i] = sqrtf(fmaxf(in[i], 0.0f));
+    stabilized[i] =  2.0f * sqrtf(fmaxf(in[i], 0.0f));
   }
 
   float *const restrict manifolds_and_variance_r = dt_alloc_align_float(width * height * 4);
@@ -1406,39 +1374,35 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
   for(size_t k = 0; k < width * height; k++)
   {
     const float weight_high_r = manifolds_and_variance_r[k * 4 + 2];
-    const float high_r = manifolds_and_variance_r[k * 4] / weight_high_r;
-    const float low_r = manifolds_and_variance_r[k * 4 + 1] / (1.0f - weight_high_r);
-    const float var_r = manifolds_and_variance_r[k * 4 + 3];
     const float avg_r = blurred_in[k * 4];
-    //const float var_signal_r = SQR(high_r - avg_r) * weight_high_r + SQR(low_r - avg_r) * (1.0f - weight_high_r);
-    const float var_noise_r = iterative_variance_updater(var_r, high_r - avg_r, low_r - avg_r, weight_high_r);
-    if(isnan(var_noise_r))
-      printf("%f, %f, %f, %f, %f\n", high_r, low_r, var_r, avg_r, weight_high_r);
-    a[0] += var_noise_r;// / avg_r;
+    const float high_r = (weight_high_r != 0.0f) ? manifolds_and_variance_r[k * 4] / weight_high_r : avg_r;
+    const float low_r = (weight_high_r != 1.0f) ? manifolds_and_variance_r[k * 4 + 1] / (1.0f - weight_high_r) : avg_r;
+    const float var_r = manifolds_and_variance_r[k * 4 + 3];
+    const float var_signal_r = SQR(high_r - avg_r) * weight_high_r + SQR(low_r - avg_r) * (1.0f - weight_high_r);
+    const float var_noise_r = fmaxf(var_r - var_signal_r, 0.0f);
+    a[0] += var_noise_r;
 
     const float weight_high_g = manifolds_and_variance_g[k * 4 + 2];
-    const float high_g = manifolds_and_variance_g[k * 4] / weight_high_g;
-    const float low_g = manifolds_and_variance_g[k * 4 + 1] / (1.0f - weight_high_g);
-    const float var_g = manifolds_and_variance_g[k * 4 + 3];
     const float avg_g = blurred_in[k * 4 + 1];
-    // const float var_signal_g = SQR(high_g - avg_g) * weight_high_g + SQR(low_g - avg_g) * (1.0f - weight_high_g);
-    const float var_noise_g = iterative_variance_updater(var_g, high_g - avg_g, low_g - avg_g, weight_high_g);
-    a[1] += var_noise_g;// / avg_g;
+    const float high_g = (weight_high_g != 0.0f) ? manifolds_and_variance_g[k * 4] / weight_high_g : avg_g;
+    const float low_g = (weight_high_g != 1.0f) ? manifolds_and_variance_g[k * 4 + 1] / (1.0f - weight_high_g) : avg_g;
+    const float var_g = manifolds_and_variance_g[k * 4 + 3];
+    const float var_signal_g = SQR(high_g - avg_g) * weight_high_g + SQR(low_g - avg_g) * (1.0f - weight_high_g);
+    const float var_noise_g = fmaxf(var_g - var_signal_g, 0.0f);
+    a[1] += var_noise_g;
 
     const float weight_high_b = manifolds_and_variance_b[k * 4 + 2];
-    const float high_b = manifolds_and_variance_b[k * 4] / weight_high_b;
-    const float low_b = manifolds_and_variance_b[k * 4 + 1] / (1.0f - weight_high_b);
-    const float var_b = manifolds_and_variance_b[k * 4 + 3];
     const float avg_b = blurred_in[k * 4 + 2];
-    // const float var_signal_b = SQR(high_b - avg_b) * weight_high_b + SQR(low_b - avg_b) * (1.0f - weight_high_b);
-    const float var_noise_b = iterative_variance_updater(var_b, high_b - avg_b, low_b - avg_b, weight_high_b);
-    a[2] += var_noise_b;// / avg_b;
+    const float high_b = (weight_high_b != 0.0f) ? manifolds_and_variance_b[k * 4] / weight_high_b : avg_b;
+    const float low_b = (weight_high_b != 1.0f) ? manifolds_and_variance_b[k * 4 + 1] / (1.0f - weight_high_b) : avg_b;
+    const float var_b = manifolds_and_variance_b[k * 4 + 3];
+    const float var_signal_b = SQR(high_b - avg_b) * weight_high_b + SQR(low_b - avg_b) * (1.0f - weight_high_b);
+    const float var_noise_b = fmaxf(var_b - var_signal_b, 0.0f);
+    a[2] += var_noise_b;
   }
   for(int i = 0; i < 3; i++)
   {
-    // a factor 4 is needed, because using this method
-    // we find V(sqrt(X)), not V(X)/E[X].
-    a[i] = 4.0f * a[i] / (width * height);
+    a[i] = a[i] / (width * height);
   }
 
   memcpy(out, blurred_in, width * height * 4 * sizeof(float));
