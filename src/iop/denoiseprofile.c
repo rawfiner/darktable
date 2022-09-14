@@ -1273,6 +1273,48 @@ static void variance_stabilizing_xform(dt_aligned_pixel_t thrs, const int scale,
 
 #define SQR(x) ((x) * (x))
 
+static void blur4(float* restrict inout, const size_t width, const size_t height, const size_t diameter)
+{
+  // sum horizontally
+  for(size_t i = 0; i < height; i++)
+  {
+    for(size_t j = 0; j < width; j+=diameter)
+    {
+      float sum[4] = {0.0f};
+      for(size_t jj = 0; jj < diameter; jj++)
+      {
+        for(size_t c = 0; c < 4; c++)
+        {
+          sum[c] += inout[(i * width + j + jj) * 4 + c];
+        }
+      }
+      for(size_t c = 0; c < 4; c++)
+      {
+        inout[(i * width + j) * 4 + c] = sum[c] / diameter;
+      }
+    }
+  }
+  // sum vertically
+  for(size_t j = 0; j < width; j+=diameter)
+  {
+    for(size_t i = 0; i < height; i+=diameter)
+    {
+      float sum[4] = {0.0f};
+      for(size_t ii = 0; ii < diameter; ii++)
+      {
+        for(size_t c = 0; c < 4; c++)
+        {
+          sum[c] += inout[((i + ii) * width + j) * 4 + c];
+        }
+      }
+      for(size_t c = 0; c < 4; c++)
+      {
+        inout[(i * width + j) * 4 + c] = sum[c] / diameter;
+      }
+    }
+  }
+}
+
 // we compute r and b such as:
 // rR+G+bB ~= cst
 // to do that, we compute the average on each channel, as well
@@ -1310,14 +1352,16 @@ static void compute_profile(const float* const restrict in, const size_t width, 
   for(size_t i = 0; i < width * height * 4; i++)
   {
     stabilized[i] =  2.0f * sqrtf(fmaxf(in[i], 0.0f));
+    blurred_in[i] =  2.0f * sqrtf(fmaxf(in[i], 0.0f));
   }
 
   float *const restrict manifolds_and_variance_r = dt_alloc_align_float(width * height * 4);
   float *const restrict manifolds_and_variance_g = dt_alloc_align_float(width * height * 4);
   float *const restrict manifolds_and_variance_b = dt_alloc_align_float(width * height * 4);
   const size_t radius = 25;
-  memcpy(blurred_in, stabilized, width * height * 4 * sizeof(float));
-  dt_box_mean(blurred_in, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+  const size_t diameter = radius * 2 + 1;
+  blur4(blurred_in, width, height, diameter);
+
   // 3 blurs for manifolds R, G, and B
   // 4 channels:
   // - pixel value if in high
@@ -1330,13 +1374,19 @@ static void compute_profile(const float* const restrict in, const size_t width, 
   // lower manifold is the blur of all pixels that are below average
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
-dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_and_variance_g, manifolds_and_variance_b, width, height) \
+dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_and_variance_g, manifolds_and_variance_b, width, height, out) \
   schedule(simd:static)
 #endif
   for(size_t k = 0; k < width * height; k++)
   {
+    const size_t i = k / width;
+    const size_t iavg = (i / diameter) * diameter;
+    const size_t j = k % width;
+    const size_t javg = (j / diameter) * diameter;
+    const size_t kavg = iavg * width + javg;
+
     const float pixel_r = stabilized[k * 4];
-    const float avg_r = blurred_in[k * 4];
+    const float avg_r = blurred_in[kavg * 4];
     const float diff_r = pixel_r - avg_r;
     const float weighth_r = (pixel_r >= avg_r);
     manifolds_and_variance_r[k * 4] = pixel_r * weighth_r;
@@ -1345,7 +1395,7 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
     manifolds_and_variance_r[k * 4 + 3] = diff_r * diff_r;
 
     const float pixel_g = stabilized[k * 4 + 1];
-    const float avg_g = blurred_in[k * 4 + 1];
+    const float avg_g = blurred_in[kavg * 4 + 1];
     const float diff_g = pixel_g - avg_g;
     const float weighth_g = (pixel_g >= avg_g);
     manifolds_and_variance_g[k * 4] = pixel_g * weighth_g;
@@ -1354,17 +1404,21 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
     manifolds_and_variance_g[k * 4 + 3] = diff_g * diff_g;
 
     const float pixel_b = stabilized[k * 4 + 2];
-    const float avg_b = blurred_in[k * 4 + 2];
+    const float avg_b = blurred_in[kavg * 4 + 2];
     const float diff_b = pixel_b - avg_b;
     const float weighth_b = (pixel_b >= avg_b);
     manifolds_and_variance_b[k * 4] = pixel_b * weighth_b;
     manifolds_and_variance_b[k * 4 + 1] = pixel_b * (1.0f - weighth_b);
     manifolds_and_variance_b[k * 4 + 2] = weighth_b;
     manifolds_and_variance_b[k * 4 + 3] = diff_b * diff_b;
+
+    out[k * 4] = weighth_r;
+    out[k * 4 + 1] = weighth_g;
+    out[k * 4 + 2] = weighth_b;
   }
-  dt_box_mean(manifolds_and_variance_r, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
-  dt_box_mean(manifolds_and_variance_g, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
-  dt_box_mean(manifolds_and_variance_b, height, width, 4 | BOXFILTER_KAHAN_SUM, radius, 1);
+  blur4(manifolds_and_variance_r, width, height, diameter);
+  blur4(manifolds_and_variance_g, width, height, diameter);
+  blur4(manifolds_and_variance_b, width, height, diameter);
 
   for(int i = 0; i < 3; i++)
     a[i] = 0.0f;
@@ -1373,29 +1427,35 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
   // lower the weight in the computation of a.
   for(size_t k = 0; k < width * height; k++)
   {
-    const float weight_high_r = manifolds_and_variance_r[k * 4 + 2];
-    const float avg_r = blurred_in[k * 4];
-    const float high_r = (weight_high_r != 0.0f) ? manifolds_and_variance_r[k * 4] / weight_high_r : avg_r;
-    const float low_r = (weight_high_r != 1.0f) ? manifolds_and_variance_r[k * 4 + 1] / (1.0f - weight_high_r) : avg_r;
-    const float var_r = manifolds_and_variance_r[k * 4 + 3];
+    const size_t i = k / width;
+    const size_t iavg = (i / diameter) * diameter;
+    const size_t j = k % width;
+    const size_t javg = (j / diameter) * diameter;
+    const size_t kavg = iavg * width + javg;
+
+    const float weight_high_r = manifolds_and_variance_r[kavg * 4 + 2];
+    const float avg_r = blurred_in[kavg * 4];
+    const float high_r = (weight_high_r != 0.0f) ? manifolds_and_variance_r[kavg * 4] / weight_high_r : avg_r;
+    const float low_r = (weight_high_r != 1.0f) ? manifolds_and_variance_r[kavg * 4 + 1] / (1.0f - weight_high_r) : avg_r;
+    const float var_r = manifolds_and_variance_r[kavg * 4 + 3];
     const float var_signal_r = SQR(high_r - avg_r) * weight_high_r + SQR(low_r - avg_r) * (1.0f - weight_high_r);
     const float var_noise_r = fmaxf(var_r - var_signal_r, 0.0f);
     a[0] += var_noise_r;
 
-    const float weight_high_g = manifolds_and_variance_g[k * 4 + 2];
-    const float avg_g = blurred_in[k * 4 + 1];
-    const float high_g = (weight_high_g != 0.0f) ? manifolds_and_variance_g[k * 4] / weight_high_g : avg_g;
-    const float low_g = (weight_high_g != 1.0f) ? manifolds_and_variance_g[k * 4 + 1] / (1.0f - weight_high_g) : avg_g;
-    const float var_g = manifolds_and_variance_g[k * 4 + 3];
+    const float weight_high_g = manifolds_and_variance_g[kavg * 4 + 2];
+    const float avg_g = blurred_in[kavg * 4 + 1];
+    const float high_g = (weight_high_g != 0.0f) ? manifolds_and_variance_g[kavg * 4] / weight_high_g : avg_g;
+    const float low_g = (weight_high_g != 1.0f) ? manifolds_and_variance_g[kavg * 4 + 1] / (1.0f - weight_high_g) : avg_g;
+    const float var_g = manifolds_and_variance_g[kavg * 4 + 3];
     const float var_signal_g = SQR(high_g - avg_g) * weight_high_g + SQR(low_g - avg_g) * (1.0f - weight_high_g);
     const float var_noise_g = fmaxf(var_g - var_signal_g, 0.0f);
     a[1] += var_noise_g;
 
-    const float weight_high_b = manifolds_and_variance_b[k * 4 + 2];
-    const float avg_b = blurred_in[k * 4 + 2];
-    const float high_b = (weight_high_b != 0.0f) ? manifolds_and_variance_b[k * 4] / weight_high_b : avg_b;
-    const float low_b = (weight_high_b != 1.0f) ? manifolds_and_variance_b[k * 4 + 1] / (1.0f - weight_high_b) : avg_b;
-    const float var_b = manifolds_and_variance_b[k * 4 + 3];
+    const float weight_high_b = manifolds_and_variance_b[kavg * 4 + 2];
+    const float avg_b = blurred_in[kavg * 4 + 2];
+    const float high_b = (weight_high_b != 0.0f) ? manifolds_and_variance_b[kavg * 4] / weight_high_b : avg_b;
+    const float low_b = (weight_high_b != 1.0f) ? manifolds_and_variance_b[kavg * 4 + 1] / (1.0f - weight_high_b) : avg_b;
+    const float var_b = manifolds_and_variance_b[kavg * 4 + 3];
     const float var_signal_b = SQR(high_b - avg_b) * weight_high_b + SQR(low_b - avg_b) * (1.0f - weight_high_b);
     const float var_noise_b = fmaxf(var_b - var_signal_b, 0.0f);
     a[2] += var_noise_b;
@@ -1405,7 +1465,7 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
     a[i] = a[i] / (width * height);
   }
 
-  memcpy(out, blurred_in, width * height * 4 * sizeof(float));
+  //memcpy(out, blurred_in, width * height * 4 * sizeof(float));
   dt_free_align(blurred_in);
   dt_free_align(stabilized);
   dt_free_align(manifolds_and_variance_r);
