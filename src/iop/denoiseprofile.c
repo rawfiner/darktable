@@ -1525,6 +1525,10 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         if(symmetries[c] < min)
           min = symmetries[c];
       }
+      for(size_t c = 0; c < 4; c++)
+      {
+        symmetries[c] -= min;
+      }
 
       symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = expf(-symmetries[0] / strength);
       symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = expf(-symmetries[1] / strength);
