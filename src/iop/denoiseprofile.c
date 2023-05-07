@@ -1559,7 +1559,7 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
       float weighttlbr = 10000.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
-      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      float sumw = fmaxf(weighth + weightv + weighttrbl + weighttlbr, 1E-6) / strength;
       weighth /= sumw;
       weightv /= sumw;
       weighttrbl /= sumw;
@@ -1612,7 +1612,7 @@ static void rbf_topright_bottomleft(float* restrict out, const float* const rest
       float weighttlbr = 10000.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
-      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      float sumw = fmaxf(weighth + weightv + weighttrbl + weighttlbr, 1E-6) / strength;
       weighth /= sumw;
       weightv /= sumw;
       weighttrbl /= sumw;
@@ -1667,7 +1667,7 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
       float weighttlbr = 10000.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
-      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      float sumw = fmaxf(weighth + weightv + weighttrbl + weighttlbr, 1E-6) / strength;
       weighth /= sumw;
       weightv /= sumw;
       weighttrbl /= sumw;
@@ -1720,7 +1720,7 @@ static void rbf_bottomright_topleft(float* restrict out, const float* const rest
       float weighttlbr = 10000.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
-      float sumw = (weighth + weightv + weighttrbl + weighttlbr) / strength;
+      float sumw = fmaxf(weighth + weightv + weighttrbl + weighttlbr, 1E-6) / strength;
       weighth /= sumw;
       weightv /= sumw;
       weighttrbl /= sumw;
@@ -1804,25 +1804,34 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                              { 0.0f, 0.0f, 0.0f },
                              { 0.0f, 0.0f, 0.0f } };
   set_up_conversion_matrices(toY0U0V0, toRGB, wb);
+  for(size_t k = 0; k < 3; k++)
+    for_each_channel(c)
+    {
+      toY0U0V0[k][c] /= (d->strength * in_scale);
+      toRGB[k][c] *= (d->strength * in_scale);
+    }
+  for_each_channel(i) wb[i] *= d->strength * in_scale;
+
   const int64_t radius = d->radius;
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
 
   size_t first_radius = radius;
   size_t second_radius = 1;
-  compute_symmetry(precond, symfactors, height, width, first_radius, d->strength * 2.0f);
+  float strength = 100.0f * d->scattering;
+  compute_symmetry(precond, symfactors, height, width, first_radius, strength);
   //MAYBE: in first pass, set weightY0 to 0.1
-  rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, first_radius, d->strength, d->central_pixel_weight);
-  rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, first_radius, d->strength, d->central_pixel_weight);
-  rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, first_radius, d->strength, d->central_pixel_weight);
-  rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, first_radius, d->strength, d->central_pixel_weight);
+  rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
+  rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
+  rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
+  rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
   combine_runs(out, precond, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //TODO copy last radius+1 lines
-  compute_symmetry(out, symfactors, height, width, second_radius, d->strength);
-  rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, second_radius, d->strength, d->central_pixel_weight);
-  rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, second_radius, d->strength, d->central_pixel_weight);
-  rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, second_radius, d->strength, d->central_pixel_weight);
-  rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, second_radius, d->strength, d->central_pixel_weight);
+  compute_symmetry(out, symfactors, height, width, second_radius, strength);
+  rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, second_radius, strength, d->central_pixel_weight);
+  rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, second_radius, strength, d->central_pixel_weight);
+  rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, second_radius, strength, d->central_pixel_weight);
+  rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, second_radius, strength, d->central_pixel_weight);
   combine_runs(out, precond, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //memcpy(out, precond, width * height * piece->colors * sizeof(float));
