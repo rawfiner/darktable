@@ -1606,18 +1606,16 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
   }
 }
 
+//TODO invert i and j for loops
 static void rbf_topright_bottomleft(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
 {
   memcpy(out, in, width * height * 4 * sizeof(float));
   //TODO copy first radius+1 lines
 
-  for(int64_t i = radius+1; i < height-radius-1; i++)
+  for(int64_t j = width-radius-1; j > radius+1; j--)
   {
-    // for all other lines, diffuse
 
-    //TODO copy first radius+1 column
-
-    for(int64_t j = width-radius-1; j > radius+1; j--)
+    for(int64_t i = radius+1; i < height-radius-1; i++)
     {
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
@@ -1646,7 +1644,7 @@ static void rbf_topright_bottomleft(float* restrict out, const float* const rest
         out[((width * i) + j) * 4 + c] = (weightc[c] * in[((width * i) + j) * 4 + c]
                                         + weighth * out[((width * i) + j+1) * 4 + c]
                                         + weightv * out[((width * (i-1)) + j) * 4 + c]
-                                        + weighttlbr * out[((width * (i-1)) + j-1) * 4 + c]
+                                        + weighttlbr * out[((width * (i+1)) + j+1) * 4 + c]
                                         + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
       }
       //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
@@ -1665,14 +1663,14 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
   // pass from top to bottom and left to right.
   // we diffuse using left, top left, top, and top right pixels
   //TODO copy first radius+1 lines
-
-  for(int64_t i = height-radius-1; i > radius+1; i--)
+  
+  for(int64_t j = radius+1; j < width-radius-1; j++)
   {
     // for all other lines, diffuse
 
     //TODO copy first radius+1 column
 
-    for(int64_t j = radius+1; j < width-radius-1; j++)
+    for(int64_t i = height-radius-1; i > radius+1; i--)
     {
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
@@ -1701,7 +1699,7 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
         out[((width * i) + j) * 4 + c] = (weightc[c] * in[((width * i) + j) * 4 + c]
                                         + weighth * out[((width * i) + j-1) * 4 + c]
                                         + weightv * out[((width * (i+1)) + j) * 4 + c]
-                                        + weighttlbr * out[((width * (i+1)) + j+1) * 4 + c]
+                                        + weighttlbr * out[((width * (i-1)) + j-1) * 4 + c]
                                         + weighttrbl * out[((width * (i+1)) + j-1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
       }
       //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
@@ -1767,13 +1765,32 @@ static void rbf_bottomright_topleft(float* restrict out, const float* const rest
   }
 }
 
-static void combine_runs(float* restrict out, const float* const restrict precond, const float* const restrict outtlbr, const float* const restrict outtrbl, const float* const restrict outbltr, const float* const restrict outbrtl, const size_t height, const size_t width)
+static void combine_runs(float* restrict out, const float* const restrict precond, const float* const restrict symfactors, const float* const restrict outtlbr, const float* const restrict outtrbl, const float* const restrict outbltr, const float* const restrict outbrtl, const size_t height, const size_t width)
 {
   for(int i = 0; i < height * width; i++)
   {
-    out[i * 4 + 0] = 0.25f * (outtlbr[i * 4] + outtrbl[i * 4] + outbltr[i * 4] + outbrtl[i * 4]);
-    out[i * 4 + 1] = 0.25f * (outtlbr[i * 4 + 1] + outtrbl[i * 4 + 1] + outbltr[i * 4 + 1] + outbrtl[i * 4 + 1]);
-    out[i * 4 + 2] = 0.25f * (outtlbr[i * 4 + 2] + outtrbl[i * 4 + 2] + outbltr[i * 4 + 2] + outbrtl[i * 4 + 2]);
+    const float sym_vert = symfactors[i * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
+    const float sym_horiz = symfactors[i * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
+    const float sym_tlbr = symfactors[i * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
+    const float sym_trbl = symfactors[i * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
+    const float weighttlbr = fmaxf(sym_horiz, sym_trbl);
+    const float weighttrbl = fmaxf(sym_vert, sym_tlbr);
+    const float weightbltr = fmaxf(sym_vert, sym_tlbr);
+    const float weightbrtl = fmaxf(sym_horiz, sym_trbl);
+    const float total_weight = weighttlbr + weighttrbl + weightbltr + weightbrtl;
+
+    if(total_weight != 0.0f)
+    {
+      out[i * 4 + 0] = (weighttlbr * outtlbr[i * 4] + weighttrbl * outtrbl[i * 4] + weightbltr * outbltr[i * 4] + weightbrtl * outbrtl[i * 4]) / total_weight;
+      out[i * 4 + 1] = (weighttlbr * outtlbr[i * 4 + 1] + weighttrbl * outtrbl[i * 4 + 1] + weightbltr * outbltr[i * 4 + 1] + weightbrtl * outbrtl[i * 4 + 1]) / total_weight;
+      out[i * 4 + 2] = (weighttlbr * outtlbr[i * 4 + 2] + weighttrbl * outtrbl[i * 4 + 2] + weightbltr * outbltr[i * 4 + 2] + weightbrtl * outbrtl[i * 4 + 2]) / total_weight;
+    }
+    else
+    {
+      out[i * 4 + 0] = 0.25f * (outtlbr[i * 4] + outtrbl[i * 4] + outbltr[i * 4] + outbrtl[i * 4]);
+      out[i * 4 + 1] = 0.25f * (outtlbr[i * 4 + 1] + outtrbl[i * 4 + 1] + outbltr[i * 4 + 1] + outbrtl[i * 4 + 1]);
+      out[i * 4 + 2] = 0.25f * (outtlbr[i * 4 + 2] + outtrbl[i * 4 + 2] + outbltr[i * 4 + 2] + outbrtl[i * 4 + 2]);
+    }
   }
 }
 
@@ -1832,15 +1849,15 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
 
   size_t first_radius = radius;
-  size_t second_radius = radius;
+  size_t second_radius = 1;
   float strength = 100.0f * d->scattering;
-  compute_symmetry(precond, symfactors, height, width, first_radius, strength);
+  compute_symmetry(precond, symfactors, height, width, first_radius, strength * 10.0f);
   //MAYBE: in first pass, set weightY0 to 0.1
   rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
   rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
   rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
   rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, first_radius, strength, d->central_pixel_weight);
-  combine_runs(out, precond, outtlbr, outtrbl, outbltr, outbrtl, height, width);
+  combine_runs(out, precond, symfactors, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //TODO copy last radius+1 lines
   compute_symmetry(out, symfactors, height, width, second_radius, strength);
@@ -1848,7 +1865,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, second_radius, strength, d->central_pixel_weight);
   rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, second_radius, strength, d->central_pixel_weight);
   rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, second_radius, strength, d->central_pixel_weight);
-  combine_runs(out, precond, outtlbr, outtrbl, outbltr, outbrtl, height, width);
+  combine_runs(out, precond, symfactors, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //memcpy(out, precond, width * height * piece->colors * sizeof(float));
   backtransform_Y0U0V0(out, width, height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(in_scale), wb, toRGB);
