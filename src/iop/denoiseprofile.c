@@ -1457,20 +1457,24 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
 
       // looking for symmetry along the vertical axis.
       float avg_diff = 0.0f;
+      float norm = 0.0f;
       for(int64_t ii = -radius; ii <= radius; ii++)
       {
         for(int64_t jj = 1; jj <= radius; jj++)
         {
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + ii) + j - jj) * 4 + 0];
-          avg_diff += diff * diff;
+          float distance = sqrtf(sqf(ii) + sqf(jj));
+          norm += 1.0f / distance;
+          avg_diff += diff * diff / distance;
         }
       }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      avg_diff /= norm;
       symmetries[0] = avg_diff;
       //symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
       // looking for symmetry along the top-left -> bottom-right axis
       avg_diff = 0.0f;
+      norm = 0.0f;
       // iterate on top left corner
       for(int64_t ii = -radius; ii <= radius; ii++)
       {
@@ -1480,29 +1484,35 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
           int64_t symi = -jj;
           int64_t symj = -ii;
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
-          avg_diff += diff * diff;
+          float distance = sqrtf(sqf(ii) + sqf(jj));
+          avg_diff += diff * diff / distance;
+          norm += 1.0f / distance;
         }
       }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      avg_diff /= norm;
       symmetries[1] = avg_diff;
       //symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
       // looking for symmetry along the horizontal axis
       avg_diff = 0.0f;
+      norm = 0.0f;
       for(int64_t ii = 1; ii <= radius; ii++)
       {
         for(int64_t jj = -radius; jj <= radius; jj++)
         {
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i - ii) + j + jj) * 4 + 0];
-          avg_diff += diff * diff;
+          float distance = sqrtf(sqf(ii) + sqf(jj));
+          avg_diff += diff * diff / distance;
+          norm += 1.0f / distance;
         }
       }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      avg_diff /= norm;
       symmetries[2] = avg_diff;
       //symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
       // looking for symmetry along the top-right -> bottom-left axis
       avg_diff = 0.0f;
+      norm = 0.0f;
       // iterate on top right corner
       for(int64_t ii = -radius; ii <= radius; ii++)
       {
@@ -1512,10 +1522,12 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
           int64_t symi = jj;
           int64_t symj = ii;
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
-          avg_diff += diff * diff;
+          float distance = sqrtf(sqf(ii) + sqf(jj));
+          avg_diff += diff * diff / distance;
+          norm += 1.0f / distance;
         }
       }
-      avg_diff /= ((2.0f * radius + 1.0f) * radius);
+      avg_diff /= norm;
       symmetries[3] = avg_diff;
       //symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
@@ -1820,7 +1832,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
 
   size_t first_radius = radius;
-  size_t second_radius = 1;
+  size_t second_radius = radius;
   float strength = 100.0f * d->scattering;
   compute_symmetry(precond, symfactors, height, width, first_radius, strength);
   //MAYBE: in first pass, set weightY0 to 0.1
