@@ -1447,7 +1447,7 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
 
 // compute the local symmetry accross 4 considered axis, and put the
 // result in symmetry_diffs.
-static void compute_symmetry(const float* const restrict in, float* restrict symmetry_diffs, const size_t height, const size_t width, const int64_t radius, const float strength)
+static void compute_symmetry(const float* const restrict in, float* restrict symmetry_diffs, const size_t height, const size_t width, const int64_t radius, const float strength, const float anisotropy)
 {
   for(int64_t i = radius; i < height-radius; i++)
   {
@@ -1537,16 +1537,23 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         if(symmetries[c] < min)
           min = symmetries[c];
       }
+      float sumw = 0.0f;
       for(size_t c = 0; c < 4; c++)
       {
         symmetries[c] -= min;
+        symmetries[c] = expf(-symmetries[c] * anisotropy);
+        sumw += symmetries[c];
+      }
+      for(size_t c = 0; c < 4; c++)
+      {
+        symmetries[c] /= sumw;
+        symmetries[c] *= strength;
       }
 
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = expf(-symmetries[0] / strength);
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = expf(-symmetries[1] / strength);
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = expf(-symmetries[2] / strength);
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = expf(-symmetries[3] / strength);
-
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = symmetries[0];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = symmetries[1];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = symmetries[2];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = symmetries[3];
     }
   }
 }
@@ -1569,10 +1576,10 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
       // maximum weight of a pixel currently in the average?
-      float weighth = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
-      float weightv = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
-      float weighttrbl = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
-      float weighttlbr = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
+      float weighth = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
+      float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
+      float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
+      float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
       float sumw =1.0f;
@@ -1620,10 +1627,10 @@ static void rbf_topright_bottomleft(float* restrict out, const float* const rest
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
       // maximum weight of a pixel currently in the average?
-      float weighth = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
-      float weightv = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
-      float weighttrbl = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
-      float weighttlbr = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
+      float weighth = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
+      float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
+      float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
+      float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
       float sumw =1.0f;
@@ -1675,10 +1682,10 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
       // maximum weight of a pixel currently in the average?
-      float weighth = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
-      float weightv = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
-      float weighttrbl = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
-      float weighttlbr = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
+      float weighth = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
+      float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
+      float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
+      float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
       float sumw =1.0f;
@@ -1728,10 +1735,10 @@ static void rbf_bottomright_topleft(float* restrict out, const float* const rest
       // maybe: adapt the strength factor in front of weightv depending
       // on the quantity of pixels already involved in the average? Or to the
       // maximum weight of a pixel currently in the average?
-      float weighth = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
-      float weightv = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
-      float weighttrbl = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
-      float weighttlbr = 30.0f * symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
+      float weighth = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS];
+      float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
+      float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
+      float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
       const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
 
       float sumw =1.0f;
@@ -1890,12 +1897,13 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   const int64_t radius = d->radius;
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
 
-  size_t first_radius = radius;
-  size_t second_radius = 1;
-  float strength = d->scattering; //FIXME strength has no more effect now...
-  strength *= strength;
-  strength *= strength;
-  compute_symmetry(precond, symfactors, height, width, first_radius, strength * 4.0f);
+  size_t first_radius = radius; //TODO * in_scale
+  size_t second_radius = 2;
+  float anisotropy = powf(d->scattering, 10.0f);
+  float strength = 400000.0f * d->strength * in_scale * d->a[1] * compensate_p;
+  // strength *= strength;
+  // strength *= strength;
+  compute_symmetry(precond, symfactors, height, width, first_radius, strength, anisotropy);
   //MAYBE: in first pass, set weightY0 to 0.1
   rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, first_radius, 1.0f, d->central_pixel_weight);
   rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, first_radius, 1.0f, d->central_pixel_weight);
@@ -1904,7 +1912,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   combine_runs(out, precond, symfactors, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //TODO copy last radius+1 lines
-  compute_symmetry(out, symfactors, height, width, second_radius, strength);
+  compute_symmetry(out, symfactors, height, width, second_radius, strength, powf(anisotropy, 0.3f));
   rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
   rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
   rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
