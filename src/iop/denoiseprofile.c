@@ -1565,8 +1565,10 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         symmetries[c] -= min;
         symmetries[c] = fmaxf(symmetries[c], 0.0f);
         symmetries[c] = expf(-symmetries[c] * anisotropy);
-        if(c != 5)
-          sumw += symmetries[c]; //TODO we should probably NOT have sym[5] in sumw. Check this. Anyway, if sym[5] is included it should be multiplied by 4.0f.
+        if(c != 4)
+          sumw += symmetries[c]; //TODO we should probably NOT have sym[4] in sumw. Check this. Anyway, if sym[4] is included it should be multiplied by 4.0f.
+        //else
+        //  sumw += 4.0f * symmetries[c];
       }
       for(size_t c = 0; c < 5; c++)
       {
