@@ -1449,11 +1449,12 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
 // result in symmetry_diffs.
 static void compute_symmetry(const float* const restrict in, float* restrict symmetry_diffs, const size_t height, const size_t width, const int64_t radius, const float strength, const float anisotropy)
 {
+  //TODO precompute the gaussian kernels for distance, for whatever ii and jj
   for(int64_t i = radius; i < height-radius; i++)
   {
     for(int64_t j = radius; j < width-radius; j++)
     {
-      float symmetries[4] = {};
+      float symmetries[5] = {};
 
       // looking for symmetry along the vertical axis.
       float avg_diff = 0.0f;
@@ -1463,7 +1464,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         for(int64_t jj = 1; jj <= radius; jj++)
         {
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + ii) + j - jj) * 4 + 0];
-          float distance = sqrtf(sqf(ii) + sqf(jj));
+          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
           norm += 1.0f / distance;
           avg_diff += diff * diff / distance;
         }
@@ -1484,7 +1485,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
           int64_t symi = -jj;
           int64_t symj = -ii;
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
-          float distance = sqrtf(sqf(ii) + sqf(jj));
+          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
           avg_diff += diff * diff / distance;
           norm += 1.0f / distance;
         }
@@ -1501,7 +1502,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         for(int64_t jj = -radius; jj <= radius; jj++)
         {
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i - ii) + j + jj) * 4 + 0];
-          float distance = sqrtf(sqf(ii) + sqf(jj));
+          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
           avg_diff += diff * diff / distance;
           norm += 1.0f / distance;
         }
@@ -1522,7 +1523,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
           int64_t symi = jj;
           int64_t symj = ii;
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
-          float distance = sqrtf(sqf(ii) + sqf(jj));
+          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
           avg_diff += diff * diff / distance;
           norm += 1.0f / distance;
         }
@@ -1531,29 +1532,53 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
       symmetries[3] = avg_diff;
       //symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = fmaxf(avg_diff - 8.0f, 0.0f);
 
+      // looking for absence of symmetry by computing variance
+      norm = 0.0f;
+      float avg = 0.0f;
+      float avg_squared = 0.0f;
+      // iterate on top right corner
+      for(int64_t ii = -radius; ii <= radius; ii++)
+      {
+        for(int64_t jj = -radius; jj <= radius; jj++)
+        {
+          float tmp = in[(width * (i + ii) + j + jj) * 4 + 0];
+          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
+          avg += tmp / distance;
+          avg_squared += tmp * tmp / distance;
+          norm += 1.0f / distance;
+        }
+      }
+      avg /= norm;
+      avg_squared /= norm;
+      float variance = avg_squared - avg * avg;
+      symmetries[4] = variance;
+
       float min = symmetries[0];
-      for(size_t c = 1; c < 4; c++)
+      for(size_t c = 1; c < 4; c++) //we compute the min only on symmetries diff, not on variance
       {
         if(symmetries[c] < min)
           min = symmetries[c];
       }
       float sumw = 0.0f;
-      for(size_t c = 0; c < 4; c++)
+      for(size_t c = 0; c < 5; c++)
       {
         symmetries[c] -= min;
+        symmetries[c] = fmaxf(symmetries[c], 0.0f);
         symmetries[c] = expf(-symmetries[c] * anisotropy);
-        sumw += symmetries[c];
+        if(c != 5)
+          sumw += symmetries[c]; //TODO we should probably NOT have sym[5] in sumw. Check this. Anyway, if sym[5] is included it should be multiplied by 4.0f.
       }
-      for(size_t c = 0; c < 4; c++)
+      for(size_t c = 0; c < 5; c++)
       {
         symmetries[c] /= sumw;
         symmetries[c] *= strength;
       }
 
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = symmetries[0];
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = symmetries[1];
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = symmetries[2];
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = symmetries[3];
+      // symmetries[4] contains weight for absence of symmetry. It influences uniform diffusion.
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = symmetries[0] + symmetries[4];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = symmetries[1] + symmetries[4];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = symmetries[2] + symmetries[4];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = symmetries[3] + symmetries[4];
     }
   }
 }
