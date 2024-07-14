@@ -709,6 +709,35 @@ void process(struct dt_iop_module_t *self,
   };
 
   const size_t npixels = (size_t)roi_out->height * roi_out->width;
+ 	
+	/* find global */
+	float minglobal = 1000000.0f;
+	float fiveY[5] ={0.0f};
+  for(size_t k  = 0; k < 4 * npixels-2; k += 4)
+  {
+    // clip pipeline RGB
+    dt_aligned_pixel_t RGB;
+    copy_pixel(RGB, in + k);
+    dt_vector_clipneg(RGB);
+
+    // go to CIE 2006 LMS D65
+    dt_aligned_pixel_t LMS;
+    dt_apply_transposed_color_matrix(RGB, input_matrix_trans, LMS);
+
+	  // go to Filmlight Yrg
+    dt_aligned_pixel_t Yrg = { 0.f };
+    LMS_to_Yrg(LMS, Yrg);
+		fiveY[k%5] = Yrg[0];
+		if(k < 5)
+			continue;
+		float sum = 0.2f * (fiveY[0] + fiveY[1] + fiveY[2] + fiveY[3] + fiveY[4]);
+
+		if(sum < minglobal)
+			minglobal = sum;
+	}
+	// clip everything that is above the min+0.15EV
+	minglobal = minglobal * 1.109569472f;
+
   const size_t out_width = roi_out->width;
 
 #ifdef _OPENMP
@@ -717,7 +746,7 @@ void process(struct dt_iop_module_t *self,
                       input_matrix_trans, output_matrix_trans, gamut_LUT,     \
                       global, highlights, shadows, midtones, chroma, \
                       saturation, brilliance, checker_1, checker_2, L_white, \
-                      hue_rotation_matrix)                              \
+                      hue_rotation_matrix, minglobal)                              \
   schedule(static)
 #endif
   for(size_t k  = 0; k < 4 * npixels; k += 4)
@@ -745,6 +774,9 @@ void process(struct dt_iop_module_t *self,
     // go to Filmlight Yrg
     dt_aligned_pixel_t Yrg = { 0.f };
     LMS_to_Yrg(LMS, Yrg);
+	
+		// Remove min
+		Yrg[0] -= minglobal;
 
     // go to Ych
     dt_aligned_pixel_t Ych = { 0.f };

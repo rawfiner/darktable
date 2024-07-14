@@ -777,7 +777,7 @@ static float gaussian_func(const float radius, const float denominator)
   return expf(- radius * radius / denominator);
 }
 
-#define DT_TONEEQ_USE_LUT TRUE
+#define DT_TONEEQ_USE_LUT FALSE
 #if DT_TONEEQ_USE_LUT
 
 // this is the version currently used, as using a lut gives a
@@ -848,13 +848,13 @@ static inline void apply_toneequalizer(const float *const restrict in,
     for(int i = 0; i < PIXEL_CHAN; ++i)
       result += gaussian_func(exposure - centers_ops[i], gauss_denom) * factors[i];
 
+		// E
     // the user-set correction is expected in [-2;+2] EV, so is the interpolated one
-    float correction = fast_clamp(result, 0.25f, 4.0f);
+    float correction = result;//fast_clamp(result, 0.25f, 4.0f);
 
     // apply correction
     for_each_channel(c)
       out[4 * k + c] = correction * in[4 * k + c];
-    }
   }
 }
 #endif // USE_LUT
@@ -879,6 +879,73 @@ static inline float pixel_correction(const float exposure,
   return fast_clamp(result, 0.25f, 4.0f);
 }
 
+
+static inline void compute_log_variance(const float *const restrict luminance,
+                                        const size_t width,
+                                        const size_t height,
+																				float var[9],
+																				float scale,
+																				const size_t radius)
+{
+	/* downscale 4x */
+	const float scaling = 8.0f * fmaxf(scale, 0.125f);
+	const size_t ds_height = height / scaling;
+	const size_t ds_width = width / scaling;
+	const size_t num_elem_ds = ds_width * ds_height;
+	float* ds_luminance = dt_alloc_align_float(num_elem_ds);
+	float* ds_avg = dt_alloc_align_float(num_elem_ds);
+	interpolate_bilinear(luminance, width, height, ds_luminance, ds_width, ds_height, 1);
+
+	/* compute log of image */
+	for(size_t i = 0; i < num_elem_ds; i++)
+	{
+		float curr = log2f(fmaxf(ds_luminance[i], 0.000015259f/*0.00390625f*/));
+		ds_luminance[i] = curr;
+		ds_avg[i] = curr;
+	}
+
+	/* average using box blur with radius 25 */
+	dt_box_mean(ds_avg, ds_height, ds_width, 1, radius, 1);
+
+	/* accumulate squared diff in var, for each possible log value from -8 to 0 */
+	float norm[9] = {0.0f};
+	for(size_t i = 0; i < num_elem_ds; i++)
+	{
+		float avg = ds_avg[i];
+		float pix = ds_luminance[i];
+		float sq_diff = (avg - pix) * (avg - pix);
+		avg += 8.0f;
+		int log1 = floorf(avg);
+		if (log1 < 0)
+		{
+			log1 = 0;
+			avg = 0.0f;
+		}
+		int log2 = log1+1;
+		if(log2 > 8)
+			continue;
+		var[log1] += sq_diff * (avg - log1);
+		var[log2] += sq_diff * (log2 - avg);
+		norm[log1] += (avg - log1);
+		norm[log2] += (log2 - avg);
+#if 0
+		/* segment based */
+		var[log1] += sq_diff;
+		norm[log1] ++;
+#endif
+	}
+
+	/* normalize */
+	for(size_t i = 0; i < 9; i++)
+	{
+		if(norm[i] != 0.0f)
+			var[i] /= norm[i];
+		printf("%f\n", var[i]);
+	}
+
+	dt_free_align(ds_luminance);
+	dt_free_align(ds_avg);
+}
 
 __DT_CLONE_TARGETS__
 static inline void compute_luminance_mask(const float *const restrict in,
@@ -1010,6 +1077,11 @@ static inline void display_luminance_mask(const float *const restrict in,
     }
 }
 
+static int compute_channels_factors(const float factors[PIXEL_CHAN],
+                                    float out[CHANNELS],
+                                    const float sigma);
+static void build_interpolation_matrix(float A[CHANNELS * PIXEL_CHAN],
+                                              const float sigma);
 
 __DT_CLONE_TARGETS__
 static
@@ -1020,8 +1092,12 @@ void toneeq_process(struct dt_iop_module_t *self,
                     const dt_iop_roi_t *const roi_in,
                     const dt_iop_roi_t *const roi_out)
 {
-  const dt_iop_toneequalizer_data_t *const d =
-    (const dt_iop_toneequalizer_data_t *const)piece->data;
+  const dt_iop_toneequalizer_data_t *const trued =
+    (const dt_iop_toneequalizer_data_t *)piece->data;
+	for(int i = 0; i < 8; i++)
+		printf("truef%d: %f\n", i, trued->factors[i]);
+  dt_iop_toneequalizer_data_t * d = malloc(sizeof(dt_iop_toneequalizer_data_t));
+	memcpy(d, trued, sizeof(dt_iop_toneequalizer_data_t));
   dt_iop_toneequalizer_gui_data_t *const g =
     (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
 
@@ -1121,8 +1197,10 @@ void toneeq_process(struct dt_iop_module_t *self,
     return;
   }
 
+	float var[9] = {0.0f};
+
   // Compute the luminance mask
-  if(cached)
+  if(cached && 0)
   {
     // caching path : store the luminance mask for GUI access
 
@@ -1171,6 +1249,66 @@ void toneeq_process(struct dt_iop_module_t *self,
   {
     // no caching path : compute no matter what
     compute_luminance_mask(in, luminance, width, height, d);
+		float var250[9] = {0.0f};
+		float var10[9] = {0.0f};
+		compute_log_variance(luminance, width, height, var250, fminf(roi_in->scale / piece->iscale, 1.0f), 250);
+		compute_log_variance(luminance, width, height, var10, fminf(roi_in->scale / piece->iscale, 1.0f), 10);
+		printf("scale: %f\n", fminf(roi_in->scale / piece->iscale, 1.0f));
+		/* log values from 0EV to -8:
+		 * 0   -1    -2     -3      -4       -5        -6
+		 * 1, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625, ...*/
+		for(int i = 0; i < 9; i++)
+		{
+			//var[i] = (var250[i] + var10[i]) / 2.0f; /*TODO test with maximum as well */
+			//var[i] = fmaxf(var250[i], var10[i]); /*TODO test with maximum as well */
+			var[i] = (fmaxf(var250[i], var10[i]) + var250[i] + var10[i]) / 3.0f; /*TODO test with maximum as well */
+			var[i] = powf(var[i], 0.5f);
+		}
+
+		//TODO smooth variance?	
+		//for(int i = 1; i < 8; i++)
+		//	var[i] = (var[i] + var[i-1] + var[i+1]) / 3.0f;
+		//var[0] = 0.5f * (var[0] + var[1]);
+
+		float sumvar = 0.0f;
+		for(int i = 0; i < 9; i++)
+			sumvar += var[i];
+		float fact[9];
+#if 0
+		for(int i = 0; i < 8 /* do nothing after midgrey point */; i++)
+		{
+			float w = var[i] / sumvar;
+			float ev_margin = 1.0f - 0.25f; /* keep at least 0.25EV between each channel */
+			fact[i] = 1.0f * (1.0f - w) + w * exp2f((7-i)*ev_margin);
+			printf("f%d: %f\n", i, fact[i]);
+		}
+		fact[8] = 1.0f;
+		/* smooth correction */
+		//for(int i = 1; i < 7; i++)
+		//	fact[i] = (fact[i] + fact[i-1] + fact[i+1]) / 3.0f;
+#else
+		for(int i = 0; i < 9; i++)
+			var[i] = (var[i] + 0.5f * sumvar / 9.0f) / sumvar / 1.5f;
+		/* sum all vars in order to transform segment sizes into point coordinates */
+		for(int i = 1; i < 9; i++)
+			var[i] += var[i-1];
+		for(int i = 0; i < 9; i++)
+		{
+			const float ev_range_dest = 4.5f;
+			fact[i] = exp2f(ev_range_dest * (-1.0f+var[i])) / exp2f(-8+i); /*on déplace l'EV i à une position var[i]. TODO: mapper sur 5EV en dest au lieu de 8 ?*/
+			printf("fact%d: %f, %f, %f\n", i, fact[i], var[i], ev_range_dest * (-1.0f+var[i]));
+		}
+#endif
+
+    float A[CHANNELS * PIXEL_CHAN] DT_ALIGNED_ARRAY;
+    build_interpolation_matrix(A, d->smoothing);
+    pseudo_solve(A, fact, CHANNELS, PIXEL_CHAN, 0);
+
+		for(int i = 0; i < 8; i++)
+			d->factors[i] = fact[i];
+
+    //pseudo_solve(g->interpolation_matrix, d->factors, CHANNELS, PIXEL_CHAN, 1);;
+    //compute_channels_factors(d->factors, fact, d->smoothing);
   }
 
   // Display output
@@ -1189,6 +1327,7 @@ void toneeq_process(struct dt_iop_module_t *self,
     apply_toneequalizer(in, luminance, out, roi_in, roi_out, d);
   }
 
+	free(d);
   if(!cached) dt_free_align(luminance);
 }
 
