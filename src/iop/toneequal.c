@@ -899,7 +899,7 @@ static inline void compute_log_variance(const float *const restrict luminance,
 	/* compute log of image */
 	for(size_t i = 0; i < num_elem_ds; i++)
 	{
-		float curr = log2f(fmaxf(ds_luminance[i], 0.000015259f/*0.00390625f*/));
+		float curr = log2f(fmaxf(ds_luminance[i], 0.000015259f));
 		ds_luminance[i] = curr;
 		ds_avg[i] = curr;
 	}
@@ -940,7 +940,6 @@ static inline void compute_log_variance(const float *const restrict luminance,
 	{
 		if(norm[i] != 0.0f)
 			var[i] /= norm[i];
-		printf("%f\n", var[i]);
 	}
 
 	dt_free_align(ds_luminance);
@@ -986,9 +985,13 @@ static inline void compute_luminance_mask(const float *const restrict in,
       // the exposure boost should be used to make this assumption true
       luminance_mask(in, luminance, width, height, d->method, d->exposure_boost,
                      CONTRAST_FULCRUM, d->contrast_boost);
+			for(int i = 0; i < width * height; i++)
+				luminance[i] = log2f(fmaxf(luminance[i], exp2f(-14.0f))) + 14.0f;
       fast_surface_blur(luminance, width, height, d->radius, d->feathering, d->iterations,
                         DT_GF_BLENDING_LINEAR, d->scale, d->quantization,
-                        exp2f(-14.0f), 4.0f);
+                        /*exp2f(*/-14.0f/*)*/, 20.0f);
+			for(int i = 0; i < width * height; i++)
+				luminance[i] = exp2f(luminance[i] - 14.0f);
       break;
     }
 
@@ -1097,7 +1100,20 @@ void toneeq_process(struct dt_iop_module_t *self,
 	for(int i = 0; i < 8; i++)
 		printf("truef%d: %f\n", i, trued->factors[i]);
   dt_iop_toneequalizer_data_t * d = malloc(sizeof(dt_iop_toneequalizer_data_t));
+  dt_iop_toneequalizer_data_t * d_noblur = malloc(sizeof(dt_iop_toneequalizer_data_t));
+  dt_iop_toneequalizer_data_t * d_maxrgb = malloc(sizeof(dt_iop_toneequalizer_data_t));
+  dt_iop_toneequalizer_data_t * d_maxrgb_blur = malloc(sizeof(dt_iop_toneequalizer_data_t));
 	memcpy(d, trued, sizeof(dt_iop_toneequalizer_data_t));
+	memcpy(d_noblur, trued, sizeof(dt_iop_toneequalizer_data_t));
+	memcpy(d_maxrgb, trued, sizeof(dt_iop_toneequalizer_data_t));
+	memcpy(d_maxrgb_blur, trued, sizeof(dt_iop_toneequalizer_data_t));
+	d_noblur->details = DT_TONEEQ_NONE;
+	//d->method = DT_TONEEQ_NORM_2;//TODO keep this??? 
+	d_maxrgb->details = DT_TONEEQ_NONE; 
+	d_maxrgb->method = DT_TONEEQ_VALUE;//maxrgb 
+	d_maxrgb_blur->method = DT_TONEEQ_VALUE;//maxrgb 
+	d_maxrgb->blending = 0.01f;
+	d_maxrgb->feathering = 20.f;
   dt_iop_toneequalizer_gui_data_t *const g =
     (dt_iop_toneequalizer_gui_data_t *)self->gui_data;
 
@@ -1248,20 +1264,96 @@ void toneeq_process(struct dt_iop_module_t *self,
   else
   {
     // no caching path : compute no matter what
+
+    float* luminance_noblur = dt_alloc_align_float(num_elem);
+    compute_luminance_mask(in, luminance_noblur, width, height, d_maxrgb);
+    //compute_luminance_mask(in, luminance, width, height, d_maxrgb_blur);
     compute_luminance_mask(in, luminance, width, height, d);
+		float maxlum = 0.f;
+		float maxdiff = 0.0f;/*1.0f;*/
+		//TODO when maxlum is very high, dynamic range not compressed enough...
+		for(size_t i = 0; i < width * height; i++)
+		{
+			if(luminance_noblur[i] > maxlum)
+				maxlum = luminance_noblur[i];
+		}
+		size_t nb = 0;
+		for(size_t i = 0; i < width * height; i++)
+		{
+			if(maxlum / luminance_noblur[i] > 2.f)
+				continue;
+			float ratio = luminance_noblur[i] / fminf(fmaxf(luminance[i], 0.01f), 1.0f);
+			if(ratio > 1.0f)
+			{
+				maxdiff += ratio;
+				nb++;
+			}
+			//if(luminance_noblur[i] / fmaxf(luminance[i], 0.01f) > maxdiff)
+			//	maxdiff = luminance_noblur[i] / fmaxf(luminance[i], 0.01f);
+		}
+		maxdiff /= nb;
+		//maxdiff /= 1.15f; //tolerate 0.15 EV too high
+		maxdiff = fmaxf(maxdiff, 1.0f);
+		//maxdiff = fminf(maxdiff, 2.0f);
+		printf("maxdiff: %f, maxlum: %f\n", maxdiff, maxlum);
+		maxlum = 1.0f;
+
+    compute_luminance_mask(in, luminance_noblur, width, height, d_noblur);
+		//for(size_t i = 0; i < width * height; i++)
+		//{
+		//	luminance_noblur[i] /= maxlum;
+		//	luminance[i] /= maxlum;
+		//}
 		float var250[9] = {0.0f};
 		float var10[9] = {0.0f};
-		compute_log_variance(luminance, width, height, var250, fminf(roi_in->scale / piece->iscale, 1.0f), 250);
-		compute_log_variance(luminance, width, height, var10, fminf(roi_in->scale / piece->iscale, 1.0f), 10);
+		compute_log_variance(luminance_noblur, width, height, var250, fminf(roi_in->scale / piece->iscale, 1.0f), 250);
+		compute_log_variance(luminance_noblur, width, height, var10, fminf(roi_in->scale / piece->iscale, 1.0f), 10);
+		dt_free_align(luminance_noblur);
+		float avg_of_var250 = 0.0f;
+		float avg_of_var10 = 0.0f;
+		float var_of_var250 = 0.0f;
+		float var_of_var10 = 0.0f;
+		for(int i = 0; i < 9; i++)
+		{
+			avg_of_var250 += var250[i] / 9.0f;
+			avg_of_var10 += var10[i] / 9.0f;
+		}
+	  for(int i = 0; i < 9; i++)
+    {
+			float sqdiff = var250[i] - avg_of_var250;
+			sqdiff *= sqdiff;
+      var_of_var250 += sqdiff / 8.0f;
+
+			sqdiff = var10[i] - avg_of_var10;
+			sqdiff *= sqdiff;
+      var_of_var10 += sqdiff / 8.0f;
+    }
+		printf("var10: %f\t var250: %f\n", var_of_var10, var_of_var250);
+
 		printf("scale: %f\n", fminf(roi_in->scale / piece->iscale, 1.0f));
 		/* log values from 0EV to -8:
 		 * 0   -1    -2     -3      -4       -5        -6
 		 * 1, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625, ...*/
 		for(int i = 0; i < 9; i++)
 		{
-			//var[i] = (var250[i] + var10[i]) / 2.0f; /*TODO test with maximum as well */
-			//var[i] = fmaxf(var250[i], var10[i]); /*TODO test with maximum as well */
-			var[i] = (fmaxf(var250[i], var10[i]) + var250[i] + var10[i]) / 3.0f; /*TODO test with maximum as well */
+			//var[i] = (var250[i] + var10[i]) / 2.0f;
+			//var[i] = fmaxf(var250[i], var10[i]); 
+			//var[i] = (fmaxf(var250[i], var10[i]) + var250[i] + var10[i]) / 3.0f;
+			
+			//float w = (i+1) * (i+1) / 81.0f * 1.0f;  //TODO : weight by the variance of var250 array and the variance of var10 array: the one with the least variance should get more weight
+			//var[i] = w * (var250[i] + var10[i]) / 2.0f + (1.0f - w) * var250[i];
+
+			//var[i] = w * (var250[i] + var250[i] + var10[i]) / 3.0f + (1.0f-w) * powf(var250[i] * var250[i] * var10[i], 1.0f / 3.0f);
+			//var[i] = 0.05f * (var250[i] + var10[i]) / 2.0f + 0.95f * sqrtf(var250[i] * var10[i]);
+			//var[i] = (fminf(var250[i], var10[i]) + var250[i] + var10[i]) / 3.0f;
+
+			float w250 = 1.0f / fmaxf(var_of_var250, 0.0001f);
+			float w10 = 1.0f / fmaxf(var_of_var10, 0.0001f);
+			float sumw = w250 + w10;
+			float w = w250 / sumw;
+			var[i] = w * var250[i] + (1.0f - w) * var10[i]; // marche pas mal :-)
+			//var[i] = var250[i] /  avg_of_var250 + var10[i] / avg_of_var10;
+			printf("%f\t%f\t%f\n", var[i], var250[i], var10[i]);
 			var[i] = powf(var[i], 0.5f);
 		}
 
@@ -1294,9 +1386,11 @@ void toneeq_process(struct dt_iop_module_t *self,
 			var[i] += var[i-1];
 		for(int i = 0; i < 9; i++)
 		{
-			const float ev_range_dest = 4.5f;
-			fact[i] = exp2f(ev_range_dest * (-1.0f+var[i])) / exp2f(-8+i); /*on déplace l'EV i à une position var[i]. TODO: mapper sur 5EV en dest au lieu de 8 ?*/
-			printf("fact%d: %f, %f, %f\n", i, fact[i], var[i], ev_range_dest * (-1.0f+var[i]));
+			float maxlum_div = maxlum; //(maxlum < 1.0f) ? maxlum : powf(maxlum, (float)i*i*i / (i*i*i+16.f)); //works randomly...
+			//maxlum_div = (maxlum < 1.0f) ? maxlum : 1.0f;
+			const float ev_range_dest = 5.0f - log2f(maxdiff); //Note : ici on ne veut pas enlever log2f(maxlum), parce que ça rend l'ev_range_dest sensible à l'exposition préalable
+			fact[i] = exp2f(ev_range_dest * (-1.0f+var[i])) / maxdiff / exp2f(-8+i) / maxlum_div; /*on déplace l'EV i à une position var[i]. TODO: mapper sur 5EV en dest au lieu de 8 ?*/
+			printf("fact%d: %f, %f, %f, %f\n", i, fact[i], var[i], ev_range_dest * (-1.0f+var[i]), maxlum_div);
 		}
 #endif
 

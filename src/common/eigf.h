@@ -305,7 +305,7 @@ static inline void fast_eigf_surface_blur(float *const restrict image,
       quantize(image, mask, width * height, quantization, quantize_min, quantize_max);
       // Downsample the image for speed-up
       interpolate_bilinear(mask, width, height, ds_mask, ds_width, ds_height, 1);
-      eigf_variance_analysis(ds_mask, ds_image, ds_av, ds_width, ds_height, ds_sigma);
+      eigf_variance_analysis(ds_mask, ds_image, ds_av, ds_width, ds_height, fmaxf(ds_sigma / exp2f(i), 1.0f));
       // Upsample the variances and averages
       interpolate_bilinear(ds_av, ds_width, ds_height, av, width, height, 4);
       // Blend the guided image
@@ -314,7 +314,7 @@ static inline void fast_eigf_surface_blur(float *const restrict image,
     else
     {
       // no need to build a mask.
-      eigf_variance_analysis_no_mask(ds_image, ds_av, ds_width, ds_height, ds_sigma);
+      eigf_variance_analysis_no_mask(ds_image, ds_av, ds_width, ds_height, fmaxf(ds_sigma / exp2f(i), 1.0f));
       // Upsample the variances and averages
       interpolate_bilinear(ds_av, ds_width, ds_height, av, width, height, 2);
       // Blend the guided image

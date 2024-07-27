@@ -30,6 +30,7 @@
 #include "gui/accelerators.h"
 #include "gui/color_picker_proxy.h"
 #include "libs/colorpicker.h"
+#include "common/fast_guided_filter.h" //for bilin interpolation
 
 #define DT_GUI_CURVE_EDITOR_INSET DT_PIXEL_APPLY_DPI(5)
 
@@ -1384,10 +1385,47 @@ void process(dt_iop_module_t *self,
     const float min_level = levels[0];
     const float max_level = levels[2];
     static const dt_aligned_pixel_t zero = { 0.0f, 0.0f, 0.0f, 0.0f };
+  	const size_t width = (size_t)roi_out->width;
+  	const size_t height = (size_t)roi_out->height;
+
+		const float scale = fminf(roi_in->scale / piece->iscale, 1.0f);
+		const float scaling = fmaxf(32.0f * scale, 1.0f);
+		printf("scaling: %f\n", scaling);
+		const size_t ds_height = height / scaling;
+		const size_t ds_width = width / scaling;
+		const size_t num_elem_ds = ds_width * ds_height;
+		float* ds_in = dt_alloc_align_float(num_elem_ds * 4);
+		float* avg_in = dt_alloc_align_float(npixels * 4);
+		memcpy(avg_in, in, sizeof(float) * npixels * 4);
+		dt_box_mean(avg_in, height, width, 4, MAX((int)(roundf(scaling/2.0f)),1), 1);
+		interpolate_bilinear(avg_in, width, height, ds_in, ds_width, ds_height, 4);
+		float min_lum = 100000000.0f;
+		float max_lum = 0.0f;
+		for(int k = 0; k < 4U*num_elem_ds; k+=4)
+		{
+			float rin = ds_in[k];
+			float gin = ds_in[k+1];
+			float bin = ds_in[k+2];
+			//for min, consider the average rgb as norm
+			const float avg = (rin + gin + bin) / 3.0f;
+			if(avg < min_lum)
+				min_lum = avg;
+			//for max, consider the maxrgb
+			float srgb_r = 1.65413f * rin - 0.587141f * gin - 0.0669933f * bin;
+			float srgb_g = -0.125687f * rin + 1.13269f * gin - 0.00669933f * bin;
+			float srgb_b = -0.0156984f * rin -0.0971903f * gin + 1.11289f * bin;
+			const float max = fmaxf(fmaxf(srgb_r, srgb_g), srgb_b);
+			if(max > max_lum)
+				max_lum = max;
+		}
+		max_lum -= min_lum;
+		dt_free_align(ds_in);
+		dt_free_align(avg_in);
+		
 #ifdef _OPENMP
 #pragma omp parallel for default(none) \
   dt_omp_firstprivate(npixels, in, out, work_profile, d, min_level, max_level, \
-                      mult_ch, ch_levels, zero)                         \
+                      mult_ch, ch_levels, zero, min_lum, max_lum)                         \
   schedule(static)
 #endif
     for(int k = 0; k < 4U*npixels; k += 4)
@@ -1407,12 +1445,12 @@ void process(dt_iop_module_t *self,
           curve_lum = d->lut[ch_levels][CLAMP((int)(percentage * 0x10000ul), 0, 0xffff)];
         }
 
-        const float ratio = curve_lum / lum;
+        const float ratio = fmaxf(curve_lum - min_lum, 0.0f) / lum;
         dt_aligned_pixel_t res;
 
         for_each_channel(c,aligned(in,out:16))
         {
-          res[c] = (ratio * in[k+c]);
+          res[c] = (ratio * in[k+c]) / max_lum;
         }
         copy_pixel_nontemporal(out + k, res);
       }

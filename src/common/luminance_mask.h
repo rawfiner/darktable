@@ -179,8 +179,12 @@ static void pixel_rgb_norm_2(const float *const restrict image,
 #endif
   for(int c = 0; c < 3; ++c)
     result += image[k + c] * image[k + c];
+	result /= 3.0f;
+	result = sqrtf(result);
+	result += fmaxf(image[k], fmaxf(image[k + 1], image[k + 2]));
+	result /= 2.0f;
 
-  luminance[k / 4] = linear_contrast(exposure_boost * sqrtf(result), fulcrum, contrast_boost);
+  luminance[k / 4] = linear_contrast(exposure_boost * result, fulcrum, contrast_boost);
 }
 
 
