@@ -906,6 +906,7 @@ static inline void compute_log_variance(const float *const restrict luminance,
 
 	/* average using box blur with radius 25 */
 	dt_box_mean(ds_avg, ds_height, ds_width, 1, radius, 1);
+	dt_box_mean(ds_luminance, ds_height, ds_width, 1, MAX(radius / 3,1), 1);
 
 	/* accumulate squared diff in var, for each possible log value from -8 to 0 */
 	float norm[9] = {0.0f};
@@ -1272,6 +1273,7 @@ void toneeq_process(struct dt_iop_module_t *self,
 		float maxlum = 0.f;
 		float maxdiff = 0.0f;/*1.0f;*/
 		//TODO when maxlum is very high, dynamic range not compressed enough...
+		//FIXME: we can assume maxlum = 1.0f now.
 		for(size_t i = 0; i < width * height; i++)
 		{
 			if(luminance_noblur[i] > maxlum)
@@ -1347,12 +1349,14 @@ void toneeq_process(struct dt_iop_module_t *self,
 			//var[i] = 0.05f * (var250[i] + var10[i]) / 2.0f + 0.95f * sqrtf(var250[i] * var10[i]);
 			//var[i] = (fminf(var250[i], var10[i]) + var250[i] + var10[i]) / 3.0f;
 
-			float w250 = 1.0f / fmaxf(sqrtf(var_of_var250), 0.0001f);
-			float w10 = 1.0f / fmaxf(sqrtf(var_of_var10), 0.0001f);
-			float sumw = w250 + w10;
-			float w = w250 / sumw;
-			var[i] = w * var250[i] + (1.0f - w) * var10[i]; // marche pas mal :-)
+			//float w250 = 1.0f / fmaxf(sqrtf(var_of_var250), 0.0001f);
+			//float w10 = 1.0f / fmaxf(sqrtf(var_of_var10), 0.0001f);
+			//float sumw = w250 + w10;
+			//float w = w250 / sumw;
+			//var[i] = w * var250[i] + (1.0f - w) * var10[i]; // marche pas mal :-)
 			//var[i] = var250[i] /  avg_of_var250 + var10[i] / avg_of_var10;
+			//var[i] = var250[i] + var10[i];
+			var[i] = 0.05f * (var250[i] + var10[i]) / 2.0f + 0.95f * sqrtf(var250[i] * var10[i]);
 			printf("%f\t%f\t%f\n", var[i], var250[i], var10[i]);
 			var[i] = powf(var[i], 0.5f);
 		}
