@@ -1347,8 +1347,8 @@ void toneeq_process(struct dt_iop_module_t *self,
 			//var[i] = 0.05f * (var250[i] + var10[i]) / 2.0f + 0.95f * sqrtf(var250[i] * var10[i]);
 			//var[i] = (fminf(var250[i], var10[i]) + var250[i] + var10[i]) / 3.0f;
 
-			float w250 = 1.0f / fmaxf(var_of_var250, 0.0001f);
-			float w10 = 1.0f / fmaxf(var_of_var10, 0.0001f);
+			float w250 = 1.0f / fmaxf(sqrtf(var_of_var250), 0.0001f);
+			float w10 = 1.0f / fmaxf(sqrtf(var_of_var10), 0.0001f);
 			float sumw = w250 + w10;
 			float w = w250 / sumw;
 			var[i] = w * var250[i] + (1.0f - w) * var10[i]; // marche pas mal :-)
@@ -1380,7 +1380,7 @@ void toneeq_process(struct dt_iop_module_t *self,
 		//	fact[i] = (fact[i] + fact[i-1] + fact[i+1]) / 3.0f;
 #else
 		for(int i = 0; i < 9; i++)
-			var[i] = (var[i] + 0.5f * sumvar / 9.0f) / sumvar / 1.5f;
+			var[i] = (var[i] + 1.0f * sumvar / 9.0f) / sumvar / 2.0f;
 		/* sum all vars in order to transform segment sizes into point coordinates */
 		for(int i = 1; i < 9; i++)
 			var[i] += var[i-1];
