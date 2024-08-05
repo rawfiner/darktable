@@ -1279,16 +1279,15 @@ void toneeq_process(struct dt_iop_module_t *self,
 			if(luminance_noblur[i] > maxlum)
 				maxlum = luminance_noblur[i];
 		}
-		size_t nb = 0;
+		float nb = 0.0f;
 		for(size_t i = 0; i < width * height; i++)
 		{
-			if(maxlum / luminance_noblur[i] > 2.f)
-				continue;
 			float ratio = luminance_noblur[i] / fminf(fmaxf(luminance[i], 0.01f), 1.0f);
 			if(ratio > 1.0f)
 			{
-				maxdiff += ratio;
-				nb++;
+				//weight each ratio by (luminance_noblur[i] * luminance[i]). this prioritize ratios in highlights.
+				maxdiff += ratio * luminance_noblur[i] * luminance[i];
+				nb += luminance_noblur[i] * luminance[i];
 			}
 			//if(luminance_noblur[i] / fmaxf(luminance[i], 0.01f) > maxdiff)
 			//	maxdiff = luminance_noblur[i] / fmaxf(luminance[i], 0.01f);
@@ -1298,7 +1297,6 @@ void toneeq_process(struct dt_iop_module_t *self,
 		maxdiff = fmaxf(maxdiff, 1.0f);
 		//maxdiff = fminf(maxdiff, 2.0f);
 		printf("maxdiff: %f, maxlum: %f\n", maxdiff, maxlum);
-		maxlum = 1.0f;
 
     compute_luminance_mask(in, luminance_noblur, width, height, d_noblur);
 		//for(size_t i = 0; i < width * height; i++)
@@ -1349,22 +1347,45 @@ void toneeq_process(struct dt_iop_module_t *self,
 			//var[i] = 0.05f * (var250[i] + var10[i]) / 2.0f + 0.95f * sqrtf(var250[i] * var10[i]);
 			//var[i] = (fminf(var250[i], var10[i]) + var250[i] + var10[i]) / 3.0f;
 
-			//float w250 = 1.0f / fmaxf(sqrtf(var_of_var250), 0.0001f);
-			//float w10 = 1.0f / fmaxf(sqrtf(var_of_var10), 0.0001f);
-			//float sumw = w250 + w10;
-			//float w = w250 / sumw;
-			//var[i] = w * var250[i] + (1.0f - w) * var10[i]; // marche pas mal :-)
+			float w250 = 1.0f / fmaxf(sqrtf(var_of_var250), 0.0001f);
+			float w10 = 1.0f / fmaxf(sqrtf(var_of_var10), 0.0001f);
+			float sumw = w250 + w10;
+			float w = w250 / sumw;
+			var[i] = w * var250[i] + (1.0f - w) * var10[i]; // marche pas mal :-)
+			var[i] *= (1.0f + 3.0f * powf(6.0f, (i-6.0f)/2.0f)); //give more weight to highlights, which frequently have lower variance (clouds are more diffuse than dark details)
+			
 			//var[i] = var250[i] /  avg_of_var250 + var10[i] / avg_of_var10;
+			//var[i] *= (1.0f + 3.0f * powf(6.0f, (i-6.0f)/2.0f));
+			
 			//var[i] = var250[i] + var10[i];
-			var[i] = 0.05f * (var250[i] + var10[i]) / 2.0f + 0.95f * sqrtf(var250[i] * var10[i]);
+			//var[i] = 0.05f * (var250[i] + var10[i]) / 2.0f + 0.95f * sqrtf(var250[i] * var10[i]);
+			//var[i] = 0.3f * (var250[i] + var10[i]) / 2.0f + 0.7f * sqrtf(var250[i] * var10[i]);
 			printf("%f\t%f\t%f\n", var[i], var250[i], var10[i]);
 			var[i] = powf(var[i], 0.5f);
 		}
 
+		//TODO calculer les variances en sRGB pour R, G, et B ? puis prendre le max ?
+		//Mieux : en sRGB, calculer les marges moyennes en EV qu'il y a par rapport au fin de gamut (R ou G ou B == 1).
+		//On fait la moyenne de toutes les marges pour une norme constante. I.e., pour un pixel i, moy[norm[i]] += min(0-logr, 0-logg, 0-logb);
+		//Ensuite, on cherche à répartir nos points de manière à garantir le respect de ces marges, tout en cherchant à répartir au mieux en fonction de la variance.
+		//Le plus simple est sans doute de commencer la répartition par le point le plus clair, puis de déterminer le point sombre suivant etc ? comme si on répartissait
+		//notre segment en fonction des variances en plusieurs coups.
+		//En gros : on calcule les points idéaux en fonction de la variance, on pose le point le plus clair à sa position définie ainsi ou au max de la marge,
+		//puis on calcule les points idéaux sur le segments raccourci de 1 point en fonction de la variance, on pose le point le plus clair à sa position définie ainsi ou au max de la marge,
+		//etc
+
 		//TODO smooth variance?	
-		//for(int i = 1; i < 8; i++)
-		//	var[i] = (var[i] + var[i-1] + var[i+1]) / 3.0f;
-		//var[0] = 0.5f * (var[0] + var[1]);
+		//MAYBE: only smooth value i with lower values, in order to avoid increasing variance in unused shadows?
+		float avged_var[9] = {0.0f};
+		for(int iter = 0; iter < 2; iter++)
+		{
+			for(int i = 2; i < 9; i++)
+				avged_var[i] = (9.0f * var[i] + 3.0f * var[i-1] + var[i-2]) / 13.0f;
+			avged_var[1] = (1.0f * var[0] + 3.0f * var[1]) / 4.0f;
+			avged_var[0] = var[0];
+			for(int i = 0; i < 9; i++)
+				var[i] = avged_var[i];
+		}
 
 		float sumvar = 0.0f;
 		for(int i = 0; i < 9; i++)
@@ -1383,18 +1404,28 @@ void toneeq_process(struct dt_iop_module_t *self,
 		//for(int i = 1; i < 7; i++)
 		//	fact[i] = (fact[i] + fact[i-1] + fact[i+1]) / 3.0f;
 #else
+		//for(int i = 0; i < 9; i++)
+		//	var[i] = (var[i] + 0.5f * sumvar / 9.0f) / sumvar / 1.5f;
 		for(int i = 0; i < 9; i++)
-			var[i] = (var[i] + 1.0f * sumvar / 9.0f) / sumvar / 2.0f;
+			var[i] = var[i] / sumvar;
+		//float correctif[9] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.025f, 0.025f, 0.05f, 0.1f};
+		//for(int i = 0; i < 9; i++)
+		//	var[i] = fmaxf(var[i], correctif[i]);
+		
+		//sumvar = 0.0f;
+		//for(int i = 0; i < 9; i++)
+		//	sumvar += var[i];
+		//for(int i = 0; i < 9; i++)
+		//	var[i] = var[i] / sumvar;
+
 		/* sum all vars in order to transform segment sizes into point coordinates */
 		for(int i = 1; i < 9; i++)
 			var[i] += var[i-1];
 		for(int i = 0; i < 9; i++)
 		{
-			float maxlum_div = maxlum; //(maxlum < 1.0f) ? maxlum : powf(maxlum, (float)i*i*i / (i*i*i+16.f)); //works randomly...
-			//maxlum_div = (maxlum < 1.0f) ? maxlum : 1.0f;
 			const float ev_range_dest = 5.0f - log2f(maxdiff); //Note : ici on ne veut pas enlever log2f(maxlum), parce que ça rend l'ev_range_dest sensible à l'exposition préalable
-			fact[i] = exp2f(ev_range_dest * (-1.0f+var[i])) / maxdiff / exp2f(-8+i) / maxlum_div; /*on déplace l'EV i à une position var[i]. TODO: mapper sur 5EV en dest au lieu de 8 ?*/
-			printf("fact%d: %f, %f, %f, %f\n", i, fact[i], var[i], ev_range_dest * (-1.0f+var[i]), maxlum_div);
+			fact[i] = exp2f(ev_range_dest * (-1.0f+var[i])) / maxdiff / exp2f(-8+i); /*on déplace l'EV i à une position var[i]. TODO: mapper sur 5EV en dest au lieu de 8 ?*/
+			printf("fact%d: %f, %f, %f\n", i, fact[i], var[i], ev_range_dest * (-1.0f+var[i]));
 		}
 #endif
 
