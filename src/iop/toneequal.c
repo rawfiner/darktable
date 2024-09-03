@@ -899,7 +899,9 @@ static inline void compute_log_variance(const float *const restrict luminance,
 	/* compute log of image */
 	for(size_t i = 0; i < num_elem_ds; i++)
 	{
-		float curr = log2f(fmaxf(ds_luminance[i], 0.000015259f));
+		//float curr = log2f(fmaxf(ds_luminance[i], 0.000015259f));
+		float curr = log2f(fmaxf(ds_luminance[i], 0.002f));
+		//float curr = powf(fmaxf(ds_luminance[i], 0.000015259f), 1.0f / 3.0f);
 		ds_luminance[i] = curr;
 		ds_avg[i] = curr;
 	}
@@ -915,6 +917,8 @@ static inline void compute_log_variance(const float *const restrict luminance,
 		float avg = ds_avg[i];
 		float pix = ds_luminance[i];
 		float sq_diff = (avg - pix) * (avg - pix);
+
+		//avg = log2f(avg * avg * avg);
 		avg += 8.0f;
 		int log1 = floorf(avg);
 		if (log1 < 0)
@@ -936,11 +940,13 @@ static inline void compute_log_variance(const float *const restrict luminance,
 #endif
 	}
 
+	float compensate_detail_difference[9] = {1.f, 2.f, 4.f, 16.f, 25.f, 25.f, 25.f, 25.f, 25.f};
 	/* normalize */
 	for(size_t i = 0; i < 9; i++)
 	{
 		if(norm[i] != 0.0f)
 			var[i] /= norm[i];
+		var[i] *= compensate_detail_difference[i];
 	}
 
 	dt_free_align(ds_luminance);
@@ -1352,7 +1358,7 @@ void toneeq_process(struct dt_iop_module_t *self,
 			float sumw = w250 + w10;
 			float w = w250 / sumw;
 			var[i] = w * var250[i] + (1.0f - w) * var10[i]; // marche pas mal :-)
-			var[i] *= (1.0f + 3.0f * powf(6.0f, (i-6.0f)/2.0f)); //give more weight to highlights, which frequently have lower variance (clouds are more diffuse than dark details)
+			//var[i] *= (1.0f + 3.0f * powf(6.0f, (i-6.0f)/2.0f)); //give more weight to highlights, which frequently have lower variance (clouds are more diffuse than dark details)
 			
 			//var[i] = var250[i] /  avg_of_var250 + var10[i] / avg_of_var10;
 			//var[i] *= (1.0f + 3.0f * powf(6.0f, (i-6.0f)/2.0f));
