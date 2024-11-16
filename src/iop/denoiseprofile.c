@@ -1560,30 +1560,71 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
           min = symmetries[c];
       }
       float sumw = 0.0f;
-      for(size_t c = 0; c < 5; c++)
+      for(size_t c = 0; c < 4; c++)
       {
         symmetries[c] -= min;
         symmetries[c] = fmaxf(symmetries[c], 0.0f);
-        symmetries[c] = expf(-symmetries[c] * anisotropy);
-        if(c != 4)
-          sumw += symmetries[c]; //TODO we should probably NOT have sym[4] in sumw. Check this. Anyway, if sym[4] is included it should be multiplied by 4.0f.
-        //else
-        //  sumw += 4.0f * symmetries[c];
+        symmetries[c] = expf(-symmetries[c] / symmetries[4] / anisotropy); //FIXME anisotropy parameter working in reverse?
+        sumw += symmetries[c];
       }
-      for(size_t c = 0; c < 5; c++)
+      for(size_t c = 0; c < 4; c++)
       {
         symmetries[c] /= sumw;
         symmetries[c] *= strength;
       }
 
       // symmetries[4] contains weight for absence of symmetry. It influences uniform diffusion.
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = symmetries[0] + symmetries[4];
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = symmetries[1] + symmetries[4];
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = symmetries[2] + symmetries[4];
-      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = symmetries[3] + symmetries[4];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = symmetries[0];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS] = symmetries[1];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS] = symmetries[2];
+      symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS] = symmetries[3];
     }
   }
 }
+
+static void _debug_show_symmetry(const float* const restrict symfactors, const size_t height, const size_t width, float* restrict out)
+{
+  for(size_t i = 0; i < width * height; i++)
+  {
+    int best_index = 0;
+    float max_sym = symfactors[i * 4];
+    for(size_t c = 1; c < 4; c++)
+    {
+      if(symfactors[i * 4 + c] > max_sym)
+      {
+        best_index = c;
+        max_sym = symfactors[i * 4 + c];
+      }
+    }
+    out[i * 4]     = 0.0f;
+    out[i * 4 + 1] = 0.0f;
+    out[i * 4 + 2] = 0.0f;
+    switch(best_index)
+    {
+      case DT_DENOISE_PROFILE_SYM_VERT_AXIS: //horizontal lines should appear red
+        out[i * 4]     = 1.0f;
+        out[i * 4 + 1] = 0.0f;
+        out[i * 4 + 2] = 0.0f;
+        break;
+      case DT_DENOISE_PROFILE_SYM_HORIZ_AXIS: //vertical lines should appear yellow
+        out[i * 4]     = 0.8f;
+        out[i * 4 + 1] = 0.8f;
+        out[i * 4 + 2] = 0.0f;
+        break;
+      case DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS:
+        out[i * 4]     = 0.0f;
+        out[i * 4 + 1] = 0.4f;
+        out[i * 4 + 2] = 0.3f;
+        break;
+      case DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS:
+        out[i * 4]     = 0.0f;
+        out[i * 4 + 1] = 0.0f;
+        out[i * 4 + 2] = 1.0f;
+        break;
+    }
+  }
+}
+//FIXME: l'impact de scattering est assez étrange...
 
 static void rbf_topleft_bottomright(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
 {
@@ -1808,10 +1849,10 @@ static void combine_runs(float* restrict out, const float* const restrict precon
     const float sym_horiz = symfactors[i * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
     const float sym_tlbr = symfactors[i * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
     const float sym_trbl = symfactors[i * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
-    const float weighttlbr = fmaxf(sym_horiz, sym_trbl);
-    const float weighttrbl = fmaxf(sym_vert, sym_tlbr);
-    const float weightbltr = fmaxf(sym_vert, sym_tlbr);
-    const float weightbrtl = fmaxf(sym_horiz, sym_trbl);
+    const float weighttlbr = (sym_horiz + sym_trbl);
+    const float weighttrbl = (sym_vert + sym_tlbr);
+    const float weightbltr = (sym_vert + sym_tlbr);
+    const float weightbrtl = (sym_horiz + sym_trbl);
     const float total_weight = weighttlbr + weighttrbl + weightbltr + weightbrtl;
 
     if(total_weight != 0.0f)
@@ -1925,12 +1966,19 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   precondition_Y0U0V0(in, precond, width, height, d->a[1] * compensate_p, p, d->b[1], toY0U0V0);
 
   size_t first_radius = radius; //TODO * in_scale
-  size_t second_radius = 2;
+  //size_t second_radius = 2;
   float anisotropy = powf(d->scattering, 10.0f);
-  float strength = 400000.0f * d->strength * in_scale * d->a[1] * compensate_p;
+  float strength = d->strength * in_scale * d->a[1] * compensate_p * 9000.0f + 4.75f; // equation found manually on 3 samples... should probably recompute from more samples at some point
+  printf("%f ; %f ; %f\n", d->a[1] * compensate_p, strength, in_scale);
   // strength *= strength;
   // strength *= strength;
   compute_symmetry(precond, symfactors, height, width, first_radius, strength, anisotropy);
+  //TODO for debug only
+  if(0)
+  {
+  	_debug_show_symmetry(symfactors, height, width, out);
+  	return;
+  }
   //MAYBE: in first pass, set weightY0 to 0.1
   rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, first_radius, 1.0f, d->central_pixel_weight);
   rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, first_radius, 1.0f, d->central_pixel_weight);
@@ -1939,12 +1987,12 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   combine_runs(out, precond, symfactors, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //TODO copy last radius+1 lines
-  compute_symmetry(out, symfactors, height, width, second_radius, strength, powf(anisotropy, 0.3f));
-  rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
-  rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
-  rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
-  rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
-  combine_runs_second_iteration(out, precond, symfactors, outtlbr, outtrbl, outbltr, outbrtl, height, width);
+  // compute_symmetry(out, symfactors, height, width, second_radius, strength, powf(anisotropy, 0.3f));
+  // rbf_topleft_bottomright(outtlbr, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
+  // rbf_topright_bottomleft(outtrbl, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
+  // rbf_bottomleft_topright(outbltr, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
+  // rbf_bottomright_topleft(outbrtl, precond, symfactors, height, width, second_radius, 1.0f, 1.0f);
+  //combine_runs_second_iteration(out, precond, symfactors, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 
   //memcpy(out, precond, width * height * piece->colors * sizeof(float));
   backtransform_Y0U0V0(out, width, height, d->a[1] * compensate_p, p, d->b[1], d->bias - 0.5 * logf(in_scale), wb, toRGB);
@@ -1954,6 +2002,12 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
   dt_free_align(outbrtl);
   dt_free_align(outtlbr);
   dt_free_align(outtrbl);
+
+  return;
+
+  //only to avoid warning
+  //FIXME to be removed
+  combine_runs_second_iteration(out, precond, symfactors, outtlbr, outtrbl, outbltr, outbrtl, height, width);
 }
 
 static void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
