@@ -1464,9 +1464,9 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         for(int64_t jj = 1; jj <= radius; jj++)
         {
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + ii) + j - jj) * 4 + 0];
-          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
-          norm += 1.0f / distance;
-          avg_diff += diff * diff / distance;
+          //float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius)); //NOTE: we removed this gaussian weighting as it does not change a lot the result but exp is quite costly to compute. Results in x4 speedup.
+          norm += 1.0f;// / distance;
+          avg_diff += diff * diff;// / distance;
         }
       }
       avg_diff /= norm;
@@ -1485,9 +1485,9 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
           int64_t symi = -jj;
           int64_t symj = -ii;
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
-          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
-          avg_diff += diff * diff / distance;
-          norm += 1.0f / distance;
+          //float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
+          avg_diff += diff * diff;// / distance;
+          norm += 1.0f;// / distance;
         }
       }
       avg_diff /= norm;
@@ -1502,9 +1502,9 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         for(int64_t jj = -radius; jj <= radius; jj++)
         {
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i - ii) + j + jj) * 4 + 0];
-          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
-          avg_diff += diff * diff / distance;
-          norm += 1.0f / distance;
+          //float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
+          avg_diff += diff * diff;// / distance;
+          norm += 1.0f;// / distance;
         }
       }
       avg_diff /= norm;
@@ -1523,9 +1523,9 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
           int64_t symi = jj;
           int64_t symj = ii;
           float diff = in[(width * (i + ii) + j + jj) * 4 + 0] - in[(width * (i + symi) + j +  symj) * 4 + 0];
-          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
-          avg_diff += diff * diff / distance;
-          norm += 1.0f / distance;
+          //float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
+          avg_diff += diff * diff;// / distance;
+          norm += 1.0f;// / distance;
         }
       }
       avg_diff /= norm;
@@ -1542,10 +1542,10 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         for(int64_t jj = -radius; jj <= radius; jj++)
         {
           float tmp = in[(width * (i + ii) + j + jj) * 4 + 0];
-          float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
-          avg += tmp / distance;
-          avg_squared += tmp * tmp / distance;
-          norm += 1.0f / distance;
+          //float distance = expf((sqf(ii) + sqf(jj)) / (2.0f * radius * radius));
+          avg += tmp;// / distance;
+          avg_squared += tmp * tmp;// / distance;
+          norm += 1.0f;// / distance;
         }
       }
       avg /= norm;
@@ -1572,6 +1572,7 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
         symmetries[c] /= sumw;
         symmetries[c] *= strength;
       }
+      //TODO maybe we should do a kind of scalar product between our 4 direction vectors? or whatever allows to get more precise angles?
 
       // symmetries[4] contains weight for absence of symmetry. It influences uniform diffusion.
       symmetry_diffs[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_VERT_AXIS] = symmetries[0];
@@ -1624,7 +1625,6 @@ static void _debug_show_symmetry(const float* const restrict symfactors, const s
     }
   }
 }
-//FIXME: l'impact de scattering est assez étrange...
 
 static void rbf_topleft_bottomright(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
 {
@@ -1916,6 +1916,7 @@ static void process_symrbf(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t 
                              const void *const ivoid, void *const ovoid, const dt_iop_roi_t *const roi_in,
                              const dt_iop_roi_t *const roi_out)
 {
+  //FIXME it seems like preserve shadows is working in reverse...
   const dt_iop_denoiseprofile_data_t *const d = (dt_iop_denoiseprofile_data_t *)piece->data;
   const float* const in = (float*)ivoid;
   float* out = (float*)ovoid;
