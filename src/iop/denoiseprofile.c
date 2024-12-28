@@ -1609,6 +1609,8 @@ static void compute_symmetry(const float* const restrict in, float* restrict sym
       for(size_t c = 0; c < 4; c++)
       {
         symmetries[c] /= sumw;
+        if(isnan(symmetries[c]))
+          symmetries[c] = 1.0f;
         symmetries[c] *= strength;
       }
       //TODO maybe we should do a kind of scalar product between our 4 direction vectors? or whatever allows to get more precise angles?
@@ -1701,6 +1703,8 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
                                         + weightv * out[((width * (i-1)) + j) * 4 + c]
                                         + weighttlbr * out[((width * (i-1)) + j-1) * 4 + c]
                                         + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
+        if(isnan(out[((width * i) + j) * 4 + c]))
+          out[((width * i) + j) * 4 + c] = in[((width * i) + j) * 4 + c];
       }
       //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
       //for instance, if we had one pixel in the blur, the max weight will be 1.
@@ -1743,6 +1747,8 @@ static void rbf_topright_bottomleft(float* restrict out, const float* const rest
                                         + weightv * out[((width * (i-1)) + j) * 4 + c]
                                         + weighttlbr * out[((width * (i+1)) + j+1) * 4 + c]
                                         + weighttrbl * out[((width * (i-1)) + j+1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
+        if(isnan(out[((width * i) + j) * 4 + c]))
+          out[((width * i) + j) * 4 + c] = in[((width * i) + j) * 4 + c];
       }
       //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
       //for instance, if we had one pixel in the blur, the max weight will be 1.
@@ -1789,6 +1795,8 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
                                         + weightv * out[((width * (i+1)) + j) * 4 + c]
                                         + weighttlbr * out[((width * (i-1)) + j-1) * 4 + c]
                                         + weighttrbl * out[((width * (i+1)) + j-1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
+        if(isnan(out[((width * i) + j) * 4 + c]))
+          out[((width * i) + j) * 4 + c] = in[((width * i) + j) * 4 + c];
       }
       //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
       //for instance, if we had one pixel in the blur, the max weight will be 1.
@@ -1833,6 +1841,8 @@ static void rbf_bottomright_topleft(float* restrict out, const float* const rest
                                         + weightv * out[((width * (i+1)) + j) * 4 + c]
                                         + weighttlbr * out[((width * (i+1)) + j+1) * 4 + c]
                                         + weighttrbl * out[((width * (i+1)) + j-1) * 4 + c]) / (weightc[c] + weighth + weightv + weighttlbr + weighttrbl);
+        if(isnan(out[((width * i) + j) * 4 + c]))
+          out[((width * i) + j) * 4 + c] = in[((width * i) + j) * 4 + c];
       }
       //TODO: store in c=4 the maximum weight a pixel of this average has. Then, make sure the weight of any previous average is not higher than 1/max.
       //for instance, if we had one pixel in the blur, the max weight will be 1.
