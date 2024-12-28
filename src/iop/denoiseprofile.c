@@ -1444,6 +1444,45 @@ dt_omp_firstprivate(stabilized, blurred_in, manifolds_and_variance_r, manifolds_
   dt_free_align(manifolds_and_variance_b);
 }
 
+#if 0
+static void downscale_2x(const float* const restrict in, float* restrict out, const size_t height_in, const size_t width_in)
+{
+  const size_t height_out = height_in / 2;
+  const size_t width_out = width_in / 2;
+  for(size_t i = 0; i < height_out; i++)
+  {
+    for(size_t j = 0; j < width_out; j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[(i * width_out + j) * 4 + c] = (in[((i * 2) * width_in + (j * 2)) * 4 + c]
+                                          + in[((i * 2) * width_in + (j * 2 + 1)) * 4 + c]
+                                          + in[((i * 2 + 1) * width_in + (j * 2)) * 4 + c]
+                                          + in[((i * 2 + 1) * width_in + (j * 2 + 1)) * 4 + c]) / 4.0f;
+      }
+    }
+  }
+}
+
+// very basic (and fast) upscaling: upscale without interpolation, then box blur with radius of 1.
+static void upscale_2x(const float* const restrict in, float* restrict out, const size_t height_out, const size_t width_out)
+{
+  //const size_t height_in = height_out / 2;
+  const size_t width_in = width_out / 2;
+  for(size_t i = 0; i < height_out; i++)
+  {
+    for(size_t j = 0; j < width_out; j++)
+    {
+      for(size_t c = 0; c < 4; c++)
+      {
+        out[(i * width_out + j) * 4 + c] = in[((i / 2) * width_in + (j / 2)) * 4 + c];
+      }
+    }
+  }
+  // box blur output
+  dt_box_mean(out, height_out, width_out, 4, 1, 1);
+}
+#endif
 
 // compute the local symmetry accross 4 considered axis, and put the
 // result in symmetry_diffs.
@@ -1626,7 +1665,9 @@ static void _debug_show_symmetry(const float* const restrict symfactors, const s
   }
 }
 
-static void rbf_topleft_bottomright(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
+#define CLOSE_TO_BORDER_THRESHOLD 20
+
+static void rbf_topleft_bottomright(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const int64_t height, const int64_t width, const int64_t radius, const float strength, const float weightY0)
 {
   memcpy(out, in, width * height * 4 * sizeof(float));
   // pass from top to bottom and left to right.
@@ -1648,20 +1689,10 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
       float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
       float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
       float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
-      const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
-
-      float sumw =1.0f;
-      weighth /= sumw;
-      weightv /= sumw;
-      weighttrbl /= sumw;
-      weighttlbr /= sumw;
-
-      // weighth = fminf(weighth, (j-radius) * 0.2f);
-      // weightv = fminf(weightv, (i-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+      float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+      //close_to_border increase the weight of pixel close to borders, as the averages with which it is averaged are not accurate enough at that point
+      float close_to_border = MAX(MAX(CLOSE_TO_BORDER_THRESHOLD-i+radius+1, CLOSE_TO_BORDER_THRESHOLD-j+radius+1), 0) / (float)(CLOSE_TO_BORDER_THRESHOLD);
+      close_to_border *= close_to_border;
 
       for(size_t c = 0; c < 3; c++)
       {
@@ -1682,7 +1713,7 @@ static void rbf_topleft_bottomright(float* restrict out, const float* const rest
 }
 
 //TODO invert i and j for loops
-static void rbf_topright_bottomleft(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
+static void rbf_topright_bottomleft(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const int64_t height, const int64_t width, const int64_t radius, const float strength, const float weightY0)
 {
   memcpy(out, in, width * height * 4 * sizeof(float));
   //TODO copy first radius+1 lines
@@ -1699,20 +1730,11 @@ static void rbf_topright_bottomleft(float* restrict out, const float* const rest
       float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
       float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
       float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
-      const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
-
-      float sumw =1.0f;
-      weighth /= sumw;
-      weightv /= sumw;
-      weighttrbl /= sumw;
-      weighttlbr /= sumw;
-
-      // weighth = fminf(weighth, (j-radius) * 0.2f);
-      // weightv = fminf(weightv, (i-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+      float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+      float close_to_border = MAX(MAX(CLOSE_TO_BORDER_THRESHOLD-i+radius+1, j+CLOSE_TO_BORDER_THRESHOLD-(width-radius-1)), 0) / (float)(CLOSE_TO_BORDER_THRESHOLD);
+      close_to_border *= close_to_border;
+      for(size_t c = 0; c < 4; c++)
+        weightc[c] = (weighth + weightv + weighttrbl + weighttlbr) * close_to_border + (1.0f - close_to_border) * weightc[c];
 
       for(size_t c = 0; c < 3; c++)
       {
@@ -1732,7 +1754,7 @@ static void rbf_topright_bottomleft(float* restrict out, const float* const rest
   }
 }
 
-static void rbf_bottomleft_topright(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
+static void rbf_bottomleft_topright(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const int64_t height, const int64_t width, const int64_t radius, const float strength, const float weightY0)
 {
   memcpy(out, in, width * height * 4 * sizeof(float));
   // pass from top to bottom and left to right.
@@ -1754,20 +1776,11 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
       float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
       float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
       float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
-      const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
-
-      float sumw =1.0f;
-      weighth /= sumw;
-      weightv /= sumw;
-      weighttrbl /= sumw;
-      weighttlbr /= sumw;
-
-      // weighth = fminf(weighth, (j-radius) * 0.2f);
-      // weightv = fminf(weightv, (i-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+      float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+      float close_to_border = MAX(MAX(i+CLOSE_TO_BORDER_THRESHOLD - (height-radius-1), CLOSE_TO_BORDER_THRESHOLD-j+radius+1), 0) / (float)(CLOSE_TO_BORDER_THRESHOLD);
+      close_to_border *= close_to_border;
+      for(size_t c = 0; c < 4; c++)
+        weightc[c] = (weighth + weightv + weighttrbl + weighttlbr) * close_to_border + (1.0f - close_to_border) * weightc[c];
 
       for(size_t c = 0; c < 3; c++)
       {
@@ -1787,7 +1800,7 @@ static void rbf_bottomleft_topright(float* restrict out, const float* const rest
   }
 }
 
-static void rbf_bottomright_topleft(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const size_t height, const size_t width, const int64_t radius, const float strength, const float weightY0)
+static void rbf_bottomright_topleft(float* restrict out, const float* const restrict in, const float* const restrict symfactors, const int64_t height, const int64_t width, const int64_t radius, const float strength, const float weightY0)
 {
   memcpy(out, in, width * height * 4 * sizeof(float));
   //TODO copy first radius+1 lines
@@ -1807,21 +1820,11 @@ static void rbf_bottomright_topleft(float* restrict out, const float* const rest
       float weightv = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_HORIZ_AXIS];
       float weighttrbl = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPLEFT_BOTRIGHT_AXIS];
       float weighttlbr = symfactors[((width * i) + j) * 4 + DT_DENOISE_PROFILE_SYM_TOPRIGHT_BOTLEFT_AXIS];
-      const float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
-
-      float sumw =1.0f;
-      //FIXME: pourquoi on normalise ici ????
-      weighth /= sumw;
-      weightv /= sumw;
-      weighttrbl /= sumw;
-      weighttlbr /= sumw;
-
-      // weighth = fminf(weighth, (j-radius) * 0.2f);
-      // weightv = fminf(weightv, (i-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (j-radius) * 0.2f);
-      // weighttlbr = fminf(weighttlbr, (i-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (j-radius) * 0.2f);
-      // weighttrbl = fminf(weighttrbl, (i-radius) * 0.2f);
+      float weightc[4] = {10.0f * weightY0, 1.0f, 1.0f, 1.0f}; // smooth less Y0
+      float close_to_border = MAX(MAX(i+CLOSE_TO_BORDER_THRESHOLD-(height-radius-1), j+CLOSE_TO_BORDER_THRESHOLD - (width-radius-1)), 0) / (float)(CLOSE_TO_BORDER_THRESHOLD);
+      close_to_border *= close_to_border;
+      for(size_t c = 0; c < 4; c++)
+        weightc[c] = (weighth + weightv + weighttrbl + weighttlbr) * close_to_border + (1.0f - close_to_border) * weightc[c];
 
       for(size_t c = 0; c < 3; c++)
       {
